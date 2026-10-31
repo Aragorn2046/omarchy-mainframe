@@ -13,11 +13,11 @@ screen, and it wears your Omarchy theme: switch themes and Mainframe follows wit
 
 ## Features
 
-- **Every logical core** as its own meter with its percentage (compact heat-map mode on 32+ core machines)
+- **Every logical core** as its own meter with its percentage (a compact heat-map mode exists for 32+ cores)
 - **CPU** total, package temperature, frequency and history
 - **Memory** used / available / cached and swap, with history
-- **GPU** busy % and frequency: Intel Arc (`xe`), Intel (`i915`) and AMD (`amdgpu`); NVIDIA shows "not supported"
-  rather than polling `nvidia-smi` every second
+- **GPU** busy % and frequency from the kernel driver (code paths for Intel `xe`, Intel `i915` and AMD `amdgpu`;
+  NVIDIA shows "not supported")
 - **Disk** read / write rates, root filesystem usage, drive temperature
 - **Network** download / upload with history, per interface
 - **Battery** charge, state and power draw (hidden gracefully on desktops)
@@ -30,6 +30,12 @@ screen, and it wears your Omarchy theme: switch themes and Mainframe follows wit
 
 - Omarchy (Arch Linux + Hyprland), which already includes Quickshell (`qs`) and Python 3
 - Linux `/proc` and `/sys` (that's it)
+
+## Tested on
+
+One machine: an Omarchy laptop with an Intel Core Ultra (16 threads), Intel Arc graphics (`xe` driver), an NVMe
+drive and a battery. The `i915`, `amdgpu`, many-core, SATA/eMMC and no-battery paths are written and unit-tested
+with sample data, but have not run on real hardware. This is shared as-is, so others can pick it up and adapt it.
 
 ## Install
 
@@ -95,11 +101,6 @@ node --test mainframe/tests/        # unit tests for the metrics logic
 scripts/mainframe-smoke.sh                    # headless load, layout, CPU and cleanup checks
 MAINFRAME_SMOKE_LIVE=1 scripts/mainframe-smoke.sh   # also measures CPU on a real window (opens it for ~40 s)
 ```
-
-## Roadmap
-
-- Bar widget: a small monochrome icon for the Omarchy bar with the key numbers on hover
-- Remote tabs: monitor your other machines (Linux and macOS) over SSH, one tab each
 
 ## License
 
