@@ -693,38 +693,49 @@ ShellRoot {
                           }
                         }
                         Text {
-                          visible: parent.height >= 12 && parent.width >= 18
+                          // Hide rather than ellipsize: a cut-off percent is a broken number.
+                          visible: parent.height >= 12 && parent.width >= 18 && implicitWidth <= Math.max(0, parent.width - 2)
                           anchors.centerIn: parent
-                          width: Math.max(0, parent.width - 2)
-                          horizontalAlignment: Text.AlignHCenter
                           text: coreCell.core && coreCell.core.percentText ? coreCell.core.percentText : "—"
                           textFormat: Text.PlainText
                           color: shell.themeFg
                           font.family: "monospace"
                           font.pixelSize: parent.height >= 18 ? 9 : 8
-                          elide: Text.ElideRight
                         }
                       }
                     }
                   }
 
-                  // Three slots that share the top row and cannot overlap.
+                  // Index stays left (at most ~45% of the cell) and percent stays
+                  // right (at most ~50%). Digits shrink down to a floor instead of
+                  // gaining an ellipsis; clip covers whatever still sticks out, so
+                  // the two never overlap. Frequency (already "3.2G" / "800M") is
+                  // drawn only when that whole token fits in the gap between them.
                   // These are not metric-label: the gauge floor is for the card titles.
                   // Hidden when the cell is too short to hold a line of text.
+                  readonly property real freqRoom: {
+                    if (coreArea.compact || height < 16) return 0
+                    return width - coreIndex.width - corePct.width - 6
+                  }
+
                   Text {
                     id: coreIndex
                     objectName: "core-index"
                     visible: !coreArea.compact && parent.height >= 16
                     anchors.left: parent.left
                     anchors.top: parent.top
-                    width: Math.max(0, parent.width * 0.28)
+                    // Natural width, capped. implicitWidth stays the unfitted size,
+                    // so this does not chase the shrunk font.
+                    width: Math.min(implicitWidth, Math.max(0, parent.width * 0.45))
+                    clip: true
+                    elide: Text.ElideNone
                     text: index < 10 ? ("0" + index) : ("" + index)
                     textFormat: Text.PlainText
                     color: shell.themeLabel
                     font.family: "monospace"
                     font.pixelSize: shell.pxLabel
-                    elide: Text.ElideRight
-                    clip: true
+                    fontSizeMode: Text.HorizontalFit
+                    minimumPixelSize: 8
                   }
 
                   Text {
@@ -733,32 +744,30 @@ ShellRoot {
                     visible: !coreArea.compact && parent.height >= 16
                     anchors.right: parent.right
                     anchors.top: parent.top
-                    width: Math.max(0, parent.width * 0.46)
+                    width: Math.min(implicitWidth, Math.max(0, parent.width * 0.50))
+                    clip: true
+                    elide: Text.ElideNone
                     horizontalAlignment: Text.AlignRight
                     text: core && core.percentText ? core.percentText : "—"
                     textFormat: Text.PlainText
                     color: shell.themeFg
                     font.family: "monospace"
                     font.pixelSize: shell.pxLabel
-                    elide: Text.ElideRight
-                    clip: true
+                    fontSizeMode: Text.HorizontalFit
+                    minimumPixelSize: 8
                   }
 
                   Text {
                     id: coreFreq
                     objectName: "core-freq"
-                    anchors.left: coreIndex.right
-                    anchors.right: corePct.left
                     anchors.top: parent.top
-                    horizontalAlignment: Text.AlignHCenter
-                    visible: !coreArea.compact && parent.height >= 16 && width >= 18 && text !== ""
+                    visible: !coreArea.compact && parent.height >= 16 && text !== "" && implicitWidth <= parent.freqRoom
+                    x: coreIndex.width + 3 + Math.max(0, (parent.freqRoom - implicitWidth) / 2)
                     text: core && core.freqText ? core.freqText : ""
                     textFormat: Text.PlainText
                     color: shell.themeLabel
                     font.family: "monospace"
                     font.pixelSize: shell.pxLabel
-                    elide: Text.ElideRight
-                    clip: true
                   }
 
                   Meter {
@@ -1245,6 +1254,9 @@ ShellRoot {
               Layout.minimumHeight: shell.batView != null ? 28 : 0
               samples: shell.batView != null ? shell.batView.history : []
               strokeColor: shell.themeAccent
+              // A flat 100% history would otherwise fill this plot solid.
+              fillOpacity: 0.08
+              strokeOnlyWhenFlat: true
               yMin: 0
               yMax: 100
             }
@@ -1267,31 +1279,39 @@ ShellRoot {
           hint: shell.sensorError
           hintColor: shell.sensorColor
 
-          GridLayout {
+          // Top-down. A GridLayout centers a short column in the card, which
+          // left the lists sitting in the lower half. Both lists start under
+          // the title; spare height only loosens row spacing a little.
+          Item {
+            id: procBody
             objectName: "body"
             anchors.fill: parent
-            // Two columns once the body can hold both lists. Narrower cards stack.
-            columns: width >= 260 ? 2 : 1
-            columnSpacing: 12
-            rowSpacing: 4
+            readonly property bool sideBySide: width >= 260
+            readonly property real listTop: procStale.visible ? procStale.implicitHeight + 4 : 0
+            readonly property real listRoom: Math.max(0, height - listTop)
 
             Text {
+              id: procStale
               visible: shell.procStale
+              x: 0
+              y: 0
+              width: parent.width
               text: "stale"
               textFormat: Text.PlainText
               color: shell.sensorColor
               font.family: "monospace"
               font.pixelSize: shell.pxLabel
-              Layout.columnSpan: parent.columns
-              Layout.fillWidth: true
             }
 
             ProcList {
+              id: cpuList
               opacity: shell.procStale ? 0.45 : 1
-              Layout.fillWidth: true
-              Layout.fillHeight: true
-              Layout.preferredWidth: 0
-              Layout.minimumWidth: 0
+              x: 0
+              y: procBody.listTop
+              width: procBody.sideBySide ? Math.max(0, Math.floor((procBody.width - 12) / 2)) : procBody.width
+              // A layout inside a plain Item does not adopt its implicit height.
+              height: implicitHeight
+              availHeight: procBody.sideBySide ? procBody.listRoom : Math.max(0, (procBody.listRoom - 4) / 2)
               heading: "cpu"
               rows: shell.procView && shell.procView.byCpu ? shell.procView.byCpu : []
               labelColor: shell.themeLabel
@@ -1301,11 +1321,13 @@ ShellRoot {
               valueWidth: Math.round(shell.pxLabel * 5.5)
             }
             ProcList {
+              id: memList
               opacity: shell.procStale ? 0.45 : 1
-              Layout.fillWidth: true
-              Layout.fillHeight: true
-              Layout.preferredWidth: 0
-              Layout.minimumWidth: 0
+              x: procBody.sideBySide ? cpuList.width + 12 : 0
+              y: procBody.sideBySide ? procBody.listTop : (cpuList.y + cpuList.height + 4)
+              width: cpuList.width
+              height: implicitHeight
+              availHeight: procBody.sideBySide ? procBody.listRoom : Math.max(0, procBody.height - y)
               heading: "memory"
               rows: shell.procView && shell.procView.byMem ? shell.procView.byMem : []
               labelColor: shell.themeLabel

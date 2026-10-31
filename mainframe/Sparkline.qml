@@ -11,6 +11,10 @@ Shape {
   property var samplesB: []
   property color strokeColor: "#8a8f98"
   property color strokeColorB: "#6e8b8a"
+  property real fillOpacity: 0.16
+  // A flat series is a rectangle from the line to the baseline. Skip that
+  // fill when the caller asks, so a full battery does not read as a solid bar.
+  property bool strokeOnlyWhenFlat: false
   property real yMax: -1
   property real yMin: 0
   implicitHeight: 36
@@ -79,6 +83,19 @@ Shape {
     strokeSvgB = cmdsToSvg(secondary.stroke)
   }
 
+  function seriesFlat(list) {
+    var n = list ? list.length : 0
+    var base = null
+    var i
+    for (i = 0; i < n; i++) {
+      var v = Number(list[i])
+      if (!isFinite(v)) continue
+      if (base == null) base = v
+      else if (Math.abs(v - base) > 0.05) return false
+    }
+    return true
+  }
+
   function seriesMax(list, current) {
     var n = list ? list.length : 0
     var maxv = current
@@ -100,7 +117,9 @@ Shape {
   Component.onCompleted: rebuild()
 
   ShapePath {
-    fillColor: Qt.rgba(canvas.strokeColor.r, canvas.strokeColor.g, canvas.strokeColor.b, 0.16)
+    fillColor: (canvas.strokeOnlyWhenFlat && canvas.seriesFlat(canvas.samples))
+      ? "transparent"
+      : Qt.rgba(canvas.strokeColor.r, canvas.strokeColor.g, canvas.strokeColor.b, canvas.fillOpacity)
     strokeColor: "transparent"
     strokeWidth: 0
     PathSvg { path: canvas.fillSvg }
