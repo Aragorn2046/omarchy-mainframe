@@ -1,0 +1,20 @@
+name: Feature idea
+description: Suggest an improvement for Mainframe
+labels: [enhancement]
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would you like Mainframe to do?
+    validations:
+      required: true
+  - type: textarea
+    id: why
+    attributes:
+      label: Why is it useful?
+  - type: checkboxes
+    id: fit
+    attributes:
+      label: Fit
+      options:
+        - label: It keeps Mainframe light, read-only and in the Omarchy look.

@@ -102,6 +102,11 @@ scripts/mainframe-smoke.sh                    # headless load, layout, CPU and c
 MAINFRAME_SMOKE_LIVE=1 scripts/mainframe-smoke.sh   # also measures CPU on a real window (opens it for ~40 s)
 ```
 
+## Contributing
+
+Mainframe is a community project: issues, fixes, hardware support and design ideas are welcome. See
+[CONTRIBUTING.md](CONTRIBUTING.md). Please report security problems privately ([SECURITY.md](SECURITY.md)).
+
 ## License
 
 MIT
