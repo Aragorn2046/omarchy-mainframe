@@ -27,11 +27,57 @@ test('slow connection is visible without changing retry policy', () => {
   assert.equal(H.RETRY_MS,30000);
 });
 test('WSL host memory merges or falls back', () => {
-  const sample = {wsl:true, mem:{total:1000,used:400,available:600,cached:0,swapUsed:0,swapTotal:0}, windows:{total:2000,used:1000,cpu:32}, filesystems:[]};
+  const sample = {wsl:true, mem:{total:1000,used:400,available:600,cached:800,swapUsed:0,swapTotal:0}, windows:{total:2000,used:1000,cpu:32}, filesystems:[]};
   let view = M.step(M.emptyState(),sample,1000).view;
   assert.equal(view.mem.fraction,0.5); assert.equal(view.mem.wslFraction,0.2); assert.match(view.mem.wslText,/WSL/); assert.equal(view.cpu.windowsText,'Windows 32%');
+  assert.equal(view.mem.cacheFraction,0); assert.equal(view.mem.headerText,'1000 B used · — cache / 1.95 KB');
   sample.windows = null; view = M.step(M.emptyState(),sample,1000).view;
   assert.equal(view.mem.fraction,0.4); assert.equal(view.mem.windowsUnavailable,true);
+  assert.equal(view.mem.cacheFraction,0.6); assert.equal(view.mem.headerText,'400 B used · 800 B cache / 1000 B');
+});
+test('memory bar overlays the WSL share and bounds the cache segment', () => {
+  const sample = {wsl:true, mem:{total:1000,used:400,available:600,cached:800}, windows:{total:2000,used:1000}, filesystems:[]};
+  const mem = M.step(M.emptyState(),sample,1000).view.mem;
+  const source = readFileSync(resolve('mainframe/shell.qml'), 'utf8');
+  const wsl = source.match(/Rectangle \{\s*id: wslSegment([\s\S]*?)\n              \}/)?.[1];
+  assert.ok(wsl);
+  assert.match(wsl, /anchors\.right: parent\.right/);
+  assert.match(wsl, /anchors\.rightMargin: parent\.width \* \(1 - parent\.fraction\)/);
+  assert.match(wsl, /color: shell\.themeCyan/);
+  const binding = (block, name) => {
+    const expression = block.match(new RegExp(`^\\s*${name}: (.+)$`, 'm'))?.[1];
+    assert.ok(expression, `missing ${name} binding`);
+    return expression;
+  };
+  const visible = binding(wsl, 'visible');
+  const wslWidth = binding(wsl, 'width');
+  const cache = source.match(/Rectangle \{\s*x: parent\.width \* parent\.shown([\s\S]*?)\n              \}/)?.[1];
+  assert.ok(cache);
+  const cacheWidth = binding(cache, 'width');
+  for (const view of [mem, {...mem, fraction:0.9, wslFraction:0.8, cacheFraction:0.5}, {...mem, fraction:1, wslFraction:0.8, cacheFraction:0.5}, {...mem, fraction:0.4, wslFraction:0.3, cacheFraction:0.9}]) {
+    const parent = {width:100, shown:view.fraction, fraction:view.fraction};
+    const shell = {memView:view};
+    const isVisible = runInNewContext(visible, {parent, shell});
+    const renderedWslWidth = runInNewContext(wslWidth, {parent, shell});
+    const width = runInNewContext(cacheWidth, {parent, shell});
+    assert.ok(isVisible);
+    assert.equal(renderedWslWidth / parent.width, view.wslFraction);
+    assert.ok(width >= 0);
+    assert.ok(parent.shown + width / parent.width <= 1 + Number.EPSILON);
+    assert.equal(width, parent.width * Math.min(1 - parent.shown, view.cacheFraction));
+  }
+});
+test('memory cache segment is capped and missing cache is empty', () => {
+  const sample = {mem:{total:1000,used:400,available:600,cached:900,swapUsed:0,swapTotal:0},filesystems:[]};
+  let mem = M.step(M.emptyState(),sample,1000).view.mem;
+  assert.equal(mem.fraction,0.4); assert.equal(mem.cacheFraction,0.6);
+  assert.equal(mem.headerText,'400 B used · 900 B cache / 1000 B');
+  sample.mem.cached = null;
+  mem = M.step(M.emptyState(),sample,1000).view.mem;
+  assert.equal(mem.cacheFraction,0); assert.equal(mem.headerText,'400 B used · — cache / 1000 B');
+  sample.os = 'darwin'; sample.mem.cached = 100;
+  mem = M.step(M.emptyState(),sample,1000).view.mem;
+  assert.equal(mem.cacheFraction,0.1); assert.equal(mem.headerText,'400 B used · 100 B cache / 1000 B');
 });
 test('storage thresholds and precise agent percentages', () => {
   assert.equal(S.cue(84,100).label,''); assert.equal(S.cue(85,100).symbol,'!'); assert.equal(S.cue(95,100).symbol,'!!');

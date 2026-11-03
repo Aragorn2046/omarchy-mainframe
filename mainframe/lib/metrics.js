@@ -803,6 +803,21 @@ function formatUsage(used, total) {
   return formatBytes(used) + " / " + formatBytes(total);
 }
 
+function memorySegments(used, cached, total) {
+  if (total == null || !isFinite(Number(total)) || Number(total) <= 0 ||
+      used == null || !isFinite(Number(used))) return { cache: 0, fraction: 0 };
+  var size = Number(total);
+  var usedSize = Math.max(0, Math.min(Number(used), size));
+  var cache = cached == null || !isFinite(Number(cached)) ? 0 : Math.max(0, Number(cached));
+  cache = Math.min(cache, size - usedSize);
+  return { cache: cache, fraction: cache / size };
+}
+
+function memoryHeader(used, cached, total) {
+  if (used == null || total == null || !isFinite(Number(used)) || !isFinite(Number(total))) return "—";
+  return formatBytes(used) + " used · " + (cached == null || !isFinite(Number(cached)) ? "—" : formatBytes(cached)) + " cache / " + formatBytes(total);
+}
+
 function parsePs(text) {
   var lines = String(text || "").split("\n");
   var rows = [];
@@ -2040,6 +2055,7 @@ function step(state, raw, nowMs) {
   if (memNa) {
     memCard = {
       usedText: "n/a",
+      headerText: "n/a",
       availableText: "n/a",
       cachedText: "n/a",
       swapText: "n/a",
@@ -2053,10 +2069,12 @@ function step(state, raw, nowMs) {
   } else {
     memCard = {
       usedText: formatUsage(mem.used, mem.total),
+      headerText: memoryHeader(mem.used, mem.cached, mem.total),
       availableText: formatBytes(mem.available),
       cachedText: formatBytes(mem.cached),
       swapText: formatUsage(mem.swapUsed, mem.swapTotal),
       fraction: memFraction,
+      cacheFraction: memorySegments(mem.used, mem.cached, mem.total).fraction,
       history: memHist
     };
   }
@@ -2067,7 +2085,9 @@ function step(state, raw, nowMs) {
     memCard.windowsUnavailable = !(win && Number(win.total) > 0 && Number(win.used) >= 0 && Number(win.used) <= Number(win.total));
     if (!memCard.windowsUnavailable) {
       memCard.usedText = formatUsage(win.used, win.total);
+      memCard.headerText = memoryHeader(win.used, null, win.total);
       memCard.fraction = clamp01(win.used / win.total);
+      memCard.cacheFraction = 0;
       memCard.wslFraction = clamp01(Math.min(Number(mem.used) || 0, win.used) / win.total);
       cpuCard.windowsText = win.cpu == null ? "" : "Windows " + formatPercent(win.cpu);
     }
