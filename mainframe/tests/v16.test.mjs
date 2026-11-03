@@ -27,11 +27,25 @@ test('slow connection is visible without changing retry policy', () => {
   assert.equal(H.RETRY_MS,30000);
 });
 test('WSL host memory merges or falls back', () => {
-  const sample = {wsl:true, mem:{total:1000,used:400,available:600,cached:0,swapUsed:0,swapTotal:0}, windows:{total:2000,used:1000,cpu:32}, filesystems:[]};
+  const sample = {wsl:true, mem:{total:1000,used:400,available:600,cached:800,swapUsed:0,swapTotal:0}, windows:{total:2000,used:1000,cpu:32}, filesystems:[]};
   let view = M.step(M.emptyState(),sample,1000).view;
   assert.equal(view.mem.fraction,0.5); assert.equal(view.mem.wslFraction,0.2); assert.match(view.mem.wslText,/WSL/); assert.equal(view.cpu.windowsText,'Windows 32%');
+  assert.equal(view.mem.cacheFraction,0); assert.equal(view.mem.headerText,'1000 B used · — cache / 1.95 KB');
   sample.windows = null; view = M.step(M.emptyState(),sample,1000).view;
   assert.equal(view.mem.fraction,0.4); assert.equal(view.mem.windowsUnavailable,true);
+  assert.equal(view.mem.cacheFraction,0.6); assert.equal(view.mem.headerText,'400 B used · 600 B cache / 1000 B');
+});
+test('memory cache segment is capped and missing cache is empty', () => {
+  const sample = {mem:{total:1000,used:400,available:600,cached:900,swapUsed:0,swapTotal:0},filesystems:[]};
+  let mem = M.step(M.emptyState(),sample,1000).view.mem;
+  assert.equal(mem.fraction,0.4); assert.equal(mem.cacheFraction,0.6);
+  assert.equal(mem.headerText,'400 B used · 600 B cache / 1000 B');
+  sample.mem.cached = null;
+  mem = M.step(M.emptyState(),sample,1000).view.mem;
+  assert.equal(mem.cacheFraction,0); assert.equal(mem.headerText,'400 B used · — cache / 1000 B');
+  sample.os = 'darwin'; sample.mem.cached = 100;
+  mem = M.step(M.emptyState(),sample,1000).view.mem;
+  assert.equal(mem.cacheFraction,0.1); assert.equal(mem.headerText,'400 B used · 100 B cache / 1000 B');
 });
 test('storage thresholds and precise agent percentages', () => {
   assert.equal(S.cue(84,100).label,''); assert.equal(S.cue(85,100).symbol,'!'); assert.equal(S.cue(95,100).symbol,'!!');
