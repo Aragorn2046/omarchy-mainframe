@@ -8,3 +8,5 @@ import "./agents.test.mjs";
 
 import "./v16.test.mjs";
 import "./qml-text.test.mjs";
+
+import "./themed-controls.test.mjs";
