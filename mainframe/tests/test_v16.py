@@ -214,7 +214,7 @@ class V16Tests(unittest.TestCase):
         self.assertEqual((parsed['total'], parsed['used'], parsed['cpu']), (1024000, 768000, 30))
         self.assertEqual(parsed['disks'][0]['used'],6000)
         self.assertIsNone(collector.parse_windows('{'))
-        with patch.object(collector.shutil, 'which', return_value='/fake/powershell.exe'), patch.object(collector.subprocess, 'run', side_effect=subprocess.TimeoutExpired('ps',10)) as run:
+        with patch.object(collector.shutil, 'which', return_value='/fake/powershell.exe'), patch.object(collector, '_run_tracked', side_effect=subprocess.TimeoutExpired('ps',10)) as run:
             self.assertIsNone(collector.windows_probe()); self.assertEqual(run.call_args.kwargs['timeout'], 10)
 
     def test_powershell_discovery_without_path(self):
@@ -223,7 +223,7 @@ class V16Tests(unittest.TestCase):
         with patch.object(collector.shutil, 'which', return_value=None), \
              patch.object(collector.glob, 'glob', return_value=[d_drive]), \
              patch.object(collector.os.path, 'isfile', side_effect=lambda path: path == d_drive), \
-             patch.object(collector.subprocess, 'run', side_effect=OSError) as run:
+             patch.object(collector, '_run_tracked', side_effect=OSError) as run:
             self.assertIsNone(collector.windows_probe())
             self.assertEqual(run.call_args.args[0][0], d_drive)
             self.assertEqual(run.call_args.kwargs['timeout'], 10)
@@ -231,7 +231,7 @@ class V16Tests(unittest.TestCase):
         with patch.object(collector.shutil, 'which', return_value=None), \
              patch.object(collector.glob, 'glob', return_value=[d_drive]), \
              patch.object(collector.os.path, 'isfile', return_value=True), \
-             patch.object(collector.subprocess, 'run', side_effect=OSError) as run:
+             patch.object(collector, '_run_tracked', side_effect=OSError) as run:
             collector.windows_probe()
             self.assertEqual(run.call_args.args[0][0], c_drive)
 

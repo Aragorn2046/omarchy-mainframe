@@ -26,7 +26,7 @@ function safeHelp(text) {
   });
   text = text.replace(/\bauthorization\s*:\s*[^\s,:;]+\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)(?:\s*,\s*[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+))*/gi, '[redacted]');
   text = text.replace(/\b(?:bearer|basic)\s*[: ]\s*[^\s,;]+/gi, '[redacted]');
-  var tokens = /\b[\w-]+/g, assignment = /\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/y, keyword = /key|token|secret|password|credential|auth/i;
+  var tokens = /\b[\w-]+/g, assignment = /["']?\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/y, keyword = /key|token|secret|password|credential|auth/i;
   var match, result = '', start = 0;
   while ((match = tokens.exec(text))) {
     if (!keyword.test(match[0])) continue;
@@ -41,7 +41,7 @@ function safeHelp(text) {
   text = text.replace(/[A-Za-z0-9+\/_=.-]{20,}/g, '[redacted]');
   // Fail closed if a targeted replacement missed any known credential form.
   tokens.lastIndex = 0;
-  assignment = /\s*[:=]\s*\S+/y;
+  assignment = /["']?\s*[:=]\s*\S+/y;
   while ((match = tokens.exec(text))) {
     if (keyword.test(match[0])) {
       assignment.lastIndex = tokens.lastIndex;

@@ -6,6 +6,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -40,12 +41,12 @@ class StorageTests(unittest.TestCase):
         def run(args, **kwargs):
             if args[0] == 'df':
                 self.assertEqual(args, ['df', '-k', '-P'])
-                return subprocess.CompletedProcess(args, 0, stdout=fixture)
+                return fixture
             self.assertEqual(args[:3], ['diskutil', 'info', '-plist'])
             self.assertEqual(kwargs['timeout'], 3)
             calls.append(args[3])
-            return subprocess.CompletedProcess(args, 0, stdout=plistlib.dumps(metadata[args[3]]))
-        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect.sys, 'platform', 'darwin'), patch.object(collect.subprocess, 'run', side_effect=run):
+            return plistlib.dumps(metadata[args[3]])
+        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect.sys, 'platform', 'darwin'), patch.object(collect, '_run_tracked', side_effect=run):
             rows = collect.storage_probe()
             self.assertEqual([(r['mount'], r['label'], r['bus']) for r in rows], [
                 ('/', 'Mac (internal)', 'Internal'),
@@ -74,9 +75,9 @@ class StorageTests(unittest.TestCase):
                 fail[0] = False
                 raise subprocess.CalledProcessError(1, args)
             info = {'APFSContainerReference': 'disk4'} if device.startswith('/dev/disk4') else {'Protocol': 'USB'}
-            return subprocess.CompletedProcess(args, 0, plistlib.dumps(info))
+            return plistlib.dumps(info)
         clock = [100.0]
-        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect, '_darwin_disk_failures', {}), patch.object(collect.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(collect.subprocess, 'run', side_effect=run):
+        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect, '_darwin_disk_failures', {}), patch.object(collect.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(collect, '_run_tracked', side_effect=run):
             first = collect.parse_df(data)
             self.assertEqual([r['mount'] for r in first], ['/', '/Volumes/One'])
             second = collect.parse_df(data)
@@ -95,7 +96,7 @@ class StorageTests(unittest.TestCase):
     def test_darwin_failed_metadata_falls_back_to_whole_disk(self):
         import collect
         data = 'Filesystem blocks Used Available Capacity Mounted on\n/dev/disk5s1 100 1 20 1% /Volumes/One\n/dev/disk5s2 100 1 20 1% /Volumes/Two\n'
-        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect, '_darwin_disk_failures', {}), patch.object(collect.subprocess, 'run', side_effect=OSError('unavailable')):
+        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect, '_darwin_disk_failures', {}), patch.object(collect, '_run_tracked', side_effect=OSError('unavailable')):
             self.assertEqual([r['device'] for r in collect.parse_df(data)], ['/dev/disk5s1'])
 
     def test_darwin_failed_lookup_expires_per_device(self):
@@ -107,8 +108,8 @@ class StorageTests(unittest.TestCase):
             calls.append(args[-1])
             if len(calls) <= 2:
                 raise subprocess.TimeoutExpired(args, 3)
-            return subprocess.CompletedProcess(args, 0, plistlib.dumps({'Internal': True}))
-        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect, '_darwin_disk_failures', {}), patch.object(collect.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(collect.subprocess, 'run', side_effect=run):
+            return plistlib.dumps({'Internal': True})
+        with patch.object(collect, '_darwin_disk_info', {}), patch.object(collect, '_darwin_disk_failures', {}), patch.object(collect.time, 'monotonic', side_effect=lambda: clock[0]), patch.object(collect, '_run_tracked', side_effect=run):
             self.assertIsNone(collect.darwin_disk_info('/dev/disk1', 100))
             self.assertIsNone(collect.darwin_disk_info('/dev/disk1', 200))
             self.assertIsNone(collect.darwin_disk_info('/dev/disk2', 100))
@@ -119,6 +120,49 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(collect.darwin_disk_info('/dev/disk1', 100), {'Internal': True})
             self.assertEqual(collect.darwin_disk_info('/dev/disk1', 100), {'Internal': True})
             self.assertEqual(calls, ['/dev/disk1', '/dev/disk2', '/dev/disk1'])
+
+    def test_tracked_probe_stops_and_does_not_restart_after_shutdown(self):
+        import collect
+        started = threading.Event()
+        outcome, children = [], []
+        track = collect._track_child
+        def record(proc):
+            track(proc)
+            children.append(proc)
+            started.set()
+        def probe():
+            try:
+                collect._run_tracked([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                     timeout=30, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+                outcome.append('success')
+            except subprocess.SubprocessError:
+                outcome.append('failed')
+        with patch.object(collect, '_children_stopped', False), patch.object(collect, '_track_child', side_effect=record):
+            thread = threading.Thread(target=probe)
+            thread.start()
+            try:
+                self.assertTrue(started.wait(5))
+                collect.stop_children()
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+                self.assertEqual(outcome, ['failed'])
+                self.assertIsNotNone(children[0].poll())
+                self.assertNotIn(children[0], collect._child_procs)
+                with patch.object(collect.subprocess, 'Popen') as popen:
+                    with self.assertRaises(subprocess.SubprocessError):
+                        collect._run_tracked(['unused'], timeout=1)
+                    popen.assert_not_called()
+            finally:
+                collect.stop_children()
+                thread.join(5)
+
+    def test_tracked_probe_timeout_cleans_up(self):
+        import collect
+        with patch.object(collect, '_children_stopped', False):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                collect._run_tracked([sys.executable, '-c', 'import time; time.sleep(60)'],
+                                     timeout=0.1, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            self.assertEqual(collect._child_procs, [])
 
     def test_precedence_and_extensions(self):
         cases = {

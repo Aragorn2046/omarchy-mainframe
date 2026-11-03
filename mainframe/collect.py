@@ -1610,6 +1610,7 @@ _REMOTE_PROC_EVERY = 5
 
 _child_procs = []
 _children_stopped = False
+_children_lock = threading.RLock()
 
 
 def host_name():
@@ -2121,16 +2122,19 @@ def present_darwin_ps(text, mem_total):
 
 def _track_child(proc):
     if proc is not None:
-        _child_procs.append(proc)
+        with _children_lock:
+            _child_procs.append(proc)
 
 
 def stop_children():
     """SIGTERM, then SIGKILL after 0.5 s, every long-lived child process group."""
     global _children_stopped
-    _children_stopped = True
+    with _children_lock:
+        _children_stopped = True
+        children = list(_child_procs)
     for child in list(_line_children):
         child.stop()
-    for proc in list(_child_procs):
+    for proc in children:
         _stop_group(proc)
 
 
@@ -2156,8 +2160,34 @@ def _stop_group(proc):
     if alive:
         send(signal.SIGKILL)
     proc.wait()
-    if proc in _child_procs:
-        _child_procs.remove(proc)
+    with _children_lock:
+        if proc in _child_procs:
+            _child_procs.remove(proc)
+
+
+def _run_tracked(args, timeout, **kwargs):
+    with _children_lock:
+        if _children_stopped:
+            raise subprocess.SubprocessError('collector is stopping')
+        proc = subprocess.Popen(args, start_new_session=True, **kwargs)
+        _track_child(proc)
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _stop_group(proc)
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+            raise
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, args, output=stdout, stderr=stderr)
+        return stdout
+    finally:
+        with _children_lock:
+            if proc in _child_procs:
+                _child_procs.remove(proc)
 
 
 def finalize():
@@ -3285,9 +3315,9 @@ def windows_probe():
     if not exe:
         return None
     try:
-        result = subprocess.run([exe, '-NoProfile', '-NonInteractive', '-Command', _PS_QUERY],
-                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, check=True)
-        return parse_windows(result.stdout.decode('utf-8-sig', 'replace').replace('\x00', ''))
+        result = _run_tracked([exe, '-NoProfile', '-NonInteractive', '-Command', _PS_QUERY],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        return parse_windows(result.decode('utf-8-sig', 'replace').replace('\x00', ''))
     except (OSError, subprocess.SubprocessError):
         return None
 
@@ -3371,8 +3401,8 @@ def darwin_disk_info(device, total):
         if time.monotonic() < _darwin_disk_failures.get(device, 0):
             return None
         try:
-            data = subprocess.run(['diskutil', 'info', '-plist', device], stdout=subprocess.PIPE,
-                                  stderr=subprocess.DEVNULL, timeout=3, check=True).stdout
+            data = _run_tracked(['diskutil', 'info', '-plist', device], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=3)
             info = plistlib.loads(data)
             if not isinstance(info, dict):
                 raise ValueError('invalid diskutil metadata')
@@ -3443,7 +3473,7 @@ def parse_df(text):
 def storage_probe(wsl=False):
     if sys.platform == 'darwin':
         try:
-            return parse_df(subprocess.run(['df', '-k', '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, check=True, text=True).stdout)
+            return parse_df(_run_tracked(['df', '-k', '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, text=True))
         except (OSError, subprocess.SubprocessError):
             return []
     return parse_mounts(read_text('/proc/mounts'), wsl=wsl)

@@ -68,6 +68,18 @@ test('fails closed when targeted redaction leaves a credential pattern', () => {
   assert.equal(A.safeHelp('x '.repeat(101) + 'key_abcdefgh'), '[redacted]');
 });
 
+test('redacts quoted credential keys and values', () => {
+  for (const [input, secret, expected] of [
+    ['{"password":"hunter2"}', 'hunter2', '{"[redacted]}'],
+    ["{'token': 'abc123'}", 'abc123', "{'[redacted]}"],
+    ['{"api_key" : "x1"}', 'x1', '{"[redacted]}'],
+    ['auth="s3"', 's3', '[redacted]'],
+  ]) {
+    assert.ok(!A.safeHelp(input).includes(secret), input);
+    assert.equal(A.safeHelp(input), expected);
+  }
+});
+
 test('handles long credential-like strings promptly', () => {
   for (const text of ['key-'.repeat(20000), 'key-'.repeat(1000)]) {
     const start = performance.now();
