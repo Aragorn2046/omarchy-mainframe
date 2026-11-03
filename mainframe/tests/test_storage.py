@@ -268,6 +268,20 @@ class StorageTests(unittest.TestCase):
         self.assertFalse(storage.cache_fresh({'timestamp': 100}, 3700))
         self.assertFalse(storage.cache_fresh({'timestamp': 100, 'partial': True}, 101))
         self.assertFalse(storage.cache_fresh({'timestamp': 200}, 100))
+
+    def test_cache_write_does_not_follow_old_predictable_temp_symlink(self):
+        cache = self.home / 'cache' / 'storage.json'
+        cache.parent.mkdir()
+        victim = self.home / 'victim'
+        victim.write_text('unchanged')
+        Path(str(cache) + '.' + str(os.getpid()) + '.tmp').symlink_to(victim)
+        with patch.object(storage, 'cache_path', return_value=str(cache)), \
+             patch.object(storage, 'scan', return_value={'cancelled': False}), \
+             patch.object(storage, 'emit'), patch.object(storage.os, 'setsid'), \
+             patch.object(storage.os, 'nice'), patch.object(storage.shutil, 'which', return_value=None):
+            self.assertEqual(storage.run(force=True), 0)
+        self.assertEqual(victim.read_text(), 'unchanged')
+        self.assertEqual(json.loads(cache.read_text())['type'], 'result')
     def test_category_opener_uses_baobab_or_fallback(self):
         pictures = self.home / 'Pictures'
         pictures.mkdir()

@@ -68,6 +68,14 @@ test('fails closed when targeted redaction leaves a credential pattern', () => {
   assert.equal(A.safeHelp('x '.repeat(101) + 'key_abcdefgh'), '[redacted]');
 });
 
+test('handles long credential-like strings promptly', () => {
+  for (const text of ['key-'.repeat(20000), 'key-'.repeat(1000)]) {
+    const start = performance.now();
+    assert.equal(A.safeHelp(text), '[redacted]');
+    assert.ok(performance.now() - start < 200);
+  }
+});
+
 test('overview sessions survive the full linger, are reused, and all stop on expiry', (t) => {
   t.mock.timers.enable({apis: ['Date'], now: 1000});
   const f = H.createFleet('local');

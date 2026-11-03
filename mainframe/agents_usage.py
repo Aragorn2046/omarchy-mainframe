@@ -10,18 +10,17 @@ records = []
 try:
     directory = os.open(base, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     with os.scandir(directory) as entries:
-        for entry in entries:
-            if not entry.name.endswith('.json'):
-                continue
+        for entry in sorted((entry for entry in entries if entry.name.endswith('.json')), key=lambda entry: entry.name)[:64]:
             try:
                 fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+                with os.fdopen(fd, 'rb') as stream:
                     import stat
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                         raise ValueError('not a regular file')
-                    raw = stream.read(2_000_001)
-                    if len(raw) > 2_000_000:
+                    raw = stream.read(256 * 1024 + 1)
+                    if len(raw) > 256 * 1024:
                         raise ValueError('file too large')
+                    raw = raw.decode('utf-8')
                 records.append({'file': entry.name, 'raw': raw})
             except (OSError, ValueError, UnicodeError):
                 records.append({'file': entry.name, 'raw': ''})
@@ -35,15 +34,14 @@ cache = Path(os.environ.get('XDG_CACHE_HOME') or (str(Path.home()) + '/.cache'))
 try:
     directory = os.open(cache, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     with os.scandir(directory) as entries:
-        for entry in entries:
-            if not entry.name.endswith('.json'): continue
+        for entry in sorted((entry for entry in entries if entry.name.endswith('.json')), key=lambda entry: entry.name)[:64]:
             try:
                 fd = os.open(entry.name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
-                with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+                with os.fdopen(fd, 'rb') as stream:
                     import stat
                     if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode): continue
-                    raw = stream.read(2_000_001)
-                if len(raw) <= 2_000_000: records.append({'file': entry.name, 'raw': raw, 'mainframe': True})
+                    raw = stream.read(256 * 1024 + 1)
+                if len(raw) <= 256 * 1024: records.append({'file': entry.name, 'raw': raw.decode('utf-8'), 'mainframe': True})
             except (OSError, ValueError, UnicodeError): pass
 except OSError: pass
 finally:
@@ -51,10 +49,10 @@ finally:
         try: os.close(directory)
         except OSError: pass
 
-def identity(record):
+def identity(d):
     try:
-        d = json.loads(record['raw'])
         if not isinstance(d, dict): return None
+        d = d.copy()
         # Account-specific Omarchy ids identify a provider, but not its directory.
         account_id = str(d.get('id') or '').lower()
         provider = str(d.get('provider') or '').lower()
@@ -70,12 +68,32 @@ def identity(record):
             if not d.get('dir') and account_id == provider:
                 d['dir'] = str(Path.home() / ('.claude' if provider == 'claude' else '.codex'))
         return d
-    except (ValueError, TypeError): return None
+    except (ValueError, TypeError, RecursionError, MemoryError): return None
 
 # Configured records are anchors; choose the strongest direct match for each
 # Omarchy record before merging any unanchored records.
-identities = [identity(item) for item in records]
+parsed = []
+for item in records:
+    try:
+        parsed.append(json.loads(item['raw']))
+    except ValueError:
+        parsed.append(None)
+    except (RecursionError, MemoryError):
+        item['raw'] = ''
+        parsed.append(None)
+identities = [identity(item) for item in parsed]
 groups = {i: [i] for i, item in enumerate(records) if item.get('mainframe')}
+
+realpaths = {}
+def realpath(path):
+    if path not in realpaths:
+        try:
+            realpaths[path] = os.path.realpath(path)
+        except (ValueError, OSError):
+            realpaths[path] = None
+    if realpaths[path] is None:
+        raise ValueError('invalid path')
+    return realpaths[path]
 
 def match_strength(d, o):
     if not d or not o or str(d.get('provider') or '').casefold() != str(o.get('provider') or '').casefold():
@@ -83,7 +101,7 @@ def match_strength(d, o):
     if d.get('id') and d.get('id') == o.get('id'):
         return 3
     try:
-        if d.get('provider') and d.get('dir') and o.get('dir') and os.path.realpath(os.path.expanduser(d['dir'])) == os.path.realpath(os.path.expanduser(o['dir'])):
+        if d.get('provider') and d.get('dir') and o.get('dir') and realpath(os.path.expanduser(d['dir'])) == realpath(os.path.expanduser(o['dir'])):
             return 2
     except (ValueError, OSError):
         pass
@@ -126,30 +144,34 @@ merged = []
 for group in groups.values():
     winner = max(group, key=freshness)
     item = records[winner].copy()
+    raw = parsed[winner].copy() if isinstance(parsed[winner], dict) else None
     configured = [i for i in group if records[i].get('mainframe') and identities[i] is not None]
     if configured and not item.get('mainframe'):
-        source = json.loads(records[max(configured, key=freshness)]['raw'])
-        raw = json.loads(item['raw'])
+        source = parsed[max(configured, key=freshness)]
         for key in ('id', 'name', 'provider', 'dir', 'configHash'):
             if key in source:
                 raw[key] = source[key]
-        item['raw'] = json.dumps(raw, ensure_ascii=True)
-    merged.append(item)
+        try:
+            item['raw'] = json.dumps(raw, ensure_ascii=True)
+        except (ValueError, RecursionError, MemoryError):
+            item['raw'] = ''
+            raw = None
+    merged.append((item, raw))
 # The default Claude account owns shared projects when its record is present.
-default_dir = os.path.realpath(str(Path.home() / '.claude'))
-for i, item in enumerate(merged):
-    d = identity(item)
+default_dir = realpath(str(Path.home() / '.claude'))
+for i, (item, raw) in enumerate(merged):
+    d = identity(raw)
     if not d or d.get('provider') != 'claude' or not d.get('dir'):
         continue
     try:
-        directory = os.path.realpath(os.path.expanduser(d['dir']))
+        directory = realpath(os.path.expanduser(d['dir']))
         if directory != default_dir:
             continue
-        path = os.path.realpath(os.path.join(directory, 'projects'))
-        for j, earlier in enumerate(merged[:i]):
+        path = realpath(os.path.join(directory, 'projects'))
+        for j, (_, earlier) in enumerate(merged[:i]):
             other = identity(earlier)
             if (other and other.get('provider') == 'claude' and other.get('dir') and
-                    os.path.realpath(os.path.join(os.path.expanduser(other['dir']), 'projects')) == path):
+                    realpath(os.path.join(os.path.expanduser(other['dir']), 'projects')) == path):
                 merged.insert(j, merged.pop(i))
                 break
     except (ValueError, OSError):
@@ -157,18 +179,20 @@ for i, item in enumerate(merged):
     break
 # Local transcript statistics belong to the projects directory, not the account.
 projects = {}
-for item in merged:
-    d = identity(item)
+for item, raw in merged:
+    d = identity(raw)
     if not d or str(d.get('provider') or '').lower() != 'claude' or not d.get('dir'):
         continue
     try:
-        path = os.path.realpath(os.path.join(os.path.expanduser(d['dir']), 'projects'))
+        path = realpath(os.path.join(os.path.expanduser(d['dir']), 'projects'))
     except (ValueError, OSError):
         continue
     if path in projects:
-        raw = json.loads(item['raw'])
         raw['sharedStatsWith'] = projects[path]
-        item['raw'] = json.dumps(raw, ensure_ascii=True)
+        try:
+            item['raw'] = json.dumps(raw, ensure_ascii=True)
+        except (ValueError, RecursionError, MemoryError):
+            item['raw'] = ''
     elif isinstance(d.get('name'), str) and d['name']:
         projects[path] = d['name']
-json.dump(merged, sys.stdout, ensure_ascii=True)
+json.dump([item for item, _ in merged], sys.stdout, ensure_ascii=True)

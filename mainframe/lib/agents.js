@@ -19,17 +19,36 @@ function reset(value, now) {
 }
 function safeHelp(text) {
   if (typeof text !== 'string') return '';
+  if (text.length > 4096) return '[redacted]';
   // Redact before truncating, so a secret crossing the display limit stays hidden.
   text = text.replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s<>]+/gi, function(url) {
     return /^[a-z][a-z0-9+.-]*:\/\/[^\/?#\s]*@/i.test(url) || /[?&](?:[^=&\s]*(?:token|key|secret|password|credential|auth)[^=&\s]*)=/i.test(url) ? '[redacted]' : url;
   });
   text = text.replace(/\bauthorization\s*:\s*[^\s,:;]+\s+(?:"[^"]*"|'[^']*'|[^\s,;]+)(?:\s*,\s*[\w-]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s,;]+))*/gi, '[redacted]');
   text = text.replace(/\b(?:bearer|basic)\s*[: ]\s*[^\s,;]+/gi, '[redacted]');
-  text = text.replace(/\b(?:[\w-]*(?:key|token|secret|password|credential|auth)[\w-]*)\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, '[redacted]');
+  var tokens = /\b[\w-]+/g, assignment = /\s*[:=]\s*(?:"[^"]*"|'[^']*'|[^\s,;&]+)/y, keyword = /key|token|secret|password|credential|auth/i;
+  var match, result = '', start = 0;
+  while ((match = tokens.exec(text))) {
+    if (!keyword.test(match[0])) continue;
+    assignment.lastIndex = tokens.lastIndex;
+    if (assignment.exec(text)) {
+      result += text.slice(start, match.index) + '[redacted]';
+      start = tokens.lastIndex = assignment.lastIndex;
+    }
+  }
+  text = result + text.slice(start);
   text = text.replace(/\b(?:hf_|pk_|sk-|xai-|ghp_|gho_|github_pat_|AIza|eyJ)[A-Za-z0-9+\/_=.-]*/g, '[redacted]');
   text = text.replace(/[A-Za-z0-9+\/_=.-]{20,}/g, '[redacted]');
   // Fail closed if a targeted replacement missed any known credential form.
-  if (/\bBearer\s+\S+|\b(?:ghp|github_pat|hf|sk|pk|key|token)[_-][A-Za-z0-9_-]{8,}|\b[A-Za-z0-9_-]{24,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|[?&](?:token|key|password|secret|credential|auth)=|\b(?:bearer|token|api[_ -]?key|secret|password)\s*[:=]\s*\S+|\b(?:sk|pk|key|token)[_-][A-Za-z0-9_-]{8,}|\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@|\b[^\s/:@]+:[^\s/@]+@|\b(?:[\w-]*(?:key|token|secret|password|credential|auth)[\w-]*)\s*[:=]\s*\S+|\b(?:hf_|pk_|sk-|xai-|ghp_|gho_|github_pat_|AIza|eyJ)[A-Za-z0-9+\/_=.-]*|[A-Za-z0-9+\/_=.-]{20,}/i.test(text)) return '[redacted]';
+  tokens.lastIndex = 0;
+  assignment = /\s*[:=]\s*\S+/y;
+  while ((match = tokens.exec(text))) {
+    if (keyword.test(match[0])) {
+      assignment.lastIndex = tokens.lastIndex;
+      if (assignment.test(text)) return '[redacted]';
+    }
+  }
+  if (/\bBearer\s+\S+|\b(?:ghp|github_pat|hf|sk|pk|key|token)[_-][A-Za-z0-9_-]{8,}|\b[A-Za-z0-9_-]{24,}\b|\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}|[?&](?:token|key|password|secret|credential|auth)=|\b(?:bearer|token|api[_ -]?key|secret|password)\s*[:=]\s*\S+|\b(?:sk|pk|key|token)[_-][A-Za-z0-9_-]{8,}|\b[a-z][a-z0-9+.-]*:\/\/[^\s/@]+@|\b[^\s/:@]+:[^\s/@]+@|\b(?:hf_|pk_|sk-|xai-|ghp_|gho_|github_pat_|AIza|eyJ)[A-Za-z0-9+\/_=.-]*|[A-Za-z0-9+\/_=.-]{20,}/i.test(text)) return '[redacted]';
   return text.slice(0, 200);
 }
 function activity(days, now) {

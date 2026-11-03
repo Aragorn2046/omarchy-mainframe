@@ -1,14 +1,63 @@
 import json
 import itertools
+import io
 import os
 from pathlib import Path
+import runpy
 import subprocess
 import tempfile
 import unittest
+from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'agents_usage.py'
 
 class UsageFilesTest(unittest.TestCase):
+    def test_nested_and_oversized_records_do_not_stop_other_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
+            (usage / 'deep.json').write_text('[' * 100000 + ']' * 100000)
+            (usage / 'large.json').write_bytes(b'x' * (256 * 1024 + 1))
+            (usage / 'ok.json').write_text('{"id":"valid"}')
+            env = dict(os.environ, XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            files = {item['file']: item['raw'] for item in json.loads(result.stdout)}
+            self.assertEqual(files['deep.json'], '')
+            self.assertEqual(files['large.json'], '')
+            self.assertEqual(json.loads(files['ok.json'])['id'], 'valid')
+
+    def test_only_first_64_json_files_are_read_in_each_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for directory in (root / 'state/omarchy/agents/usage', root / 'cache/mainframe/agents'):
+                directory.mkdir(parents=True)
+                for i in reversed(range(65)):
+                    (directory / f'{i:02}.json').write_text('{')
+            env = dict(os.environ, XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            records = json.loads(result.stdout)
+            self.assertEqual(len(records), 128)
+            self.assertNotIn('64.json', [item['file'] for item in records])
+
+    def test_realpath_is_computed_once_per_distinct_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; cache = root / 'cache/mainframe/agents'
+            usage.mkdir(parents=True); cache.mkdir(parents=True)
+            for i in range(4):
+                for directory in (usage, cache):
+                    (directory / f'{i}.json').write_text(json.dumps({'id': str(i), 'provider': 'claude', 'dir': str(root / 'shared'), 'name': str(i)}))
+            realpath = os.path.realpath
+            calls = []
+            def count(path, *args, **kwargs):
+                calls.append(path)
+                return realpath(path, *args, **kwargs)
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            loads = json.loads
+            with patch.dict(os.environ, env, clear=True), patch('os.path.realpath', side_effect=count), \
+                 patch('json.loads', wraps=loads) as parse, patch('sys.stdout', new_callable=io.StringIO):
+                runpy.run_path(str(SCRIPT), run_name='__main__')
+            self.assertEqual(len(calls), len(set(calls)))
+            self.assertEqual(parse.call_count, 8)
+
     def test_unconfigured_records_merge_transitively_in_every_order(self):
         records = [
             {'id': 'a', 'name': 'One', 'provider': 'example', 'updatedAt': '1'},
@@ -113,7 +162,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
             (first / 'projects').mkdir(); (second / 'projects').symlink_to(first / 'projects', target_is_directory=True); (third / 'projects').mkdir()
             for ident in ('first', 'second', 'third'):
                 (cache / (ident + '.json')).write_text('{}')
-            paths = list(cache.iterdir())
+            paths = sorted(cache.iterdir())
             for path, (ident, name, directory) in zip(paths, [('first', 'alice@', first), ('second', 'bob@', second), ('third', 'other@', third)]):
                 path.write_text(json.dumps({'id': ident, 'name': name, 'provider': 'claude', 'dir': str(directory)}))
             env = dict(os.environ, XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))

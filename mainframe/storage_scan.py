@@ -6,6 +6,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 
 CATEGORIES = ("Games", "Caches & trash", "Apps", "Downloads & archives", "Images", "Videos", "Music", "Documents", "Other")
@@ -241,14 +242,26 @@ def run(force=False):
     free = fs.f_bfree * fs.f_frsize
     result.update({'timestamp': time.time(), 'total': total, 'used': total - free, 'free': free, 'type': 'result'})
     if not result['cancelled']:
+        temp = None
         try:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            temp = path + '.' + str(os.getpid()) + '.tmp'
-            with open(temp, 'w', encoding='utf-8') as handle:
+            fd, temp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=os.path.basename(path) + '.', suffix='.tmp')
+            try:
+                handle = os.fdopen(fd, 'w', encoding='utf-8')
+            except BaseException:
+                os.close(fd)
+                raise
+            with handle:
                 json.dump(result, handle)
             os.replace(temp, path)
         except OSError:
             pass
+        finally:
+            if temp is not None:
+                try:
+                    os.unlink(temp)
+                except OSError:
+                    pass
         emit(result)
     return 0
 
