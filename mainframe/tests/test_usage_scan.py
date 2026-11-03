@@ -95,12 +95,73 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(self.scan()['days'][self.day]['codex/c']['input'], 150)
 
     def test_codex_fork_deduplicates_parent_events(self):
-        def meta(ident): return {'type':'session_meta', 'payload':{'id':ident}}
+        def meta(ident, parent=None): return {'type':'session_meta', 'payload':{'id':ident, 'forked_from_id':parent}}
         def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
         self.lines(self.file('.codex/sessions/a.jsonl'), [meta('parent'), count(100)])
-        self.lines(self.file('.codex/sessions/b.jsonl'), [meta('fork'), count(100), count(120)])
+        self.lines(self.file('.codex/sessions/b.jsonl'), [meta('fork', 'parent'), count(100), count(120)])
         for _ in range(2):
             self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 120)
+
+    def test_codex_independent_sessions_with_identical_events(self):
+        def meta(ident): return {'type':'session_meta', 'payload':{'id':ident}}
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        self.lines(self.file('.codex/sessions/a.jsonl'), [meta('one'), count(100), count(110)])
+        self.lines(self.file('.codex/sessions/b.jsonl'), [meta('two'), count(100), count(110)])
+        for _ in range(2):
+            self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 220)
+
+    def test_codex_multigeneration_lineage_in_reverse_order(self):
+        def meta(ident, parent=None): return {'type':'session_meta', 'payload':{'session_id':ident, 'forked_from_id':parent, 'parent_thread_id':'unrelated'}}
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        self.lines(self.file('.codex/sessions/a.jsonl'), [meta('grandchild', 'child'), count(100)])
+        self.lines(self.file('.codex/sessions/b.jsonl'), [meta('child', 'parent'), count(100)])
+        self.lines(self.file('.codex/sessions/c.jsonl'), [meta('parent'), count(100)])
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 100)
+
+    def test_missing_codex_cursor_replays_before_new_event(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        self.lines(path, [{'type':'session_meta', 'payload':{'id':'s'}}, count(100)])
+        self.scan()
+        index_path = self.cache / 'usage-index.json'
+        index = json.loads(index_path.read_text()); del index['sessions']['s']
+        index_path.write_text(json.dumps(index))
+        self.lines(path, [count(120)], 'a')
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 120)
+
+    def test_missing_codex_file_state_replays_before_new_event(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        self.lines(path, [{'type':'session_meta', 'payload':{'id':'s'}}, count(100)])
+        self.scan()
+        index_path = self.cache / 'usage-index.json'
+        index = json.loads(index_path.read_text()); del index['files'][str(path)]['session']
+        index_path.write_text(json.dumps(index))
+        self.lines(path, [count(120)], 'a')
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 120)
+
+    def test_codex_partial_line_resumes_before_first_cursor(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        self.lines(path, [{'type':'session_meta', 'payload':{'id':'s'}}, {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':100}}}}])
+        for _ in range(30):
+            result = self.scan(limit=25)
+            if not result['partial']: break
+        self.assertFalse(result['partial'])
+        self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 100)
+
+    def test_fifo_jsonl_is_skipped_without_blocking(self):
+        import subprocess, sys
+        os.mkfifo(self.file('.claude/projects/x.jsonl'))
+        code = "import importlib.util,sys; s=importlib.util.spec_from_file_location('c',sys.argv[1]); c=importlib.util.module_from_spec(s); s.loader.exec_module(c); c.usage_scan(sys.argv[2],sys.argv[3])"
+        subprocess.run([sys.executable, '-c', code, str(Path(c.__file__)), str(self.home), str(self.cache)], check=True, timeout=5)
+
+    def test_entry_cap_counts_directories_and_non_jsonl_files(self):
+        from unittest.mock import patch
+        self.file('.claude/projects/a/ignored.txt').write_text('x')
+        self.file('.claude/projects/b/ignored.txt').write_text('x')
+        with patch.object(c, '_USAGE_FILE_LIMIT', 2):
+            result = self.scan()
+        self.assertTrue(result['partial']); self.assertEqual(result['reason'], 'too many files')
 
     def test_file_cap_preserves_existing_files_and_marks_partial(self):
         from unittest.mock import patch
@@ -158,10 +219,9 @@ c.usage_scan(sys.argv[2], sys.argv[3])
 
     def test_mid_file_read_failure_does_not_double_count(self):
         from unittest.mock import patch
-        import builtins
         path = self.file('.claude/projects/a.jsonl')
         self.lines(path, [self.claude('one'), self.claude('two')])
-        real_open = builtins.open
+        real_fdopen = os.fdopen
         class Broken:
             def __init__(self, stream): self.stream, self.reads = stream, 0
             def __enter__(self): return self
@@ -171,10 +231,10 @@ c.usage_scan(sys.argv[2], sys.argv[3])
                 self.reads += 1
                 if self.reads == 2: raise OSError('test read error')
                 return self.stream.readline(*args)
-        def open_file(name, *args, **kwargs):
-            stream = real_open(name, *args, **kwargs)
-            return Broken(stream) if str(name) == str(path) and args and args[0] == 'rb' else stream
-        with patch('builtins.open', side_effect=open_file):
+        def open_file(fd, *args, **kwargs):
+            stream = real_fdopen(fd, *args, **kwargs)
+            return Broken(stream) if args and args[0] == 'rb' else stream
+        with patch.object(c.os, 'fdopen', side_effect=open_file):
             self.assertTrue(self.scan()['partial'])
         self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 20)
 
@@ -208,18 +268,14 @@ c.usage_scan(sys.argv[2], sys.argv[3])
     def test_walk_and_open_errors_are_partial(self):
         from unittest.mock import patch
         path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')])
-        import builtins
-        real_open = builtins.open
+        real_open = os.open
         def denied(name, *args, **kwargs):
             if str(name) == str(path): raise PermissionError('denied')
             return real_open(name, *args, **kwargs)
-        with patch('builtins.open', side_effect=denied):
+        with patch.object(c.os, 'open', side_effect=denied):
             result = self.scan()
         self.assertTrue(result['partial']); self.assertEqual(result['skipped'], 1)
-        def broken_walk(root, **kwargs):
-            kwargs['onerror'](OSError('walk failed'))
-            return iter(())
-        with patch.object(c.os, 'walk', side_effect=broken_walk):
+        with patch.object(c.os, 'scandir', side_effect=OSError('walk failed')):
             result = self.scan()
         self.assertTrue(result['partial']); self.assertGreater(result['skipped'], 0)
 

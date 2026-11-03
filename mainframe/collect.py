@@ -36,6 +36,7 @@ import re
 import select
 import signal
 import struct
+import stat
 import subprocess
 import sys
 import time
@@ -3297,7 +3298,7 @@ _USAGE_LINE_LIMIT = 2 * 1024 * 1024
 _USAGE_CHECKPOINT_BYTES = 64 * 1024 * 1024
 _USAGE_SEEN_LIMIT = 500000
 _USAGE_INDEX_LIMIT = 64 * 1024 * 1024
-_USAGE_FILE_LIMIT = 20000
+_USAGE_FILE_LIMIT = 200000
 
 
 def _usage_hour(timestamp):
@@ -3315,13 +3316,15 @@ def _usage_number(value):
     return max(0, value) if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
+def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lineage):
     payload = data.get('payload') or {}
     if not isinstance(payload, dict):
         return
     if provider == 'codex':
-        if data.get('type') == 'session_meta' and payload.get('id'):
-            state['session'] = str(payload['id'])
+        if data.get('type') == 'session_meta' and (payload.get('id') or payload.get('session_id')):
+            state['session'] = str(payload.get('id') or payload['session_id'])
+            state['forked_from_id'] = str(payload.get('forked_from_id') or '')
+            lineage[state['session']] = state['forked_from_id']
         session = state.get('session') or state['path']
         cursor = sessions.setdefault(session, {})
         if data.get('type') in ('turn_context', 'session_meta'):
@@ -3339,7 +3342,14 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
         delta = {key: max(0, current[key] - cursor.get(key, 0)) for key in keys}
         sessions[session] = {key: max(current[key], cursor.get(key, 0)) for key in keys}
         sessions[session]['day'] = max(cursor.get('day', ''), _usage_hour(data.get('timestamp'))[:10])
-        key = hashlib.sha1(json.dumps(['codex', data['timestamp'], totals], sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:12]
+        state['has_usage_cursor'] = True
+        root = session
+        for _ in range(32):
+            parent = lineage.get(root)
+            if not parent or parent == root:
+                break
+            root = parent
+        key = hashlib.sha1(json.dumps(['codex', root, data['timestamp'], sorted(totals.items())], separators=(',', ':')).encode()).hexdigest()[:12]
         if key in seen:
             return
         seen[key] = counted_day
@@ -3379,7 +3389,7 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
 
 
 def _usage_empty():
-    return {'version': 4, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
+    return {'version': 5, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
 
 
 def _usage_write(path, index):
@@ -3444,7 +3454,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             if os.fstat(stream.fileno()).st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
             loaded = json.load(stream)
-        if (not isinstance(loaded, dict) or loaded.get('version') != 4 or
+        if (not isinstance(loaded, dict) or loaded.get('version') != 5 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
                 any(not _usage_valid_cursor(value) for value in loaded['sessions'].values()) or
                 any(not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)', k) or
@@ -3467,50 +3477,53 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: item[1])[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
     files = index['files']
     skipped = 0
-    def walk_error(error):
-        nonlocal skipped
-        skipped += 1
     roots = [('claude', os.path.join(home, '.claude', 'projects'))]
     roots += [('claude', p) for p in sorted(glob.glob(os.path.join(home, '.claude-accounts', '*', 'projects')))]
     roots.append(('codex', os.path.join(home, '.codex', 'sessions')))
-    visited, candidates, present = set(), [], set()
-    file_count, too_many_files = 0, False
+    root_paths, candidates, present = set(), [], set()
+    entry_count, too_many_files = 0, False
     for provider, root in roots:
         try:
             os.lstat(root)
+            real_root = os.path.realpath(root)
+            if real_root in root_paths:
+                continue
+            root_paths.add(real_root)
         except FileNotFoundError:
             continue
         except OSError:
             skipped += 1
             continue
-        for directory, subdirs, names in os.walk(root, followlinks=False, onerror=walk_error):
-            real = os.path.realpath(directory)
-            if real in visited:
-                subdirs[:] = []
-                continue
-            visited.add(real)
-            subdirs.sort()
-            for name in sorted(names):
-                if not name.endswith('.jsonl'):
-                    continue
-                if file_count >= _USAGE_FILE_LIMIT:
-                    too_many_files = True
-                    break
-                file_count += 1
-                file = os.path.realpath(os.path.join(directory, name))
-                present.add(file)
-                try:
-                    stat = os.stat(file)
-                    if stat.st_mtime >= now.timestamp() - 31 * 86400:
-                        candidates.append((provider, file, stat))
-                    else:
-                        present.discard(file)
-                except OSError:
-                    skipped += 1
-            if too_many_files:
-                break
+        directories = [root]
+        while directories and not too_many_files:
+            directory = directories.pop()
+            try:
+                with os.scandir(directory) as entries:
+                    for entry in entries:
+                        if entry_count >= _USAGE_FILE_LIMIT:
+                            too_many_files = True
+                            break
+                        entry_count += 1
+                        if entry.is_dir(follow_symlinks=False):
+                            directories.append(entry.path)
+                        elif entry.name.endswith('.jsonl'):
+                            file = os.path.realpath(entry.path)
+                            present.add(file)
+                            try:
+                                info = os.stat(file)
+                                if not stat.S_ISREG(info.st_mode):
+                                    present.discard(file)
+                                elif info.st_mtime >= now.timestamp() - 31 * 86400:
+                                    candidates.append((provider, file, info))
+                                else:
+                                    present.discard(file)
+                            except OSError:
+                                skipped += 1
+            except OSError:
+                skipped += 1
         if too_many_files:
             break
+    candidates.sort(key=lambda item: item[1])
     if not skipped and not too_many_files:
         for file in list(files):
             if file not in present:
@@ -3518,6 +3531,26 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
     invalid_sessions = {k for k, v in index['sessions'].items() if not _usage_valid_cursor(v)}
     index['sessions'] = {k: v for k, v in index['sessions'].items() if k not in invalid_sessions and v.get('day', '') >= cutoff}
     dirty |= index != before
+    # Session metadata is the first record in Codex transcripts. Read it before
+    # processing events so multi-generation forks work in any file order.
+    lineage = {state['session']: state.get('forked_from_id', '')
+               for state in files.values() if isinstance(state, dict) and
+               isinstance(state.get('session'), str) and state['session'] and
+               isinstance(state.get('forked_from_id', ''), str)}
+    for provider, file, _ in candidates:
+        if provider != 'codex':
+            continue
+        try:
+            fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    continue
+                record = json.loads(stream.readline(_USAGE_LINE_LIMIT + 1))
+                payload = record.get('payload') if isinstance(record, dict) and record.get('type') == 'session_meta' else None
+                if isinstance(payload, dict) and (payload.get('id') or payload.get('session_id')):
+                    lineage[str(payload.get('id') or payload['session_id'])] = str(payload.get('forked_from_id') or '')
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
     read_bytes, checkpoint_bytes, limited = 0, 0, False
     checkpoint_at = time.monotonic()
     write_failed, reset_index = False, False
@@ -3534,20 +3567,28 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             write_failed = True
         checkpoint_bytes = 0
         checkpoint_at = time.monotonic()
-    for provider, file, stat in candidates:
+    for provider, file, info in candidates:
         try:
-            with open(file, 'rb') as stream:
+            fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                stat_info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(stat_info.st_mode):
+                    continue
+                info = stat_info
                 previous = files.get(file, {})
                 valid = isinstance(previous, dict) and previous.get('provider') == provider
                 valid = valid and all(_usage_int(previous.get(k)) for k in ('offset', 'size', 'mtime_ns', 'ino', 'dev', 'head_len'))
-                valid = valid and previous['head_len'] <= 4096 and previous['offset'] <= stat.st_size and previous['offset'] <= previous['size']
-                valid = valid and isinstance(previous.get('pending', ''), str) and len(previous.get('pending', '')) <= ((_USAGE_LINE_LIMIT + 2) // 3) * 4
+                valid = valid and previous['head_len'] <= 4096 and previous['offset'] <= info.st_size and previous['offset'] <= previous['size']
+                valid = valid and isinstance(previous.get('pending'), str) and len(previous.get('pending', '')) <= ((_USAGE_LINE_LIMIT + 2) // 3) * 4
                 valid = valid and previous.get('path') == file and isinstance(previous.get('head'), str)
                 valid = valid and previous['head_len'] <= previous['size']
-                valid = valid and isinstance(previous.get('session', ''), str) and (previous.get('session') or file) not in invalid_sessions
-                valid = valid and isinstance(previous.get('model', ''), str) and type(previous.get('skip_line', False)) is bool
-                valid = valid and type(previous.get('skip_mark', False)) is bool and isinstance(previous.get('skip_tail', ''), str) and len(previous.get('skip_tail', '')) <= ((65536 + 2) // 3) * 4
-                skip_days = previous.get('skip_days', {}) if valid else {}
+                valid = valid and isinstance(previous.get('session'), str) and (previous.get('session') or file) not in invalid_sessions
+                valid = valid and isinstance(previous.get('forked_from_id'), str)
+                valid = valid and type(previous.get('has_usage_cursor')) is bool
+                valid = valid and (provider != 'codex' or not previous['offset'] or not previous.get('has_usage_cursor') or (previous.get('session') or file) in index['sessions'])
+                valid = valid and isinstance(previous.get('model'), str) and type(previous.get('skip_line')) is bool
+                valid = valid and type(previous.get('skip_mark')) is bool and isinstance(previous.get('skip_tail'), str) and len(previous.get('skip_tail', '')) <= ((65536 + 2) // 3) * 4
+                skip_days = previous.get('skip_days') if valid else {}
                 valid = valid and isinstance(skip_days, dict) and all(isinstance(k, str) and _usage_int(v) for k, v in skip_days.items())
                 if valid:
                     try:
@@ -3561,9 +3602,11 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                 stream.seek(0)
                 head_data = stream.read(4096)
                 head = hashlib.sha1(head_data).hexdigest()
-                if (not valid or stat.st_size < previous['size'] or stat.st_mtime_ns < previous['mtime_ns'] or
-                        previous['ino'] != stat.st_ino or previous['dev'] != stat.st_dev or previous.get('head') != old_head):
-                    previous = {'provider': provider, 'path': file, 'offset': 0, 'skip_days': {}}
+                if (not valid or info.st_size < previous['size'] or info.st_mtime_ns < previous['mtime_ns'] or
+                        previous['ino'] != info.st_ino or previous['dev'] != info.st_dev or previous.get('head') != old_head):
+                    previous = {'provider': provider, 'path': file, 'offset': 0, 'skip_days': {},
+                                'session': '', 'forked_from_id': '', 'model': '', 'has_usage_cursor': False,
+                                'skip_line': False, 'skip_mark': False}
                     pending = b''
                     tail = b''
                 state = copy.deepcopy(previous)
@@ -3583,7 +3626,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     state['offset'] = stream.tell()
                     state['pending'] = base64.b64encode(pending).decode('ascii')
                     state['skip_tail'] = base64.b64encode(tail).decode('ascii')
-                    state.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns, ino=stat.st_ino, dev=stat.st_dev,
+                    state.update(size=info.st_size, mtime_ns=info.st_mtime_ns, ino=info.st_ino, dev=info.st_dev,
                                  head=head, head_len=len(head_data))
                     if files.get(file) != state or staged_seen or staged_sessions or staged_hours:
                         dirty = True
@@ -3599,7 +3642,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                             target = index['hours'].setdefault(hour, {}).setdefault(model, {})
                             for field, count in counts.items(): target[field] = target.get(field, 0) + count
                     staged_seen, staged_sessions, staged_hours = {}, Sessions(), {}
-                while stream.tell() < stat.st_size:
+                while stream.tell() < info.st_size:
                     remaining = min(limit - read_bytes, _USAGE_CHECKPOINT_BYTES - checkpoint_bytes)
                     if remaining <= 0:
                         if read_bytes >= limit:
@@ -3640,7 +3683,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                                     (provider == 'codex' and any(x in pending for x in (b'turn_context', b'session_meta')))):
                                 try:
                                     data = json.loads(pending)
-                                    if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat())
+                                    if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat(), lineage)
                                 except (ValueError, UnicodeError, TypeError, RecursionError):
                                     if b'"usage"' in pending or b'token_count' in pending:
                                         day = utc_now.date().isoformat()
