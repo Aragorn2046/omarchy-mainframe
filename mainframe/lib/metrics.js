@@ -815,8 +815,7 @@ function memorySegments(used, cached, total) {
 
 function memoryHeader(used, cached, total) {
   if (used == null || total == null || !isFinite(Number(used)) || !isFinite(Number(total))) return "—";
-  var segments = memorySegments(used, cached, total);
-  return formatBytes(used) + " used · " + (cached == null || !isFinite(Number(cached)) ? "—" : formatBytes(segments.cache)) + " cache / " + formatBytes(total);
+  return formatBytes(used) + " used · " + (cached == null || !isFinite(Number(cached)) ? "—" : formatBytes(cached)) + " cache / " + formatBytes(total);
 }
 
 function parsePs(text) {

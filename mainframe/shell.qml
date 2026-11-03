@@ -2101,8 +2101,18 @@ ShellRoot {
               warningInk: shell.themeFg
               track: shell.themeTrack
               Rectangle {
+                id: wslSegment
+                visible: shell.memView && !shell.memView.windowsUnavailable && shell.memView.wslFraction > 0
+                anchors.right: parent.right
+                anchors.rightMargin: parent.width * (1 - parent.fraction)
+                property real segmentFraction: visible ? Math.min(1 - parent.shown, shell.memView.wslFraction) : 0
+                width: parent.width * segmentFraction
+                height: parent.height
+                color: shell.themeCyan
+              }
+              Rectangle {
                 x: parent.width * parent.shown
-                width: parent.width * Math.min(1 - parent.shown, shell.memView ? (shell.memView.cacheFraction || 0) : 0)
+                width: parent.width * Math.min(1 - parent.shown - wslSegment.segmentFraction, shell.memView ? (shell.memView.cacheFraction || 0) : 0)
                 height: parent.height
                 color: parent.fill
                 opacity: 0.3
