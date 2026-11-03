@@ -2105,14 +2105,13 @@ ShellRoot {
                 visible: shell.memView && !shell.memView.windowsUnavailable && shell.memView.wslFraction > 0
                 anchors.right: parent.right
                 anchors.rightMargin: parent.width * (1 - parent.fraction)
-                property real segmentFraction: visible ? Math.min(1 - parent.shown, shell.memView.wslFraction) : 0
-                width: parent.width * segmentFraction
+                width: parent.width * (shell.memView ? (shell.memView.wslFraction || 0) : 0)
                 height: parent.height
                 color: shell.themeCyan
               }
               Rectangle {
                 x: parent.width * parent.shown
-                width: parent.width * Math.min(1 - parent.shown - wslSegment.segmentFraction, shell.memView ? (shell.memView.cacheFraction || 0) : 0)
+                width: parent.width * Math.min(1 - parent.shown, shell.memView ? (shell.memView.cacheFraction || 0) : 0)
                 height: parent.height
                 color: parent.fill
                 opacity: 0.3
