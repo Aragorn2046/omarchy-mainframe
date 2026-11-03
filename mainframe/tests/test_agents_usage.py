@@ -252,3 +252,17 @@ runpy.run_path(sys.argv[1], run_name="__main__")
 
 if __name__ == '__main__':
     unittest.main()
+
+class SharedHistoryTest(unittest.TestCase):
+    def test_identical_history_without_directories_is_shared_per_provider(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
+            for i, provider in enumerate(('claude', 'claude', 'codex')):
+                record = {'id':'item-' + str(i), 'name':'Account ' + str(i), 'provider':provider,
+                          'recentDays':[{'date':'2026-11-01','messageCount':4}], 'modelUsage':{'model':{'inputTokens':12}}}
+                (usage / (str(i) + '.json')).write_text(json.dumps(record))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            data = [json.loads(x['raw']) for x in json.loads(result.stdout)]
+            self.assertEqual(data[1]['sharedStatsWith'], 'Account 0')
+            self.assertNotIn('sharedStatsWith', data[2])

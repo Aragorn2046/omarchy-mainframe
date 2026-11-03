@@ -195,4 +195,18 @@ for item, raw in merged:
             item['raw'] = ''
     elif isinstance(d.get('name'), str) and d['name']:
         projects[path] = d['name']
+# Identical history can come from separate account directories or records without one.
+histories = {}
+for item, raw in merged:
+    d = identity(raw)
+    if not d or d.get('provider') not in ('claude', 'codex') or not isinstance(d.get('name'), str):
+        continue
+    if not isinstance(d.get('recentDays'), list) or not isinstance(d.get('modelUsage'), dict):
+        continue
+    key = (d['provider'], json.dumps(d['recentDays'], sort_keys=True), json.dumps(d['modelUsage'], sort_keys=True))
+    if key in histories and not raw.get('sharedStatsWith'):
+        raw['sharedStatsWith'] = histories[key]
+        item['raw'] = json.dumps(raw, ensure_ascii=True)
+    elif key not in histories and d['name']:
+        histories[key] = d['name']
 json.dump([item for item, _ in merged], sys.stdout, ensure_ascii=True)

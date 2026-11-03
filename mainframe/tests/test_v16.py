@@ -314,3 +314,18 @@ class V16Tests(unittest.TestCase):
             self.assertEqual(json.loads((cache/'fake.json').read_text())['name'],'Fake')
 
 if __name__ == '__main__': unittest.main()
+
+class PriceConfigTests(unittest.TestCase):
+    def test_override_merge_and_invalid_price_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'mainframe'; config.mkdir()
+            override = {'claude':{'models':{'claude-opus-5-5':{'input':8},'custom':{'input':1}}}}
+            (config / 'prices.json').write_text(json.dumps(override))
+            env = dict(os.environ, XDG_CONFIG_HOME=tmp)
+            run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=env, capture_output=True, text=True, check=True)
+            result = json.loads(run.stdout)
+            self.assertEqual(result['prices']['claude']['models']['claude-opus-5-5']['input'],8)
+            self.assertEqual(result['prices']['claude']['models']['claude-opus-5-5']['output'],20)
+            (config / 'prices.json').write_text(json.dumps({'claude':{'models':{'custom':{'input':-1}}}}))
+            run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=env, capture_output=True, text=True, check=True)
+            self.assertIn('prices', json.loads(run.stdout)['errors'])

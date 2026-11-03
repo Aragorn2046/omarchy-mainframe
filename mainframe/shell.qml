@@ -7,6 +7,7 @@ import Quickshell
 import Quickshell.Io
 import "lib/metrics.js" as Metrics
 import "lib/hosts.js" as Hosts
+import "lib/usage_value.js" as UsageValue
 import "lib/slotbind.js" as Slotbind
 import "lib/agents.js" as Agents
 import "lib/navigation.js" as Navigation
@@ -111,6 +112,21 @@ ShellRoot {
   property bool connectingSlow: false
   property var localState: Metrics.emptyState()
   property var localView: Metrics.emptyView()
+  property var localUsage: null
+  property var remoteUsage: ({})
+  readonly property var fleetUsageValue: {
+    var dependency = tabs
+    var entries = [{host:"this machine", usage:localUsage}]
+    var all = fleet && fleet.hosts ? fleet.hosts : []
+    for (var i = 0; i < all.length; i++) {
+      var session = fleet.sessions[all[i].ssh]
+      var offline = session && (session.phase === "unreachable" || session.phase === "error")
+      var report = remoteUsage[all[i].ssh]
+      var currentUsage = report && session && report.generation === session.generation ? report.usage : null
+      entries.push({host:all[i].name, usage:currentUsage, status:offline ? "offline" : ""})
+    }
+    return UsageValue.calculate(entries, settingsData.prices || {}, Date.now())
+  }
   property var remoteBuckets: ({})
   property string localSensorError: ""
   property bool localSilent: false
@@ -835,7 +851,7 @@ ShellRoot {
       if (!slotKillTimer.running) slotKillTimer.start()
       return
     }
-    proc.write(src)
+    proc.write("_SCRIPT_SOURCE = " + JSON.stringify(src) + "\n" + src)
     // Script EOF. Teardown is the process-group kill, not this.
     proc.stdinEnabled = false
   }
@@ -865,6 +881,7 @@ ShellRoot {
     if (!raw || typeof raw !== "object") return
     var now = Date.now()
     if (!Hosts.noteSample(fleet, ssh, gen, raw, now)) return
+    if (raw.usage) { var usageMap = copyMap(remoteUsage); usageMap[ssh] = {generation:gen, usage:raw.usage}; remoteUsage = usageMap }
     setRemoteLine(ssh, now)
     var buckets = remoteBuckets || {}
     var bucket = buckets[ssh]
@@ -900,6 +917,7 @@ ShellRoot {
       return
     }
     if (!raw || typeof raw !== "object") return
+    if (raw.usage) localUsage = raw.usage
     if (smokeMode) console.log("SAMPLE t=" + Date.now())
     var now = Date.now()
     if (raw.host) {
@@ -1786,6 +1804,7 @@ ShellRoot {
         Layout.fillHeight: true
         visible: shell.agentsVisible
         rows: shell.agentRows
+        valueData: shell.fleetUsageValue
         ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent
         warning: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a")
         critical: shell.sensorColor

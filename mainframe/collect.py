@@ -19,6 +19,9 @@ the pure parser checks.
 """
 
 import atexit
+import base64
+import datetime
+import tempfile
 import ctypes
 import fcntl
 import glob
@@ -2166,6 +2169,7 @@ def _stop_group(proc):
 
 
 def _run_tracked(args, timeout, **kwargs):
+    input_data = kwargs.pop("input", None)
     with _children_lock:
         if _children_stopped:
             raise subprocess.SubprocessError('collector is stopping')
@@ -2173,7 +2177,7 @@ def _run_tracked(args, timeout, **kwargs):
         _track_child(proc)
     try:
         try:
-            stdout, stderr = proc.communicate(timeout=timeout)
+            stdout, stderr = proc.communicate(input=input_data, timeout=timeout)
         except subprocess.TimeoutExpired:
             _stop_group(proc)
             if proc.stdout is not None:
@@ -3283,9 +3287,228 @@ def collect_linux(include_procs):
     return sample
 
 
+# Transcript usage is indexed on each machine; only token counts leave it.
+_USAGE_FIELDS = ('input', 'output', 'cache_read', 'cache_write_5m', 'cache_write_1h', 'cached_input')
+_USAGE_LIMIT = 1024 * 1024 * 1024
+_USAGE_LINE_LIMIT = 2 * 1024 * 1024
+
+
+def _usage_day(timestamp):
+    try:
+        return datetime.datetime.fromisoformat(timestamp.replace('Z', '+00:00')).astimezone().date().isoformat()
+    except (AttributeError, ValueError, OverflowError):
+        return None
+
+
+def _usage_number(value):
+    return max(0, value) if isinstance(value, int) and not isinstance(value, bool) else 0
+
+
+def _usage_record(state, provider, data):
+    payload = data.get('payload') or {}
+    if not isinstance(payload, dict):
+        return
+    if provider == 'codex':
+        if data.get('type') in ('turn_context', 'session_meta'):
+            model = payload.get('model')
+            if isinstance(model, str) and model:
+                state['model'] = model
+            return
+        if data.get('type') != 'event_msg' or payload.get('type') != 'token_count':
+            return
+        info = payload.get('info') or {}
+        totals = info.get('total_token_usage') if isinstance(info, dict) else None
+        if not isinstance(totals, dict):
+            return
+        keys = ('input_tokens', 'output_tokens', 'cached_input_tokens')
+        current = {key: _usage_number(totals.get(key)) for key in keys}
+        previous = state.get('cumulative', {})
+        delta = {key: max(0, current[key] - previous.get(key, 0)) for key in keys}
+        # A reset or stale event must not lower the high-water mark.
+        state['cumulative'] = {key: max(current[key], previous.get(key, 0)) for key in keys}
+        if not any(delta.values()):
+            return
+        tokens = {'input': delta['input_tokens'], 'output': delta['output_tokens'], 'cached_input': delta['cached_input_tokens']}
+        model = state.get('model') or 'unknown'
+    else:
+        message = data.get('message') or {}
+        if data.get('type') != 'assistant' or not isinstance(message, dict) or not isinstance(message.get('usage'), dict):
+            return
+        ident = message.get('id')
+        if ident:
+            ident = str(ident) + '\x00' + str(data.get('requestId') or '')
+            seen = state.setdefault('seen', [])
+            if ident in seen:
+                return
+            seen.append(ident)
+            del seen[:-64]
+        usage = message['usage']
+        creation = usage.get('cache_creation')
+        if isinstance(creation, dict) and ('ephemeral_5m_input_tokens' in creation or 'ephemeral_1h_input_tokens' in creation):
+            five = _usage_number(creation.get('ephemeral_5m_input_tokens'))
+            hour = _usage_number(creation.get('ephemeral_1h_input_tokens'))
+        else:
+            five, hour = _usage_number(usage.get('cache_creation_input_tokens')), 0
+        tokens = {'input': _usage_number(usage.get('input_tokens')), 'output': _usage_number(usage.get('output_tokens')),
+                  'cache_read': _usage_number(usage.get('cache_read_input_tokens')), 'cache_write_5m': five, 'cache_write_1h': hour}
+        model = message.get('model') or 'unknown'
+    day = _usage_day(data.get('timestamp'))
+    if not day:
+        return
+    target = state.setdefault('days', {}).setdefault(day, {}).setdefault(provider + '/' + str(model), {})
+    for field, count in tokens.items():
+        target[field] = target.get(field, 0) + count
+
+
+def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
+    """Incrementally scan recent transcripts. limit is injectable for tests."""
+    home = os.path.expanduser('~') if home is None else str(home)
+    cache = cache or os.path.join(os.environ.get('XDG_CACHE_HOME') or os.path.join(home, '.cache'), 'mainframe')
+    now = now or datetime.datetime.now().astimezone()
+    cutoff = (now.date() - datetime.timedelta(days=34)).isoformat()
+    os.makedirs(cache, mode=0o700, exist_ok=True)
+    path = os.path.join(cache, 'usage-index.json')
+    if os.path.islink(path):
+        raise ValueError('usage index is a symbolic link')
+    index = {'version': 1, 'files': {}}
+    try:
+        fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+            loaded = json.load(stream)
+        if not isinstance(loaded, dict) or loaded.get('version') != 1 or not isinstance(loaded.get('files'), dict):
+            raise ValueError('invalid index')
+        for state in loaded['files'].values():
+            if not isinstance(state, dict) or not isinstance(state.get('days'), dict) or not isinstance(state.get('offset', 0), int) or state.get('offset', 0) < 0:
+                raise ValueError('invalid index state')
+            if not isinstance(state.get('size', 0), int) or not isinstance(state.get('mtime_ns', 0), int):
+                raise ValueError('invalid index metadata')
+            if not isinstance(state.get('seen', []), list) or any(not isinstance(value, str) for value in state.get('seen', [])) or not isinstance(state.get('cumulative', {}), dict):
+                raise ValueError('invalid index cursor')
+            if any(not isinstance(value, int) or value < 0 for value in state.get('cumulative', {}).values()):
+                raise ValueError('invalid index totals')
+            if not isinstance(state.get('model', ''), str): raise ValueError('invalid index model')
+            base64.b64decode(state.get('pending', ''), validate=True)
+            for day, models in state['days'].items():
+                if not isinstance(day, str) or not isinstance(models, dict): raise ValueError('invalid index day')
+                for model, counts in models.items():
+                    if not isinstance(model, str) or not isinstance(counts, dict): raise ValueError('invalid index model')
+        index = loaded
+    except FileNotFoundError:
+        pass
+    except (ValueError, TypeError, OSError, RecursionError):
+        if os.path.islink(path):
+            raise ValueError('usage index is a symbolic link')
+    files = index['files']
+    roots = [('claude', os.path.join(home, '.claude', 'projects'))]
+    roots += [('claude', p) for p in sorted(glob.glob(os.path.join(home, '.claude-accounts', '*', 'projects')))]
+    roots.append(('codex', os.path.join(home, '.codex', 'sessions')))
+    visited, candidates = set(), []
+    for provider, root in roots:
+        for directory, subdirs, names in os.walk(root, followlinks=True):
+            real = os.path.realpath(directory)
+            if real in visited:
+                subdirs[:] = []
+                continue
+            visited.add(real)
+            subdirs.sort()
+            for name in sorted(names):
+                if not name.endswith('.jsonl'):
+                    continue
+                file = os.path.realpath(os.path.join(directory, name))
+                try:
+                    stat = os.stat(file)
+                    if stat.st_mtime >= now.timestamp() - 31 * 86400:
+                        candidates.append((provider, file, stat))
+                except OSError:
+                    continue
+    read_bytes, partial = 0, False
+    for provider, file, stat in candidates:
+        state = files.get(file)
+        if not isinstance(state, dict) or state.get('provider') != provider or stat.st_size < state.get('size', 0) or stat.st_mtime_ns < state.get('mtime_ns', 0):
+            state = {'provider': provider, 'offset': 0, 'days': {}}
+            files[file] = state
+        try:
+            pending = base64.b64decode(state.get('pending', ''), validate=True)
+            with open(file, 'rb') as stream:
+                stream.seek(state.get('offset', 0))
+                while stream.tell() < stat.st_size:
+                    remaining = limit - read_bytes
+                    if remaining <= 0:
+                        partial = True
+                        break
+                    chunk = stream.readline(min(remaining, _USAGE_LINE_LIMIT + 1))
+                    if not chunk:
+                        break
+                    read_bytes += len(chunk)
+                    if state.get('skip_line'):
+                        if chunk.endswith(b'\n'):
+                            state['skip_line'] = False
+                        continue
+                    pending += chunk
+                    if len(pending) > _USAGE_LINE_LIMIT:
+                        pending = b''
+                        state['skip_line'] = not chunk.endswith(b'\n')
+                        continue
+                    if not chunk.endswith(b'\n'):
+                        continue
+                    if (b'"usage"' in pending if provider == 'claude' else any(x in pending for x in (b'token_count', b'turn_context', b'session_meta'))):
+                        try:
+                            data = json.loads(pending)
+                            if isinstance(data, dict):
+                                _usage_record(state, provider, data)
+                        except (ValueError, UnicodeError, TypeError, RecursionError):
+                            pass
+                    pending = b''
+                state['offset'] = stream.tell()
+            state['pending'] = base64.b64encode(pending).decode('ascii')
+            state['size'], state['mtime_ns'] = stat.st_size, stat.st_mtime_ns
+        except (OSError, ValueError, TypeError):
+            partial = True
+        if partial and read_bytes >= limit:
+            break
+    days = {}
+    for state in files.values():
+        if not isinstance(state, dict) or not isinstance(state.get('days'), dict):
+            raise ValueError('invalid index state')
+        state['days'] = {day: value for day, value in state['days'].items() if day >= cutoff}
+        for day, models in state['days'].items():
+            for model, counts in models.items():
+                target = days.setdefault(day, {}).setdefault(model, {field: 0 for field in _USAGE_FIELDS})
+                for field in _USAGE_FIELDS:
+                    target[field] += _usage_number(counts.get(field))
+    index['days'] = days
+    if os.path.islink(path):
+        raise ValueError('usage index is a symbolic link')
+    fd, tmp = tempfile.mkstemp(prefix='.usage-', dir=cache)
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            json.dump(index, stream, separators=(',', ':'))
+        if os.path.islink(path):
+            raise ValueError('usage index is a symbolic link')
+        os.replace(tmp, path)
+    finally:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+    return {'days': days, 'partial': partial, 'scanned_at': now.isoformat()}
+
+
+def usage_probe():
+    source = globals().get('_SCRIPT_SOURCE')
+    if source is None:
+        with open(__file__, encoding='utf-8') as stream:
+            source = stream.read()
+    command = [sys.executable, '-u', '-', '--usage-scan']
+    if sys.platform.startswith('linux') and shutil.which('ionice'):
+        command = ['ionice', '-c', '3'] + command
+    result = _run_tracked(command, timeout=570, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                          stderr=subprocess.DEVNULL, text=True, input=source)
+    return json.loads(result)
+
+
 # Slow host probes run independently of the one-second sampling clock.
 _probe = {"windows": None, "storage": [], "windows_at": 0.0, "storage_at": 0.0,
-          "windows_busy": False, "storage_busy": False}
+          "windows_busy": False, "storage_busy": False, "usage": None, "usage_at": 0.0, "usage_busy": False}
+_probe_started = time.monotonic()
 _PS_QUERY = r"""$o=Get-CimInstance Win32_OperatingSystem; $p=Get-CimInstance Win32_Processor; $d=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'; @{total=$o.TotalVisibleMemorySize;free=$o.FreePhysicalMemory;cpu=@($p | ForEach-Object {$_.LoadPercentage});disks=@($d | ForEach-Object {@{name=$_.DeviceID;size=$_.Size;free=$_.FreeSpace}})} | ConvertTo-Json -Compress -Depth 4"""
 
 
@@ -3483,7 +3706,8 @@ def _background_probe(name, function):
     try:
         _probe[name] = function()
     except Exception:
-        _probe[name] = None if name == 'windows' else []
+        if name != 'usage':
+            _probe[name] = None if name == 'windows' else []
     finally:
         _probe[name + '_busy'] = False
 
@@ -3511,6 +3735,11 @@ def slow_probes(sample):
             _probe[name + '_busy'] = True
             _probe[name + '_at'] = now
             threading.Thread(target=_background_probe, args=(name, fn), daemon=True).start()
+    if now - _probe_started >= 20 and not _probe.get('usage_busy', False) and (not _probe.get('usage_at', 0) or now - _probe['usage_at'] >= 600):
+        _probe['usage_busy'] = True
+        _probe['usage_at'] = now
+        threading.Thread(target=_background_probe, args=('usage', usage_probe), daemon=True).start()
+    sample['usage'] = _probe.get('usage')
     sample['windows'] = _probe['windows'] if sample.get('wsl') else None
     sample['filesystems'] = list(_probe['storage'] or [])
     if sample.get('wsl') is True:
@@ -4190,6 +4419,13 @@ def _serve():
 
 
 def _main():
+    if '--usage-scan' in sys.argv:
+        try:
+            os.nice(19)
+        except OSError:
+            pass
+        print(json.dumps(usage_scan(), separators=(',', ':')))
+        return 0
     if "--storage" in sys.argv:
         import storage_scan
         arm_parent_death()

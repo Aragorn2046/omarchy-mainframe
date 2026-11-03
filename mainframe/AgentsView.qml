@@ -1,10 +1,12 @@
 import QtQuick
 import QtQuick.Layouts
 import "lib/agents.js" as Agents
+import "lib/usage_value.js" as UsageValue
 
 Item {
   id: root
   property var rows: []
+  property var valueData: ({totals:{today:0,seven:0,thirty:0},providers:{claude:{},codex:{}},hosts:[],unpriced:[],partial:true,excluded:0})
   property color ink; property color mutedInk; property color accent; property color warning; property color critical
   property color cardColor; property color borderColor; property color track
   property bool busy: false
@@ -29,6 +31,36 @@ Item {
       contentWidth: width; contentHeight: sections.implicitHeight
       ColumnLayout {
         id: sections; width: parent.width; spacing: 10
+        Card {
+          Layout.fillWidth: true; Layout.preferredHeight: valueContent.implicitHeight + 54
+          title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
+          ColumnLayout {
+            id: valueContent; width: parent.width; spacing: 6
+            RowLayout {
+              Layout.fillWidth: true
+              Repeater {
+                model: [{label:'TODAY', value:root.valueData.totals.today}, {label:'LAST 7 DAYS', value:root.valueData.totals.seven}, {label:'LAST 30 DAYS', value:root.valueData.totals.thirty}]
+                delegate: ColumnLayout {
+                  required property var modelData
+                  Layout.fillWidth: true
+                  Text { textFormat: Text.PlainText; text: modelData.label; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 16; font.bold: true }
+                }
+              }
+            }
+            Repeater {
+              model: [{name:'Claude', totals:root.valueData.providers.claude}, {name:'Codex', totals:root.valueData.providers.codex}].concat(root.valueData.hosts)
+              delegate: Text {
+                required property var modelData
+                Layout.fillWidth: true; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight
+                text: (modelData.name || modelData.host) + '  ' + (modelData.status && modelData.status !== 'ready' ? modelData.status : UsageValue.money(modelData.totals.today) + '  /  ' + UsageValue.money(modelData.totals.seven) + '  /  ' + UsageValue.money(modelData.totals.thirty))
+              }
+            }
+            Text { textFormat: Text.PlainText; visible: root.valueData.excluded > 0; text: root.valueData.excluded + ' machines not included'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+            Repeater { model: root.valueData.unpriced; delegate: Text { required property var modelData; textFormat: Text.PlainText; text: modelData + ' — no price · ' + Agents.units(root.valueData.unpricedTokens[modelData]) + ' tokens'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight } }
+            Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'Estimate at public API list prices; subscription fees not included.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; wrapMode: Text.Wrap }
+          }
+        }
         Repeater {
           id: sectionRepeater; model: Agents.sections(root.rows)
           delegate: ColumnLayout {
@@ -76,7 +108,7 @@ Item {
                         Text { textFormat: Text.PlainText; visible: modelData.reset !== ''; text: modelData.reset; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                       }
                     }
-                    Text { textFormat: Text.PlainText; visible: !!card.modelData.sharedStatsWith; Layout.fillWidth: true; text: 'Local stats shared with ' + card.modelData.sharedStatsWith + ' (same projects folder)'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+                    Text { textFormat: Text.PlainText; visible: !!card.modelData.sharedStatsWith; Layout.fillWidth: true; text: 'Local stats shared with ' + card.modelData.sharedStatsWith; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
                     Text { textFormat: Text.PlainText; visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; Layout.fillWidth: true; text: 'Today  ' + Agents.units(card.modelData.prompts) + ' prompts · ' + Agents.units(card.modelData.sessions) + ' sessions · ' + Agents.units(card.modelData.tokens) + ' tokens'; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
                     Text { textFormat: Text.PlainText; visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; text: 'ACTIVITY · 14 DAYS'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                     Row {

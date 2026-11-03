@@ -8,3 +8,4 @@ import "./agents.test.mjs";
 
 import "./v16.test.mjs";
 import "./qml-text.test.mjs";
+import "./usage_value.test.mjs";
