@@ -170,6 +170,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
             records = [json.loads(item['raw']) for item in json.loads(result.stdout)]
             self.assertEqual([(r['name'], r.get('sharedStatsWith')) for r in records], [('alice@', None), ('bob@', 'alice@'), ('other@', None)])
             self.assertEqual(['sharedStatsWith' in r for r in records], [False, True, False])
+            self.assertTrue(records[1]['sharedProjectsFolder'])
 
     def test_embedded_nul_in_directory_does_not_abort_merge(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -250,8 +251,6 @@ runpy.run_path(sys.argv[1], run_name="__main__")
             result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
             self.assertEqual(json.loads(result.stdout), [])
 
-if __name__ == '__main__':
-    unittest.main()
 
 class SharedHistoryTest(unittest.TestCase):
     def test_identical_history_without_directories_is_shared_per_provider(self):
@@ -266,3 +265,28 @@ class SharedHistoryTest(unittest.TestCase):
             data = [json.loads(x['raw']) for x in json.loads(result.stdout)]
             self.assertEqual(data[1]['sharedStatsWith'], 'Account 0')
             self.assertNotIn('sharedStatsWith', data[2])
+
+    def test_idle_histories_are_not_shared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
+            for i in range(2):
+                record = {'id':str(i), 'name':'Account ' + str(i), 'provider':'claude',
+                          'recentDays':[{'date':'2026-11-01', 'messageCount':0}], 'modelUsage':{}}
+                (usage / (str(i) + '.json')).write_text(json.dumps(record))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            self.assertTrue(all('sharedStatsWith' not in json.loads(item['raw']) for item in json.loads(result.stdout)))
+
+    def test_shared_history_with_only_model_usage(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
+            for i in range(2):
+                record = {'id':str(i), 'name':'Account ' + str(i), 'provider':'codex', 'modelUsage':{'m':{'inputTokens':10}}}
+                (usage / (str(i) + '.json')).write_text(json.dumps(record))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            data = [json.loads(item['raw']) for item in json.loads(result.stdout)]
+            self.assertEqual(data[1]['sharedStatsWith'], 'Account 0')
+
+if __name__ == '__main__':
+    unittest.main()

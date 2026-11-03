@@ -313,7 +313,6 @@ class V16Tests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)['ok'])
             self.assertEqual(json.loads((cache/'fake.json').read_text())['name'],'Fake')
 
-if __name__ == '__main__': unittest.main()
 
 class PriceConfigTests(unittest.TestCase):
     def test_override_merge_and_invalid_price_file(self):
@@ -329,3 +328,6 @@ class PriceConfigTests(unittest.TestCase):
             (config / 'prices.json').write_text(json.dumps({'claude':{'models':{'custom':{'input':-1}}}}))
             run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=env, capture_output=True, text=True, check=True)
             self.assertIn('prices', json.loads(run.stdout)['errors'])
+
+if __name__ == '__main__':
+    unittest.main()

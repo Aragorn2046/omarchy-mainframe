@@ -44,7 +44,7 @@ Item {
                   required property var modelData
                   Layout.fillWidth: true
                   Text { textFormat: Text.PlainText; text: modelData.label; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
-                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 16; font.bold: true }
+                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : '') + (root.valueData.stale ? ' · includes stale data' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 16; font.bold: true }
                 }
               }
             }
@@ -108,7 +108,7 @@ Item {
                         Text { textFormat: Text.PlainText; visible: modelData.reset !== ''; text: modelData.reset; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                       }
                     }
-                    Text { textFormat: Text.PlainText; visible: !!card.modelData.sharedStatsWith; Layout.fillWidth: true; text: 'Local stats shared with ' + card.modelData.sharedStatsWith; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+                    Text { textFormat: Text.PlainText; visible: !!card.modelData.sharedStatsWith; Layout.fillWidth: true; text: 'Local stats shared with ' + card.modelData.sharedStatsWith + (card.modelData.sharedProjectsFolder ? ' (same projects folder)' : ''); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
                     Text { textFormat: Text.PlainText; visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; Layout.fillWidth: true; text: 'Today  ' + Agents.units(card.modelData.prompts) + ' prompts · ' + Agents.units(card.modelData.sessions) + ' sessions · ' + Agents.units(card.modelData.tokens) + ' tokens'; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
                     Text { textFormat: Text.PlainText; visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; text: 'ACTIVITY · 14 DAYS'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                     Row {

@@ -189,6 +189,7 @@ for item, raw in merged:
         continue
     if path in projects:
         raw['sharedStatsWith'] = projects[path]
+        raw['sharedProjectsFolder'] = True
         try:
             item['raw'] = json.dumps(raw, ensure_ascii=True)
         except (ValueError, RecursionError, MemoryError):
@@ -201,9 +202,11 @@ for item, raw in merged:
     d = identity(raw)
     if not d or d.get('provider') not in ('claude', 'codex') or not isinstance(d.get('name'), str):
         continue
-    if not isinstance(d.get('recentDays'), list) or not isinstance(d.get('modelUsage'), dict):
+    days = d.get('recentDays') if isinstance(d.get('recentDays'), list) else []
+    models = d.get('modelUsage') if isinstance(d.get('modelUsage'), dict) else {}
+    if not models and not any(isinstance(day, dict) and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0 for v in day.values()) for day in days):
         continue
-    key = (d['provider'], json.dumps(d['recentDays'], sort_keys=True), json.dumps(d['modelUsage'], sort_keys=True))
+    key = (d['provider'], json.dumps(days, sort_keys=True), json.dumps(models, sort_keys=True))
     if key in histories and not raw.get('sharedStatsWith'):
         raw['sharedStatsWith'] = histories[key]
         item['raw'] = json.dumps(raw, ensure_ascii=True)

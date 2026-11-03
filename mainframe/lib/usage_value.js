@@ -20,19 +20,24 @@ function calculate(hosts, prices, now) {
   var today = localDay(date), sevenDate = new Date(date), thirtyDate = new Date(date);
   sevenDate.setDate(sevenDate.getDate() - 6); thirtyDate.setDate(thirtyDate.getDate() - 29);
   var seven = localDay(sevenDate), thirty = localDay(thirtyDate);
-  var result = {totals:zero(), providers:{claude:zero(), codex:zero()}, hosts:[], partial:false, unpriced:[], unpricedTokens:{}, excluded:0};
+  var result = {totals:zero(), providers:{claude:zero(), codex:zero()}, hosts:[], partial:false, stale:false, unpriced:[], unpricedTokens:{}, excluded:0};
   var unknown = {};
   (hosts || []).forEach(function(entry) {
     var row = {host: entry.host || 'this machine', status: entry.status || '', totals:zero()};
     result.hosts.push(row);
-    if (row.status === 'offline' || !entry.usage || !entry.usage.days) {
+    if (!entry.usage || !entry.usage.days) {
       row.status = row.status === 'offline' ? 'offline' : 'waiting'; result.excluded++; result.partial = true; return;
     }
+    var offline = row.status === 'offline';
     row.status = 'ready';
+    var scanned = Date.parse(entry.usage.scanned_at);
+    if (offline || entry.usage.stale === true || !isFinite(scanned) || date.getTime() - scanned > 45 * 60000) result.stale = true;
     if (entry.usage.partial) result.partial = true;
-    Object.keys(entry.usage.days).forEach(function(day) {
+    Object.keys(entry.usage.days).forEach(function(hour) {
+      var bucket = /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(hour) ? new Date(hour + ':00:00Z') : null;
+      var day = bucket && isFinite(bucket.getTime()) ? localDay(bucket) : hour;
       if (day < thirty || day > today) return;
-      var models = entry.usage.days[day] || {};
+      var models = entry.usage.days[hour] || {};
       Object.keys(models).forEach(function(key) {
         var slash = key.indexOf('/'), provider = key.slice(0, slash), model = key.slice(slash + 1);
         var rate = priceFor(prices, provider, model), tokens = models[key] || {};
