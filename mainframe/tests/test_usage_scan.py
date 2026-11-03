@@ -18,7 +18,7 @@ class ScannerTest(unittest.TestCase):
         self.cache = self.home / 'cache'
         self.now = datetime.datetime.now().astimezone()
         self.stamp = self.now.isoformat()
-        self.day = self.now.astimezone(datetime.timezone.utc).strftime('%Y-%m-%dT%H')
+        self.day = c._usage_hour(self.stamp)
     def file(self, relative):
         p = self.home / relative
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +105,7 @@ def stop(path, index):
     write(path, index)
     os._exit(17)
 c._usage_write=stop
+c._USAGE_CHECKPOINT_BYTES=os.path.getsize(os.path.join(sys.argv[2], '.claude/projects/a.jsonl'))
 c.usage_scan(sys.argv[2], sys.argv[3])
 """
         run = subprocess.run([sys.executable, '-c', code, str(Path(c.__file__)), str(self.home), str(self.cache)])
@@ -145,7 +146,7 @@ c.usage_scan(sys.argv[2], sys.argv[3])
 
     def test_long_line_stays_partial(self):
         path = self.file('.claude/projects/a.jsonl')
-        path.write_bytes(b'x' * (c._USAGE_LINE_LIMIT + 1) + b'\n')
+        path.write_bytes(b'"usage"' + b'x' * (c._USAGE_LINE_LIMIT + 1) + b'\n')
         self.lines(path, [self.claude('one')], 'a')
         for result in (self.scan(), self.scan()):
             self.assertTrue(result['partial']); self.assertEqual(result['skipped'], 1)
@@ -157,7 +158,7 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         self.lines(path, [record]); self.cache.mkdir()
         (self.cache / 'usage-index.json').write_text(json.dumps({'version':1, 'files':{}, 'days':{'2020-01-01':{}}}))
         result = self.scan(); hour = c._usage_hour(record['timestamp'])
-        self.assertIn(hour, result['days']); self.assertEqual(hour[11:], '22')
+        self.assertIn(hour, result['days']); self.assertEqual(hour[11:], '22:30')
         path.unlink(); self.scan()
         index = json.loads((self.cache / 'usage-index.json').read_text())
         self.assertEqual(index['files'], {}); self.assertIn(hour, index['hours'])
@@ -254,7 +255,8 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         index['seen']['expired'] = (self.now.date() - datetime.timedelta(days=36)).isoformat()
         index_path.write_text(json.dumps(index))
         self.lines(path, [self.claude('next'), self.claude('last')], 'a')
-        with patch.object(c, '_USAGE_SEEN_LIMIT', 2): self.scan()
+        with patch.object(c, '_USAGE_SEEN_LIMIT', 2): result = self.scan()
+        self.assertTrue(result['partial']); self.assertEqual(result['reason'], 'dedupe window full')
         index = json.loads(index_path.read_text())
         self.assertEqual(len(index['seen']), 2)
         self.assertNotIn('expired', index['seen']); self.assertNotIn(original, index['seen'])
@@ -270,7 +272,8 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         from unittest.mock import patch
         self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('one')])
         with patch.object(c, '_USAGE_INDEX_LIMIT', 200):
-            with self.assertRaises(ValueError): self.scan()
+            result = self.scan()
+        self.assertTrue(result['partial']); self.assertEqual(result['reason'], 'index too large')
         self.assertEqual(json.loads((self.cache / 'usage-index.json').read_text())['files'], {})
         self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 10)
 
@@ -283,6 +286,90 @@ c.usage_scan(sys.argv[2], sys.argv[3])
             return real_stat(name, *args, **kwargs)
         with patch.object(c.os, 'stat', side_effect=denied): result = self.scan()
         self.assertTrue(result['partial']); self.assertEqual(result['skipped'], 1)
+
+    def test_warm_scan_does_not_write_and_changes_checkpoint_once(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')])
+        self.scan()
+        with patch.object(c, '_usage_write', wraps=c._usage_write) as write:
+            self.scan(); write.assert_not_called()
+            self.lines(path, [self.claude('two')], 'a')
+            self.scan(); self.assertEqual(write.call_count, 1)
+
+    def test_time_checkpoint_occurs_during_scan(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one'), self.claude('two')])
+        values = iter([0, 31, 31, 31, 31, 31, 31, 31, 31, 31])
+        with patch.object(c.time, 'monotonic', side_effect=lambda: next(values, 31)), patch.object(c, '_usage_write', wraps=c._usage_write) as write:
+            result = self.scan()
+        self.assertGreaterEqual(write.call_count, 2)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 20)
+
+    def test_corrupt_file_fields_reset_without_unbounded_reads(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')])
+        self.scan(); index_path = self.cache / 'usage-index.json'
+        baseline = json.loads(index_path.read_text())
+        for field, value in [('head_len', 10**100), ('offset', -1), ('size', True), ('ino', -1), ('dev', '1'), ('mtime_ns', -1), ('offset', path.stat().st_size + 1)]:
+            index = json.loads(json.dumps(baseline)); index['files'][str(path)][field] = value
+            index['seen'] = {}; index['hours'] = {}
+            index_path.write_text(json.dumps(index))
+            result = self.scan()
+            self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10, field)
+
+    def test_invalid_session_cursor_resets_file(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        self.lines(path, [{'type':'session_meta','payload':{'id':'s'}}, {'type':'event_msg','timestamp':self.stamp,'payload':{'type':'token_count','info':{'total_token_usage':{'input_tokens':10}}}}])
+        self.scan(); index_path = self.cache / 'usage-index.json'
+        index = json.loads(index_path.read_text()); index['sessions']['s']['input_tokens'] = -1; index['hours'] = {}
+        index_path.write_text(json.dumps(index))
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 10)
+
+    def test_write_failure_is_partial_and_preserves_existing_index(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')]); self.scan()
+        index_path = self.cache / 'usage-index.json'; original = index_path.read_bytes()
+        self.lines(path, [self.claude('two')], 'a')
+        with patch.object(c, '_usage_write', side_effect=OSError('failure')) as write:
+            result = self.scan(); self.assertEqual(write.call_count, 1)
+        self.assertTrue(result['partial']); self.assertEqual(result['reason'], 'index write failed')
+        self.assertEqual(index_path.read_bytes(), original)
+        self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 20)
+
+    def test_oversize_prunes_seen_before_reset(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')]); self.scan()
+        index_path = self.cache / 'usage-index.json'; index = json.loads(index_path.read_text())
+        index['seen'].update({str(i): self.now.date().isoformat() for i in range(100)})
+        size_without_extra = len(json.dumps(dict(index, seen={}), separators=(',', ':')).encode())
+        with patch.object(c, '_USAGE_INDEX_LIMIT', size_without_extra + 200):
+            status = c._usage_write(str(index_path), index)
+        self.assertEqual(status, 'evicted')
+        saved = json.loads(index_path.read_text()); self.assertTrue(saved['files']); self.assertTrue(saved['hours'])
+
+    def test_long_non_usage_and_late_marker_are_not_skipped(self):
+        path = self.file('.claude/projects/a.jsonl')
+        path.write_bytes(b'x' * 65536 + b'"usage"' + b'x' * c._USAGE_LINE_LIMIT + b'\n')
+        result = self.scan(); self.assertFalse(result['partial']); self.assertEqual(result['skipped'], 0)
+
+    def test_skipped_counts_expire_and_reset_with_file(self):
+        path = self.file('.claude/projects/a.jsonl'); path.write_bytes(b'token_count' + b'x' * c._USAGE_LINE_LIMIT + b'\n')
+        self.assertEqual(self.scan()['skipped'], 1)
+        index_path = self.cache / 'usage-index.json'; index = json.loads(index_path.read_text())
+        index['files'][str(path)]['skip_days'] = {'2000-01-01': 1}; index_path.write_text(json.dumps(index))
+        self.assertEqual(self.scan()['skipped'], 0)
+        path.write_bytes(b'"usage"' + b'x' * c._USAGE_LINE_LIMIT + b'\n')
+        self.assertEqual(self.scan()['skipped'], 1)
+        self.lines(path, [self.claude('new')])
+        self.assertEqual(self.scan()['skipped'], 0)
+
+    def test_usage_emitted_only_when_changed_and_on_reconnect(self):
+        sender = c._UsageEmitter(); usage = {'days': {'x': {}}}
+        self.assertEqual(sender.filter({'usage': usage})['usage'], usage)
+        self.assertNotIn('usage', sender.filter({'usage': usage}))
+        usage['days']['x']['model'] = 1
+        self.assertEqual(sender.filter({'usage': usage})['usage'], usage)
+        self.assertIn('usage', c._UsageEmitter().filter({'usage': usage}))
 
     def test_zero_usage_does_not_block_later_counted_message(self):
         empty = self.claude('same', {'input_tokens':0})

@@ -177,39 +177,37 @@ for i, (item, raw) in enumerate(merged):
     except (ValueError, OSError):
         continue
     break
-# Local transcript statistics belong to the projects directory, not the account.
-projects = {}
-for item, raw in merged:
-    d = identity(raw)
-    if not d or str(d.get('provider') or '').lower() != 'claude' or not d.get('dir'):
-        continue
-    try:
-        path = realpath(os.path.join(os.path.expanduser(d['dir']), 'projects'))
-    except (ValueError, OSError):
-        continue
-    if path in projects:
-        raw['sharedStatsWith'] = projects[path]
-        raw['sharedProjectsFolder'] = True
-        try:
-            item['raw'] = json.dumps(raw, ensure_ascii=True)
-        except (ValueError, RecursionError, MemoryError):
-            item['raw'] = ''
-    elif isinstance(d.get('name'), str) and d['name']:
-        projects[path] = d['name']
 # Identical history can come from separate account directories or records without one.
 histories = {}
 for item, raw in merged:
+    if isinstance(raw, dict) and ('sharedStatsWith' in raw or 'sharedProjectsFolder' in raw):
+        raw.pop('sharedStatsWith', None)
+        raw.pop('sharedProjectsFolder', None)
+        item['raw'] = json.dumps(raw, ensure_ascii=True)
     d = identity(raw)
     if not d or d.get('provider') not in ('claude', 'codex') or not isinstance(d.get('name'), str):
         continue
     days = d.get('recentDays') if isinstance(d.get('recentDays'), list) else []
     models = d.get('modelUsage') if isinstance(d.get('modelUsage'), dict) else {}
-    if not models and not any(isinstance(day, dict) and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v != 0 for v in day.values()) for day in days):
+    active_days = len({day['date'] for day in days if isinstance(day, dict) and isinstance(day.get('date'), str) and day['date'] and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in day.values())})
+    tokens = sum(v for model in models.values() if isinstance(model, dict) for k, v in model.items() if k in ('inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens') and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0)
+    if active_days < 2 or tokens < 1000000:
         continue
     key = (d['provider'], json.dumps(days, sort_keys=True), json.dumps(models, sort_keys=True))
     if key in histories and not raw.get('sharedStatsWith'):
-        raw['sharedStatsWith'] = histories[key]
+        owner_name, owner_dir = histories[key]
+        raw['sharedStatsWith'] = owner_name
+        if d.get('provider') == 'claude' and d.get('dir') and owner_dir:
+            try:
+                if realpath(os.path.join(os.path.expanduser(d['dir']), 'projects')) == owner_dir:
+                    raw['sharedProjectsFolder'] = True
+            except (ValueError, OSError):
+                pass
         item['raw'] = json.dumps(raw, ensure_ascii=True)
     elif key not in histories and d['name']:
-        histories[key] = d['name']
+        try:
+            directory = realpath(os.path.join(os.path.expanduser(d['dir']), 'projects')) if d.get('provider') == 'claude' and d.get('dir') else None
+        except (ValueError, OSError):
+            directory = None
+        histories[key] = (d['name'], directory)
 json.dump([item for item, _ in merged], sys.stdout, ensure_ascii=True)

@@ -34,7 +34,7 @@ function calculate(hosts, prices, now) {
     if (offline || entry.usage.stale === true || !isFinite(scanned) || date.getTime() - scanned > 45 * 60000) result.stale = true;
     if (entry.usage.partial) result.partial = true;
     Object.keys(entry.usage.days).forEach(function(hour) {
-      var bucket = /^\d{4}-\d{2}-\d{2}T\d{2}$/.test(hour) ? new Date(hour + ':00:00Z') : null;
+      var bucket = /^\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)$/.test(hour) ? new Date(hour + ':00Z') : null;
       var day = bucket && isFinite(bucket.getTime()) ? localDay(bucket) : hour;
       if (day < thirty || day > today) return;
       var models = entry.usage.days[hour] || {};

@@ -122,7 +122,7 @@ ShellRoot {
       var session = fleet.sessions[all[i].ssh]
       var offline = session && (session.phase === "unreachable" || session.phase === "error")
       var report = remoteUsage[all[i].ssh]
-      var currentUsage = report && session && report.generation === session.generation ? report.usage : null
+      var currentUsage = report ? report.usage : null
       entries.push({host:all[i].name, usage:currentUsage, status:offline ? "offline" : ""})
     }
     return UsageValue.calculate(entries, settingsData.prices || {}, Date.now())

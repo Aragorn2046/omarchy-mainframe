@@ -35,7 +35,7 @@ test('dated Haiku 4.5 resolves to the published rates', () => {
 });
 test('stale hosts remain counted and are flagged', () => {
   const now = new Date('2026-11-03T12:00:00Z');
-  const hour = '2026-11-03T11';
+  const hour = '2026-11-03T11:00';
   for (const usage of [
     {scanned_at:'2026-11-03T11:14:00Z'},
     {scanned_at:'2026-11-03T11:59:00Z', stale:true}
@@ -52,10 +52,19 @@ test('UTC hours map to the viewer local day at midnight', () => {
   const previous = process.env.TZ;
   process.env.TZ = 'Europe/Amsterdam';
   try {
-    const usage = {scanned_at:'2026-11-03T00:30:00Z',days:{'2026-11-03T00':{'claude/m':{input:1000000}},'2026-11-02T22':{'claude/m':{input:2000000}}}};
+    const usage = {scanned_at:'2026-11-03T00:30:00Z',days:{'2026-11-03T00:00':{'claude/m':{input:1000000}},'2026-11-02T22:00':{'claude/m':{input:2000000}}}};
     const value = U.calculate([{usage}], prices, '2026-11-03T00:30:00Z');
     assert.deepEqual(value.totals,{today:1,seven:3,thirty:3});
   } finally {
     if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
   }
+});
+
+test('quarter-hour UTC buckets map correctly in Nepal', () => {
+  const previous = process.env.TZ; process.env.TZ = 'Asia/Kathmandu';
+  try {
+    const usage = {scanned_at:'2026-11-03T18:30:00Z', days:{'2026-11-03T18:00':{'claude/m':{input:1000000}}, '2026-11-03T18:15':{'claude/m':{input:2000000}}}};
+    const value = U.calculate([{usage}],prices,'2026-11-03T18:30:00Z');
+    assert.equal(value.totals.today,2); assert.equal(value.totals.seven,3);
+  } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
 });

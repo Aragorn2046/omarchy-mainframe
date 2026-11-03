@@ -122,7 +122,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
                     for key in ('id', 'name', 'provider', 'dir', 'configHash'):
                         self.assertEqual(by_name[record['name']][key], record[key])
                 self.assertEqual(by_name['alice@']['data'], 'newer')
-                self.assertEqual(by_name['bob@']['sharedStatsWith'], 'alice@')
+                self.assertNotIn('sharedStatsWith', by_name['bob@'])
 
     def test_configured_anchors_prefer_id_over_other_name(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -164,7 +164,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
                 (cache / (ident + '.json')).write_text('{}')
             paths = sorted(cache.iterdir())
             for path, (ident, name, directory) in zip(paths, [('first', 'alice@', first), ('second', 'bob@', second), ('third', 'other@', third)]):
-                path.write_text(json.dumps({'id': ident, 'name': name, 'provider': 'claude', 'dir': str(directory)}))
+                path.write_text(json.dumps({'id': ident, 'name': name, 'provider': 'claude', 'dir': str(directory), 'recentDays': [{'date':'2026-11-01','messageCount':1}, {'date':'2026-11-02','messageCount':1 if ident != 'third' else 2}], 'modelUsage': {'m': {'inputTokens': 1000000}}}))
             env = dict(os.environ, XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
             result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
             records = [json.loads(item['raw']) for item in json.loads(result.stdout)]
@@ -258,13 +258,28 @@ class SharedHistoryTest(unittest.TestCase):
             root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
             for i, provider in enumerate(('claude', 'claude', 'codex')):
                 record = {'id':'item-' + str(i), 'name':'Account ' + str(i), 'provider':provider,
-                          'recentDays':[{'date':'2026-11-01','messageCount':4}], 'modelUsage':{'model':{'inputTokens':12}}}
+                          'recentDays':[{'date':'2026-11-01','messageCount':4}, {'date':'2026-11-02','messageCount':1}], 'modelUsage':{'model':{'inputTokens':1000000}}}
                 (usage / (str(i) + '.json')).write_text(json.dumps(record))
             env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
             result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
             data = [json.loads(x['raw']) for x in json.loads(result.stdout)]
             self.assertEqual(data[1]['sharedStatsWith'], 'Account 0')
             self.assertNotIn('sharedStatsWith', data[2])
+
+    def test_small_or_different_histories_are_not_shared(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
+            days = [{'date':'2026-11-01','messageCount':1}, {'date':'2026-11-02','messageCount':1}]
+            variants = [(days, 999999), (days, 999999), (days[:1], 1000000), (days[:1], 1000000),
+                        (days, 1000000), ([days[0], {'date':'2026-11-02','messageCount':2}], 1000000),
+                        (days, 1000001)]
+            for i, (recent, count) in enumerate(variants):
+                record = {'id':str(i), 'name':str(i), 'provider':'codex', 'recentDays':recent, 'modelUsage':{'m':{'inputTokens':count}}}
+                if i == 0: record['sharedStatsWith'] = 'stale'
+                (usage / (str(i) + '.json')).write_text(json.dumps(record))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            self.assertTrue(all('sharedStatsWith' not in json.loads(item['raw']) for item in json.loads(result.stdout)))
 
     def test_idle_histories_are_not_shared(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -286,7 +301,7 @@ class SharedHistoryTest(unittest.TestCase):
             env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
             result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
             data = [json.loads(item['raw']) for item in json.loads(result.stdout)]
-            self.assertEqual(data[1]['sharedStatsWith'], 'Account 0')
+            self.assertNotIn('sharedStatsWith', data[1])
 
 if __name__ == '__main__':
     unittest.main()
