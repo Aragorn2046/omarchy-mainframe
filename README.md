@@ -40,6 +40,8 @@ One machine: an Omarchy laptop with an Intel Core Ultra (16 threads), Intel Arc 
 drive and a battery. The `i915`, `amdgpu`, many-core, SATA/eMMC and no-battery paths are written and unit-tested
 with sample data, but have not run on real hardware. This is shared as-is, so others can pick it up and adapt it.
 
+Not yet tested on AMD hardware. If you run Mainframe on an AMD CPU or GPU, please open an issue with a screenshot.
+
 ## Install
 
 ```bash
@@ -52,8 +54,10 @@ Mainframe link or a broken link at that path, and refuses anything else (a real 
 app). Run it:
 
 ```bash
-qs -c mainframe
+env -u QT_QPA_PLATFORMTHEME qs -c mainframe
 ```
+
+This skips Omarchy's GTK platform theme plugin, which Mainframe does not need for its dashboard and which slows startup.
 
 ### Put it on a key
 
@@ -61,7 +65,7 @@ Add this to `~/.config/hypr/bindings.lua` (this example replaces Omarchy's btop 
 
 ```lua
 hl.unbind("SUPER + CTRL + T")
-o.bind("SUPER + CTRL + T", "Activity", "omarchy-launch-or-focus mainframe 'uwsm-app -- qs -c mainframe'")
+o.bind("SUPER + CTRL + T", "Activity", "omarchy-launch-or-focus mainframe 'uwsm-app -- env -u QT_QPA_PLATFORMTHEME qs -c mainframe'")
 ```
 
 Press the key again to bring an open Mainframe window to the front instead of opening a second one.
@@ -148,6 +152,10 @@ What you see depends on the host:
   If the Windows sample fails, the card falls back to WSL figures. The GPU usually shows "n/a".
 
 A sensor the host cannot provide says "n/a". It does not take the rest of the cards down with it.
+
+## Related
+
+[mainframe-cpp](https://github.com/jrimmer/mainframe-cpp) by Jason Rimmer ports the sampler to C++ and keeps these screens; it starts faster and uses less memory.
 
 ## Contributing
 
