@@ -117,11 +117,30 @@ def version_signature():
     return digest.hexdigest()
 
 
+def read_theme_file(path):
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError('theme file is not a regular file')
+        if info.st_size > 256 * 1024:
+            raise OSError('theme file is too large')
+        with os.fdopen(fd, 'rb') as source:
+            fd = -1
+            data = source.read(256 * 1024)
+            if os.fstat(source.fileno()).st_size > 256 * 1024:
+                raise OSError('theme file is too large')
+        return data
+    finally:
+        if fd != -1:
+            os.close(fd)
+
+
 def color_signature(folder, version):
     try:
-        colors = (folder / 'colors.toml').read_bytes()
+        colors = read_theme_file(folder / 'colors.toml')
     except OSError:
-        colors = b''
+        return None
     return hashlib.sha256(version.encode() + b'\0' + colors).hexdigest()
 
 
@@ -230,6 +249,8 @@ def render_theme(folder, output):
     root = Path(__file__).resolve().parent
     with tempfile.TemporaryDirectory(prefix='mainframe-preview-') as tmp:
         base = Path(tmp)
+        colors = base / 'colors.toml'
+        colors.write_bytes(read_theme_file(folder / 'colors.toml'))
         for name in ('home', 'config', 'cache', 'state', 'runtime'):
             (base / name).mkdir(mode=0o700)
         clean_env = {key: value for key, value in os.environ.items() if not key.startswith('MAINFRAME_')}
@@ -239,7 +260,7 @@ def render_theme(folder, output):
                    QT_QPA_PLATFORM='offscreen', QT_QPA_PLATFORMTHEME='', QSG_RENDER_LOOP='basic',
                    MAINFRAME_SMOKE='1', MAINFRAME_SMOKE_NO_REMOTE='1', MAINFRAME_SMOKE_FIXTURE_LOCAL='1',
                    MAINFRAME_SMOKE_W='1600', MAINFRAME_SMOKE_H='1000', MAINFRAME_SMOKE_MS='2500', MAINFRAME_SMOKE_START_LOCAL='1',
-                   MAINFRAME_PREVIEW_THEME=str(folder / 'colors.toml'), MAINFRAME_PREVIEW_OUTPUT=str(output))
+                   MAINFRAME_PREVIEW_THEME=str(colors), MAINFRAME_PREVIEW_OUTPUT=str(output))
         for key in ('DISPLAY', 'WAYLAND_DISPLAY', 'MAINFRAME_SMOKE_PAGE', 'MAINFRAME_SMOKE_LIVE', 'MAINFRAME_SMOKE_TAB', 'MAINFRAME_SMOKE_TAB_NAME'):
             env.pop(key, None)
         proc = subprocess.Popen(['nice', '-n', '19', 'qs', '-p', str(root)], env=env, stdout=subprocess.DEVNULL,
@@ -322,6 +343,8 @@ def render_previews(destination, available, current):
                         if not isinstance(renders, dict):
                             renders = {}
                         signature = color_signature(folders[0], version)
+                        if signature is None:
+                            continue
                         target = name + '.png'
                         try:
                             info = os.stat(target, dir_fd=preview_fd, follow_symlinks=False)

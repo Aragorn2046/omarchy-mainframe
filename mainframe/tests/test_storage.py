@@ -33,7 +33,7 @@ class StorageTests(unittest.TestCase):
             '/dev/disk4s1s1': {'Internal': True},
             '/dev/disk5s1': {'Protocol': 'USB', 'Internal': False},
             '/dev/disk6s1': {'Protocol': 'Disk Image'},
-            '/dev/disk7s1': {'BusProtocol': 'USB', 'VolumeName': 'Backup240'},
+            '/dev/disk7s1': {'BusProtocol': 'USB', 'VolumeName': 'Backup'},
             '/dev/disk8s1': {'Protocol': 'Thunderbolt'},
         }
         calls = []
@@ -49,10 +49,10 @@ class StorageTests(unittest.TestCase):
             rows = collect.storage_probe()
             self.assertEqual([(r['mount'], r['label'], r['bus']) for r in rows], [
                 ('/', 'Mac (internal)', 'Internal'),
-                ('/Volumes/Media', 'Media', 'USB'),
-                ('/Volumes/Backup240', 'Backup240', 'USB'),
+                ('/Volumes/External', 'External', 'USB'),
+                ('/Volumes/Backup', 'Backup', 'USB'),
             ])
-            self.assertEqual([(r['used'], r['total']) for r in rows], [(403681364 * 1024, 482797652 * 1024), (291069700 * 1024, 488181744 * 1024), (13440 * 1024, 250642432 * 1024)])
+            self.assertEqual([(r['used'], r['total']) for r in rows], [(600000 * 1024, 1000000 * 1024), (300000 * 1024, 500000 * 1024), (50000 * 1024, 200000 * 1024)])
             self.assertEqual(collect.storage_probe(), rows)
             self.assertEqual(calls, ['/dev/disk4s1s1', '/dev/disk5s1', '/dev/disk6s1', '/dev/disk7s1'])
             spaced = fixture + '/dev/disk8s1 100 10 90 10% /Volumes/My External Disk\n'

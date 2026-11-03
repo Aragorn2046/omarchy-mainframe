@@ -117,16 +117,25 @@ class V16Tests(unittest.TestCase):
             self.assertEqual(run('write', payload).returncode, 0)
             self.assertEqual(json.loads(path.read_text()), {'hosts':[]})
 
-    def test_write_preserves_config_symlink(self):
+    def test_write_refuses_config_symlink(self):
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp); directory = base / 'mainframe'; directory.mkdir()
-            target = base / 'target.json'; target.write_text('{"overviewView":"systems"}')
+            target = base / 'target.json'; target.write_bytes(b'{"overviewView":"systems"}\n')
+            original = target.read_bytes()
             link = directory / 'settings.json'; link.symlink_to(target)
             payload = {'kind':'settings', 'data':{'overviewView':'agents', 'showUnavailable':True}}
             result = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'write'], env=dict(os.environ, XDG_CONFIG_HOME=tmp), input=json.dumps(payload), capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(json.loads(result.stdout)['error'], 'settings.json is a symbolic link; not overwriting it')
             self.assertTrue(link.is_symlink())
-            self.assertEqual(json.loads(target.read_text()), payload['data'])
+            self.assertEqual(target.read_bytes(), original)
+            payload['replaceInvalid'] = True
+            target.unlink()
+            result = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'write'], env=dict(os.environ, XDG_CONFIG_HOME=tmp), input=json.dumps(payload), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(json.loads(result.stdout)['error'], 'settings.json is a symbolic link; not overwriting it')
+            self.assertTrue(link.is_symlink())
+            self.assertFalse(target.exists())
 
     def test_refresh_keeps_fresh_cache_without_config_hash(self):
         with tempfile.TemporaryDirectory() as tmp:

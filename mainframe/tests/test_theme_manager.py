@@ -32,6 +32,7 @@ class ThemeManagerTests(unittest.TestCase):
         self.addCleanup(self.env.stop)
         self.current = self.home / '.local/state/omarchy/current/theme'
         self.image(self.current / 'backgrounds/current.jpg')
+        (self.current / 'colors.toml').write_text('current')
         (self.current.parent / 'theme.name').write_text('system\n')
 
     def image(self, path):
@@ -70,6 +71,7 @@ class ThemeManagerTests(unittest.TestCase):
 
     def test_failed_render_keeps_fallback_and_logs(self):
         image = self.image(self.stock / 'themes/ocean/preview.jpg')
+        (image.parent / 'colors.toml').write_text('blue')
         result = manager.resolve()
         directory = Path(result['previewDir'])
         with patch.object(manager, 'render_theme', side_effect=OSError('render failed')), patch.object(manager.syslog, 'syslog') as log:
@@ -82,6 +84,7 @@ class ThemeManagerTests(unittest.TestCase):
     def test_removed_theme_deletes_only_tracked_owned_regular_preview(self):
         folder = self.stock / 'themes/ocean'
         self.image(folder / 'preview.jpg')
+        (folder / 'colors.toml').write_text('blue')
         directory = Path(manager.resolve()['previewDir'])
         with patch.object(manager, 'render_theme', side_effect=lambda folder, output: output.write_bytes(b'render')), patch.object(manager, 'version_signature', return_value='v'):
             manager.render_previews(directory, manager.themes([self.stock / 'themes']), self.current)
@@ -108,6 +111,7 @@ class ThemeManagerTests(unittest.TestCase):
     def test_busy_worker_requests_rerun_with_fresh_themes(self):
         first = self.stock / 'themes/ocean'
         self.image(first / 'preview.jpg')
+        (first / 'colors.toml').write_text('blue')
         directory = Path(manager.resolve()['previewDir'])
         available = manager.themes([self.stock / 'themes'])
         entered = threading.Event(); resume = threading.Event(); calls = []
@@ -123,6 +127,7 @@ class ThemeManagerTests(unittest.TestCase):
             try:
                 self.assertTrue(entered.wait(5))
                 self.image(self.stock / 'themes/forest/preview.jpg')
+                (self.stock / 'themes/forest/colors.toml').write_text('green')
                 manager.render_previews(directory, manager.themes([self.stock / 'themes']), self.current)
                 self.assertTrue((directory.parent / '.theme-preview-rerun').is_file())
             finally:
@@ -131,6 +136,45 @@ class ThemeManagerTests(unittest.TestCase):
         self.assertEqual(calls, ['ocean', 'theme', 'forest'])
         self.assertEqual((directory / 'forest.png').read_bytes(), b'render')
         self.assertFalse((directory.parent / '.theme-preview-rerun').exists())
+
+    def test_special_and_oversized_theme_files_are_skipped(self):
+        root = self.stock / 'themes'
+        for name in ('zero', 'fifo', 'large', 'good'):
+            self.image(root / name / 'preview.jpg')
+        (root / 'zero/colors.toml').symlink_to('/dev/zero')
+        os.mkfifo(root / 'fifo/colors.toml')
+        (root / 'large/colors.toml').write_bytes(b'x' * (256 * 1024 + 1))
+        (root / 'good/colors.toml').write_text('green')
+        directory = Path(manager.resolve()['previewDir'])
+        script = '''
+import json, sys
+from pathlib import Path
+from unittest.mock import patch
+sys.path.insert(0, sys.argv[1])
+import theme_manager as manager
+root, destination, current = map(Path, sys.argv[2:])
+calls = []
+def render(folder, output):
+    calls.append(folder.name)
+    output.write_bytes(b'render')
+with patch.object(manager, 'render_theme', side_effect=render), patch.object(manager, 'version_signature', return_value='v'):
+    manager.render_previews(destination, manager.themes([root]), current)
+print(json.dumps(calls))
+'''
+        start = time.monotonic()
+        result = subprocess.run([sys.executable, '-c', script, str(Path(manager.__file__).parent),
+                                 str(root), str(directory), str(self.current)],
+                                capture_output=True, text=True, timeout=2, check=True)
+        self.assertLess(time.monotonic() - start, 2)
+        self.assertEqual(json.loads(result.stdout), ['good', 'theme'])
+        self.assertEqual((directory / 'good.png').read_bytes(), b'render')
+
+    def test_regular_symlink_and_size_limit_are_readable(self):
+        target = self.base / 'colors.toml'
+        target.write_bytes(b'x' * (256 * 1024))
+        link = self.base / 'linked.toml'
+        link.symlink_to(target)
+        self.assertEqual(manager.read_theme_file(link), target.read_bytes())
 
     def test_renderer_timeout_kills_child_process_group(self):
         bindir = self.base / 'bin'; bindir.mkdir()

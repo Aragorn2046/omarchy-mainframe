@@ -78,11 +78,13 @@ def read(kind):
 
 def write(kind, data, replace_invalid=False):
     validate(kind, data)
+    target = CONFIG / (kind + '.json')
+    if target.is_symlink():
+        raise ValueError(f'{kind}.json is a symbolic link; not overwriting it')
     _, error = read_config(kind)
     if error and replace_invalid is not True:
         raise ValueError(f'{error}. Fix or move the file before saving, or explicitly replace it.')
     CONFIG.mkdir(parents=True, exist_ok=True)
-    target = (CONFIG / (kind + '.json')).resolve()
     fd, tmp = tempfile.mkstemp(prefix='.' + kind + '-', dir=target.parent)
     try:
         os.fchmod(fd, 0o600)
