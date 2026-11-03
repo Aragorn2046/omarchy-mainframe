@@ -1,4 +1,4 @@
 {
   "type": "module",
-  "main": "metrics.test.mjs"
+  "main": "all.test.mjs"
 }

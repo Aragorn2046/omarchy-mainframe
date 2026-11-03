@@ -5,6 +5,20 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const M = require("../lib/metrics.js");
 
+test("filesystem rows retain literal markup and enforce the fixed schema and limit", () => {
+  const attack = "<img src=http://x/y>";
+  const entry = { mount: "\u0000" + attack + "\n", device: "d\u007fisk", label: "x".repeat(121), total: 10, used: 20, extra: "discard" };
+  const rows = [entry, { mount: 7, device: null, label: {}, total: Infinity, used: -1 }, ...Array(40).fill(entry)];
+  const sample = { filesystems: rows, windows: { total: 10, used: 5, cpu: 1, disks: rows } };
+  const view = M.step(M.emptyState(), sample, 1000).view;
+  for (const list of [view.filesystems, view.windows.disks]) {
+    assert.equal(list.length, 32);
+    assert.deepEqual(list[0], { mount: attack, device: "disk", label: "x".repeat(120), total: 10, used: 10 });
+    assert.deepEqual(list[1], { mount: "", device: "", label: "", total: 0, used: 0 });
+  }
+  assert.equal(entry.mount, "\u0000" + attack + "\n");
+});
+
 const PROC = [
   "cpu  1531630 70981 475295 19469478 19825 79001 33376 0 0 0",
   "cpu0 102910 5811 19580 1203174 1572 4214 5624 0 0 0",
@@ -100,6 +114,9 @@ test("every export is covered by name", () => {
     "collectorKillDue",
     "collectorExitIgnored",
     "parseColorsToml",
+    "oklabDistance",
+    "warningColor",
+    "seriesFlat",
     "meterColor",
     "batteryMeterColor",
     "mixHex",
@@ -292,6 +309,121 @@ test("diskRates treats reset and zero elapsed time as zero", () => {
   const missing = M.diskRates(prev, next, 1000, "sda");
   assert.equal(missing.found, false);
   assert.equal(missing.readBps, 0);
+});
+
+test("darwin combined iostat rate is I/O with write n/a", () => {
+  const disk = (io) => ({
+    device: "disk0",
+    io_bytes_per_s: io,
+    sectors_read: null,
+    sectors_written: null,
+    root_used: 10,
+    root_total: 100,
+  });
+  const first = M.step(M.emptyState(), {
+    t_ms: 1000,
+    mono_ms: 1000,
+    os: "darwin",
+    disk: disk(null),
+  }, 1000);
+  assert.equal(first.view.disk.device, "disk0");
+  assert.equal(first.view.disk.readLabel, "I/O");
+  assert.equal(first.view.disk.readText, "unavailable");
+  assert.equal(first.view.disk.writeText, "n/a");
+  assert.equal(first.view.disk.usageText, M.formatUsage(10, 100));
+  assert.deepEqual(first.view.disk.writeHistory, []);
+
+  const second = M.step(first.state, {
+    t_ms: 2000,
+    mono_ms: 2000,
+    os: "darwin",
+    disk: disk(1048576),
+  }, 2000);
+  assert.equal(second.view.disk.readText, "1.00 MB/s");
+  assert.equal(second.view.disk.writeText, "n/a");
+  assert.equal(second.view.disk.readLabel, "I/O");
+  assert.equal(second.view.disk.readHistory.length, 1);
+  assert.deepEqual(second.view.disk.writeHistory, []);
+
+  const third = M.step(second.state, {
+    t_ms: 3000,
+    mono_ms: 3000,
+    os: "darwin",
+    disk: disk(262144),
+  }, 3000);
+  assert.equal(third.view.disk.readText, "256 KB/s");
+  assert.equal(third.view.disk.readHistory.length, 2);
+  assert.equal(third.view.disk.readHistory[0], 1048576);
+
+  const held = M.step(third.state, {
+    t_ms: 4000,
+    mono_ms: 4000,
+    os: "darwin",
+    disk: disk(null),
+  }, 4000);
+  assert.equal(held.view.disk.readText, "256 KB/s");
+  assert.equal(held.view.disk.writeText, "n/a");
+  assert.equal(held.view.disk.readLabel, "I/O");
+  assert.equal(held.view.disk.readHistory.length, 2);
+
+  const opened = M.step(M.emptyState(), {
+    t_ms: 1000,
+    mono_ms: 1000,
+    os: "darwin",
+    disk: disk(1048576),
+  }, 1000);
+  assert.equal(opened.view.disk.readLabel, "I/O");
+  assert.equal(opened.view.disk.readText, "1.00 MB/s");
+  assert.equal(opened.view.disk.readHistory.length, 0);
+  const lived = M.step(opened.state, {
+    t_ms: 2000,
+    mono_ms: 2000,
+    os: "darwin",
+    disk: disk(2048),
+  }, 2000);
+  assert.equal(lived.view.disk.readHistory.length, 1);
+  const jumped = M.step(lived.state, {
+    t_ms: 2000 + 11000,
+    mono_ms: 2000 + 11000,
+    os: "darwin",
+    disk: disk(8192),
+  }, 13000);
+  assert.equal(jumped.view.disk.readHistory.length, 1);
+  assert.equal(jumped.view.disk.readLabel, "I/O");
+  assert.equal(jumped.view.disk.readText, M.formatRate(8192));
+});
+
+test("a held sector read is not relabelled as combined I/O", () => {
+  const first = M.step(M.emptyState(), {
+    t_ms: 1000,
+    mono_ms: 1000,
+    disk: { device: "nvme0n1", sectors_read: 1000, sectors_written: 1000, root_used: 1, root_total: 10 },
+  }, 1000);
+  const second = M.step(first.state, {
+    t_ms: 2000,
+    mono_ms: 2000,
+    disk: { device: "nvme0n1", sectors_read: 1000 + 2048, sectors_written: 1000, root_used: 1, root_total: 10 },
+  }, 2000);
+  assert.equal(second.view.disk.readLabel, "read");
+  assert.equal(second.view.disk.readText, "1.00 MB/s");
+  const heldRead = second.view.disk.readHistory.length;
+  const next = M.step(second.state, {
+    t_ms: 3000,
+    mono_ms: 3000,
+    os: "darwin",
+    disk: {
+      device: "nvme0n1",
+      io_bytes_per_s: null,
+      sectors_read: null,
+      sectors_written: null,
+      root_used: 1,
+      root_total: 10,
+    },
+  }, 3000);
+  assert.equal(next.view.disk.readLabel, "read");
+  assert.equal(next.view.disk.readText, second.view.disk.readText);
+  assert.equal(next.view.disk.writeText, second.view.disk.writeText);
+  assert.equal(next.view.disk.readHistory.length, heldRead);
 });
 
 test("gpuBusy follows idle residency over wall time", () => {
@@ -1494,4 +1626,22 @@ test("network detail lines cap the view at 4 plus the rest", () => {
   assert.deepEqual(lines.slice(0, 4).map((item) => item.name), ["enp1s0", "enp2s0", "enp3s0", "enp4s0"]);
   assert.equal(lines[4].more, true);
   assert.equal(lines[4].text, "+1 more");
+});
+
+
+test("OKLab and theme warning colors distinguish close colors", () => {
+  assert.equal(M.oklabDistance("#ffffff", "#ffffff"), 0);
+  assert.ok(Math.abs(M.oklabDistance("#ffffff", "#000000") - 100) < 0.001);
+  const theme = M.resolveTheme(M.parseColorsToml(DARK_THEME));
+  assert.ok(M.oklabDistance(theme.accent, theme.colors.yellow) >= 15);
+  assert.ok(M.oklabDistance(theme.accent, theme.colors.red) >= 15);
+  assert.equal(M.warningColor("#000000", "#ffffff", [], "#101010"), "#ffffff");
+});
+
+test("flat histories require two equal finite samples", () => {
+  assert.equal(M.seriesFlat([]), false);
+  assert.equal(M.seriesFlat([1]), false);
+  assert.equal(M.seriesFlat([100, 100, 100]), true);
+  assert.equal(M.seriesFlat([100, 99.9]), false);
+  assert.equal(M.seriesFlat([1, NaN]), false);
 });

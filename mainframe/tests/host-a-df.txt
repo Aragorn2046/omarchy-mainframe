@@ -1,0 +1,14 @@
+Filesystem               1024-blocks    Used Available Capacity Mounted on
+/dev/disk4s1s1              1000000  100000    400000      20% /
+devfs                            200     200         0     100% /dev
+/dev/disk4s6                1000000   50000    400000      10% /System/Volumes/VM
+/dev/disk4s2                1000000   50000    400000      10% /System/Volumes/Preboot
+/dev/disk4s4                1000000   10000    400000       2% /System/Volumes/Update
+/dev/disk4s5                1000000  400000    400000      50% /System/Volumes/Data
+map auto_home                     0       0         0     100% /System/Volumes/Data/home
+/dev/disk4s3                1000000   10000    400000       2% /Volumes/Recovery
+/dev/disk5s1                 500000  300000    200000      60% /Volumes/External
+//user@100.64.0.10/Share    2000000 1000000   1000000      50% /Volumes/Share
+/dev/disk6s1                 100000  100000         0     100% /Volumes/Install Media 1.0
+//user@100.64.0.11/Share    1000000  500000    500000      50% /Users/example/Mounts/Share
+/dev/disk7s1                 200000   50000    150000      25% /Volumes/Backup

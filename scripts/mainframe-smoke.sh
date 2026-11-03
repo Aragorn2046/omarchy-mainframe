@@ -4,6 +4,7 @@
 # MAINFRAME_SMOKE_LIVE=1.
 # Offscreen (software) regression gate: < 3.0% of one core at both sizes.
 # Live Wayland gate: < 2% of one core over 30 s, after a 5 s wait.
+# MAINFRAME_SMOKE_NO_GUI=1 skips QML, graphical interaction, and SSH checks.
 set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -15,6 +16,14 @@ if node --test mainframe/tests/; then
   echo "node tests: pass"
 else
   echo "node tests: FAIL"
+  fail=1
+fi
+
+echo "== theme manager tests =="
+if python3 -m unittest discover -s mainframe/tests -p 'test_theme_manager.py'; then
+  echo "theme manager tests: pass"
+else
+  echo "theme manager tests: FAIL"
   fail=1
 fi
 
@@ -238,7 +247,9 @@ fi
 # $8 "live" is a real Wayland window: no offscreen platform, 5 s wait, 30 s sample, < 2%.
 run_qml() {
   if python3 - "$ROOT" "$1" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" <<'PY'
+import atexit
 import errno
+import json
 import os
 import random
 import re
@@ -271,6 +282,12 @@ def cpu_gate_verdict(pct, limit):
     if pct is None or pct < 0 or pct >= limit:
         return "FAIL"
     return "PASS"
+
+
+def frame_gate_verdict(frame_count, elapsed, connected, saw_frame):
+    if not connected or not saw_frame or elapsed <= 0 or frame_count < 0:
+        return "FAIL"
+    return "PASS" if frame_count / elapsed <= 3 else "FAIL"
 
 
 def sample_cadence_min(window_s):
@@ -310,6 +327,17 @@ def qs_command(qs, config_path):
     return [qs, "-p", config_path]
 
 
+def requested_machine_tab(env, log):
+    try:
+        name = env.get("MAINFRAME_SMOKE_TAB_NAME")
+        if name:
+            matches = re.findall(r'TAB index=(\d+) status=\S+ wsl=\d+ local=\d+ name=("(?:\\.|[^"\\])*")', log)
+            return next((int(index) for index, value in reversed(matches) if json.loads(value) == name), -1)
+        return int(env["MAINFRAME_SMOKE_TAB"])
+    except (ValueError, TypeError, KeyError):
+        return -1
+
+
 def gate_selftest():
     failures = []
 
@@ -327,6 +355,10 @@ def gate_selftest():
     check(cpu_gate_verdict(2.0, 2.0) == "FAIL", "2.0 fails the live gate")
     check(cpu_gate_verdict(-0.01, 3.0) == "FAIL", "negative cpu fails")
     check(cpu_gate_verdict(None, 2.0) == "FAIL", "missing cpu fails")
+    check(frame_gate_verdict(60, 20, True, True) == 'PASS', '3 fps passes')
+    check(frame_gate_verdict(61, 20, True, True) == 'FAIL', 'over 3 fps fails')
+    check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
+    check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
     pct = cpu_core_percent(0, 1000000, 10.0, "cgroup", 100)
     check(pct is not None and abs(pct - 10.0) < 1e-9, "cgroup 10%")
     pct = cpu_core_percent(50, 150, 10.0, "proc", 100)
@@ -341,6 +373,14 @@ def gate_selftest():
     off_env = launch_env({"HOME": "/tmp"}, False)
     check(off_env.get("QT_QPA_PLATFORM") == "offscreen", "offscreen platform")
     check(qs_command("qs", "mainframe") == ["qs", "-p", "mainframe"], "launch is qs -p mainframe")
+    sample_tabs = 'TAB index=2 status=connected wsl=0 local=0 name="Work host"'
+    check(requested_machine_tab({"MAINFRAME_SMOKE_TAB_NAME": "Work host"}, sample_tabs) == 2, "name-only machine tab")
+    check(requested_machine_tab({"MAINFRAME_SMOKE_TAB_NAME": "Missing"}, sample_tabs) == -1, "missing machine tab")
+    check(requested_machine_tab({"MAINFRAME_SMOKE_TAB": "1"}, sample_tabs) == 1, "numeric machine tab")
+    check(requested_machine_tab({"MAINFRAME_SMOKE_TAB_NAME": 'Work "host"'}, 'TAB index=3 status=connected wsl=0 local=0 name="Work \\"host\\"" extra="quoted"') == 3, "quoted machine tab with trailing fields")
+    check(requested_machine_tab({"MAINFRAME_SMOKE_TAB_NAME": "Work"}, 'TAB index=3 status=connected wsl=0 local=0 name="bad\\q"') == -1, "invalid tab name json")
+    check(requested_machine_tab({"MAINFRAME_SMOKE_TAB": "invalid"}, sample_tabs) == -1, "invalid numeric machine tab")
+    check(requested_machine_tab({}, sample_tabs) == -1, "missing numeric machine tab")
     if failures:
         for msg in failures:
             sys.stderr.write("cpu gate math: %s\n" % msg)
@@ -360,7 +400,9 @@ tmo = float(sys.argv[5])
 expect_cols = int(sys.argv[6])
 expect_rows = int(sys.argv[7])
 measure = sys.argv[8] == "1"
-live = len(sys.argv) > 9 and sys.argv[9] == "live"
+mode = sys.argv[9] if len(sys.argv) > 9 else ""
+live = mode == "live"
+machine = mode == "machine"
 
 def online_cpus():
     try:
@@ -495,10 +537,24 @@ def tree_ticks(root_pid):
     for pid, st in snap.items():
         total += st["ticks"]
         alive = True
-        # Only the leader's cutime/cstime: those are children it has reaped.
-        if pid == root_pid:
-            total += st["cutime"] + st["cstime"]
+        # Reaped descendants are no longer live in the tree.
+        total += st["cutime"] + st["cstime"]
     return total, alive
+
+def component_ticks(root_pid):
+    """Identify the qs and collector processes, retaining their start times."""
+    found = {}
+    for pid, st in snapshot(root_pid).items():
+        try:
+            with open('/proc/%d/cmdline' % pid, 'rb') as handle:
+                args = handle.read().split(b'\0')
+        except OSError:
+            continue
+        if args and os.path.basename(os.fsdecode(args[0])) == 'qs':
+            found['qs'] = (pid, st['start'], st['ticks'])
+        elif any(os.path.basename(os.fsdecode(arg)) == 'collect.py' for arg in args):
+            found['collector'] = (pid, st['start'], st['ticks'])
+    return found
 
 def leftovers():
     alive = []
@@ -550,7 +606,7 @@ if not qs:
     sys.exit(1)
 
 unit = "mainframe-smoke-%d-%d-%d" % (os.getpid(), width, random.randint(0, 999999))
-use_scope = shutil.which("systemd-run") is not None
+use_scope = shutil.which("systemd-run") is not None and os.environ.get("MAINFRAME_SMOKE_NO_SCOPE") != "1"
 qs_cmd = qs_command(qs, os.path.join(root, "mainframe"))
 if use_scope:
     argv = [
@@ -564,6 +620,15 @@ env["MAINFRAME_SMOKE"] = "1"
 env["MAINFRAME_SMOKE_W"] = str(width)
 env["MAINFRAME_SMOKE_H"] = str(height)
 env["MAINFRAME_SMOKE_MS"] = str(hold)
+if measure and not live:
+    env["MAINFRAME_FRAME_DIAGNOSTIC"] = "1"
+    env["QSG_RENDER_LOOP"] = "basic"
+env.pop("MAINFRAME_SMOKE_TAB", None)
+if machine and not env.get("MAINFRAME_SMOKE_TAB_NAME"):
+    env["MAINFRAME_SMOKE_TAB"] = "1"
+xdg_home = tempfile.mkdtemp(prefix="mainframe-xdg-")
+env["XDG_CONFIG_HOME"] = xdg_home
+atexit.register(lambda: shutil.rmtree(xdg_home, ignore_errors=True))
 
 log_fd, log_path = tempfile.mkstemp(prefix="mainframe-smoke-")
 os.close(log_fd)
@@ -589,6 +654,10 @@ fail = False
 code = None
 cpu_mode = None
 before = after = None
+components_before = components_after = None
+process_baseline = {}
+process_last = {}
+collector_counts = []
 t0 = t1 = None
 window_at = None
 clk = os.sysconf("SC_CLK_TCK") or 100
@@ -623,6 +692,7 @@ try:
                 code = 124
             break
         if measure and window_at is None and (now - started) >= warmup_s:
+            components_before = component_ticks(leader)
             if use_scope and cg and usage_usec(cg) is not None:
                 before = usage_usec(cg)
                 cpu_mode = "cgroup"
@@ -636,6 +706,7 @@ try:
             t0 = time.time() * 1000.0
             window_at = now
         if measure and window_at is not None and t1 is None and (now - window_at) >= window_s:
+            components_after = component_ticks(leader)
             if cpu_mode == "cgroup":
                 after = usage_usec(cg) if cg else None
             else:
@@ -644,7 +715,27 @@ try:
                     print("cpu qs+collector: qs exited before the %.0fs sample ended" % window_s)
                     fail = True
             t1 = time.time() * 1000.0
-        time.sleep(0.1)
+        if measure and window_at is not None and t1 is None:
+            current = snapshot(leader)
+            count = 0
+            for pid, st in current.items():
+                try:
+                    with open('/proc/%d/cmdline' % pid, 'rb') as handle:
+                        args = [os.fsdecode(arg) for arg in handle.read().split(b'\0') if arg]
+                except OSError:
+                    continue
+                if not args:
+                    continue
+                key = (pid, st['start'])
+                label = os.path.basename(args[0]) + ' ' + next((os.path.basename(arg) for arg in args[1:] if arg.endswith('.py')), '')
+                if any(os.path.basename(arg) == 'collect.py' for arg in args) and '--storage' not in args:
+                    count += 1
+                if key not in process_baseline:
+                    process_baseline[key] = st['ticks'] if now == window_at else 0
+                process_last[key] = (st['ticks'], label)
+            collector_counts.append(count)
+        # Sample frequently enough to catch most short-lived helpers.
+        time.sleep(0.02 if measure and window_at is not None and t1 is None else 0.1)
 finally:
     if code is None:
         kill_recorded()
@@ -699,55 +790,75 @@ if bad_lines:
     sys.stdout.write("\n".join(bad_lines) + "\n")
     fail = True
 
+if machine:
+    active_line = last_word(log, "ACTIVE")
+    active = tokens(active_line or "")
+    requested_tab = requested_machine_tab(env, log)
+    if active.get("tab") != requested_tab or active.get("selected") != requested_tab - 1 or active.get("highlighted") != requested_tab:
+        print("qml %dx%d: FAIL active tab %s, expected tab=%s selected=%s" % (width, height, active, requested_tab, requested_tab - 1))
+        fail = True
+
 layout_line = last_word(log, "LAYOUT")
 gauge_line = last_word(log, "GAUGE")
 for line in log.splitlines():
     if re.search(r"(?:^|\s)(LAYOUT|SMOKE|GAUGE)(?:\s|$)", line):
         print(line.strip())
 
-if layout_line is None or gauge_line is None:
+if layout_line is None:
     print("qml %dx%d: FAIL (no layout, qs exit %s)" % (width, height, code))
-    if layout_line is None:
-        sys.stdout.write(log)
+    sys.stdout.write(log)
     fail = True
+elif machine:
+    if "view=machine" not in layout_line or gauge_line is None:
+        print("qml %dx%d: FAIL (local machine layout or gauge missing)" % (width, height))
+        fail = True
+    else:
+        got = tokens(layout_line)
+        want = {
+            "w": width,
+            "h": height,
+            "cols": expect_cols,
+            "rows": expect_rows,
+            "overflow": 0,
+            "cores": nproc,
+        }
+        for key, value in want.items():
+            if got.get(key) != value:
+                print("qml %dx%d: FAIL layout %s=%s want %s" % (width, height, key, got.get(key), value))
+                print(layout_line.strip())
+                fail = True
+                break
+        gauge = tokens(gauge_line)
+        for key in ("meters", "minMeterH", "minMeterW", "minLabel"):
+            if key not in gauge:
+                print("qml %dx%d: FAIL gauge missing %s" % (width, height, key))
+                print(gauge_line.strip())
+                fail = True
+        meters = gauge.get("meters")
+        if nproc > 32:
+            if not fail and meters != 0:
+                print("qml %dx%d: FAIL meters=%s want 0 (compact)" % (width, height, meters))
+                fail = True
+        else:
+            if not fail and meters != nproc:
+                print("qml %dx%d: FAIL meters=%s want %s" % (width, height, meters, nproc))
+                fail = True
+            if not fail and (gauge.get("minMeterH", 0) < 14 or gauge.get("minMeterW", 0) < 14):
+                print("qml %dx%d: FAIL core meter below 14px" % (width, height))
+                print(gauge_line.strip())
+                fail = True
+        if not fail and gauge.get("minLabel", 0) < 12:
+            print("qml %dx%d: FAIL label below 12px" % (width, height))
+            print(gauge_line.strip())
+            fail = True
 else:
     got = tokens(layout_line)
-    want = {
-        "w": width,
-        "h": height,
-        "cols": expect_cols,
-        "rows": expect_rows,
-        "overflow": 0,
-        "cores": nproc,
-    }
-    for key, value in want.items():
+    for key, value in {"w": width, "h": height, "overflow": 0}.items():
         if got.get(key) != value:
-            print("qml %dx%d: FAIL layout %s=%s want %s" % (width, height, key, got.get(key), value))
-            print(layout_line.strip())
+            print("qml %dx%d: FAIL overview %s=%s want %s" % (width, height, key, got.get(key), value))
             fail = True
-            break
-    gauge = tokens(gauge_line)
-    for key in ("meters", "minMeterH", "minMeterW", "minLabel"):
-        if key not in gauge:
-            print("qml %dx%d: FAIL gauge missing %s" % (width, height, key))
-            print(gauge_line.strip())
-            fail = True
-    meters = gauge.get("meters")
-    if nproc > 32:
-        if not fail and meters != 0:
-            print("qml %dx%d: FAIL meters=%s want 0 (compact)" % (width, height, meters))
-            fail = True
-    else:
-        if not fail and meters != nproc:
-            print("qml %dx%d: FAIL meters=%s want %s" % (width, height, meters, nproc))
-            fail = True
-        if not fail and (gauge.get("minMeterH", 0) < 14 or gauge.get("minMeterW", 0) < 14):
-            print("qml %dx%d: FAIL core meter below 14px" % (width, height))
-            print(gauge_line.strip())
-            fail = True
-    if not fail and gauge.get("minLabel", 0) < 12:
-        print("qml %dx%d: FAIL label below 12px" % (width, height))
-        print(gauge_line.strip())
+    if "view=systems" not in layout_line or got.get("rows", 0) < 1:
+        print("qml %dx%d: FAIL overview systems or local row missing" % (width, height))
         fail = True
 
 if measure:
@@ -768,9 +879,46 @@ if measure:
                 print("cpu qs+collector: no reading (%s)" % kind)
             else:
                 print("cpu qs+collector: %.2f%% of one core over %.1fs (%s)" % (pct, elapsed, cpu_mode))
+            print("cpu process breakdown: sampled /proc ticks; short-lived processes may be missed")
+            sampled = 0.0
+            for key, (ticks, label) in sorted(process_last.items(), key=lambda item: item[1][0] - process_baseline[item[0]], reverse=True):
+                part = cpu_core_percent(process_baseline[key], ticks, elapsed, 'proc', clk)
+                sampled += part
+                print("cpu pid %d: %.2f%% of one core (%s)" % (key[0], part, label))
+            if pct is not None:
+                print("cpu unattributed: %.2f%% of one core (sampling and tick rounding)" % max(0.0, pct - sampled))
+            if not collector_counts or any(count != 1 for count in collector_counts):
+                print("local collector count: FAIL (observed %s)" % sorted(set(collector_counts)))
+                fail = True
+            else:
+                print("local collector count: 1 throughout sampled window")
             print("cpu gate: %s (< %.1f%% of one core, %s)" % (verdict, limit, kind))
             if verdict != "PASS":
                 fail = True
+            if not live:
+                for name in ('qs', 'collector'):
+                    first = (components_before or {}).get(name)
+                    last = (components_after or {}).get(name)
+                    if not first or not last or first[:2] != last[:2]:
+                        print('cpu %s: unavailable or process changed' % name)
+                        fail = True
+                    else:
+                        part = cpu_core_percent(first[2], last[2], elapsed, 'proc', clk)
+                        print('cpu %s: %.2f%% of one core over %.1fs (proc)' % (name, part, elapsed))
+                frames = []
+                for line in log.splitlines():
+                    match = re.search(r'(?:^|\s)FRAME t=(\d+)(?:\s|$)', line)
+                    if match and t0 <= int(match.group(1)) <= t1:
+                        frames.append(int(match.group(1)))
+                fps = len(frames) / elapsed
+                connected = 'FRAME_DIAGNOSTIC connected' in log
+                saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
+                print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
+                if frame_gate_verdict(len(frames), elapsed, connected, saw_frame) != 'PASS':
+                    print('frame gate: FAIL (expected <= 3 fps and a working probe)')
+                    fail = True
+                else:
+                    print('frame gate: PASS (<= 3 fps)')
         samples = 0
         sample_re = re.compile(r"(?:^|\s)SAMPLE(?:\s|$)")
         stamp_re = re.compile(r"(?:^|\s)t=(\d+)(?=\s|$)")
@@ -946,15 +1094,59 @@ fi
 echo "== cpu gate math =="
 run_qml selftest
 
+if [[ "${MAINFRAME_SMOKE_NO_GUI:-}" == "1" ]]; then
+  echo "GUI and SSH smoke checks: skipped (MAINFRAME_SMOKE_NO_GUI=1)"
+else
 echo "== qml load =="
 if ! command -v qs >/dev/null 2>&1; then
   echo "qml load: qs is not on PATH; cannot verify"
   fail=1
-elif ! command -v qmllint >/dev/null 2>&1; then
-  echo "qmllint: not available, skipped"
 else
-  if qmllint "$ROOT/mainframe/shell.qml" "$ROOT/mainframe/Card.qml" "$ROOT/mainframe/Meter.qml" \
-      "$ROOT/mainframe/Sparkline.qml" "$ROOT/mainframe/ProcList.qml"; then
+  if python3 - "$ROOT" <<'PY'
+import json
+from pathlib import Path
+import re
+import shutil
+import subprocess
+import sys
+
+root = Path(sys.argv[1]) / 'mainframe'
+qml = sorted(root.rglob('*.qml'))
+sources = qml + sorted(root.rglob('*.js'))
+removed = re.compile(r'\bkillGroup\b')
+bad = [(path, n) for path in sources for n, line in enumerate(path.read_text().splitlines(), 1) if removed.search(line)]
+if bad:
+    for path, line in bad:
+        print('removed helper reference: %s:%s' % (path, line))
+    sys.exit(1)
+lint = shutil.which('qmllint') or ('/usr/lib/qt6/bin/qmllint' if Path('/usr/lib/qt6/bin/qmllint').is_file() else None)
+if not lint:
+    print('qmllint: not available, skipped; removed helper source check passed')
+    sys.exit(0)
+result = subprocess.run([lint, '--json', '-'] + [str(p) for p in qml], capture_output=True, text=True)
+try:
+    data = json.loads(result.stdout)
+except ValueError:
+    print('qmllint JSON unavailable; checking text diagnostics')
+    result = subprocess.run([lint] + [str(p) for p in qml], capture_output=True, text=True)
+    if result.returncode or removed.search(result.stdout + result.stderr):
+        print((result.stdout + result.stderr)[-3000:])
+        sys.exit(1)
+else:
+    if result.returncode:
+        print('qmllint failed:', result.stderr[-3000:])
+        sys.exit(1)
+    for item in data.get('files', []):
+        lines = Path(item['filename']).read_text().splitlines()
+        for warning in item.get('warnings', []):
+            number = warning.get('line', 0)
+            line = lines[number - 1] if 0 < number <= len(lines) else ''
+            if removed.search(warning.get('message', '') + ' ' + line):
+                print('removed helper diagnostic:', item['filename'], number, warning.get('message'))
+                sys.exit(1)
+print('qmllint: checked %d QML files; removed helper check passed' % len(qml))
+PY
+  then
     echo "qmllint: pass"
   else
     echo "qmllint: FAIL"
@@ -962,20 +1154,55 @@ else
   fi
 fi
 
+echo "== storage shutdown =="
+if python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" && \
+   python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" --faults; then
+  echo "storage shutdown: pass"
+else
+  echo "storage shutdown: FAIL"
+  fail=1
+fi
+
+echo "== sparkline interaction =="
+qmltest="$(command -v qmltestrunner || true)"
+if [[ -z "$qmltest" && -x /usr/lib/qt6/bin/qmltestrunner ]]; then
+  qmltest=/usr/lib/qt6/bin/qmltestrunner
+fi
+if [[ -n "$qmltest" ]]; then
+  if QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic "$qmltest" -input "$ROOT/mainframe/tests/tst_sparkline.qml"; then
+    echo "sparkline interaction: pass"
+    if QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic "$qmltest" -input "$ROOT/mainframe/tests/tst_overview.qml"; then
+      echo "overview interaction: pass"
+    else
+      echo "overview interaction: FAIL"
+      fail=1
+    fi
+  else
+    echo "sparkline interaction: FAIL"
+    fail=1
+  fi
+else
+  echo "sparkline interaction: skipped (qmltestrunner unavailable)"
+fi
+
 if command -v qs >/dev/null 2>&1; then
   # timeout_s is 60. Core count is this machine's nproc, inside the checker.
   run_qml 1800 1125 26000 60 4 2 1
   run_qml 900 1125 26000 60 2 4 1
+  run_qml 1800 1125 5000 20 4 2 0 machine
+  run_qml 900 1125 5000 20 2 4 0 machine
 else
   :
 fi
 
 echo "== kill -9 parent =="
 if python3 - "$ROOT" <<'PY'
+import atexit
 import os
 import shutil
 import signal
 import sys
+import tempfile
 import time
 
 root = sys.argv[1]
@@ -1042,6 +1269,10 @@ env["MAINFRAME_SMOKE_W"] = "900"
 env["MAINFRAME_SMOKE_H"] = "700"
 env["MAINFRAME_SMOKE_MS"] = "30000"
 env.pop("MAINFRAME_SMOKE_LIVE", None)
+env.pop("MAINFRAME_SMOKE_TAB", None)
+xdg_home = tempfile.mkdtemp(prefix="mainframe-xdg-")
+env["XDG_CONFIG_HOME"] = xdg_home
+atexit.register(lambda: shutil.rmtree(xdg_home, ignore_errors=True))
 leader = os.fork()
 if leader == 0:
     try:
@@ -1118,7 +1349,383 @@ else
   fail=1
 fi
 
-if [[ "${MAINFRAME_SMOKE_LIVE:-}" == "1" ]]; then
+if [[ "${MAINFRAME_SMOKE_NO_SSH:-}" == "1" ]]; then
+  echo "unreachable host: skipped (MAINFRAME_SMOKE_NO_SSH=1)"
+else
+echo "== unreachable host =="
+# A temp hosts.json names an alias that will not resolve. Select it by name.
+if python3 - "$ROOT" <<'PY'
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+root = sys.argv[1]
+qs = shutil.which("qs")
+if not qs:
+    print("unreachable host: qs is not on PATH")
+    sys.exit(1)
+
+alias = "mf-no-such-host.invalid"
+xdg = tempfile.mkdtemp(prefix="mainframe-hosts-")
+log_path = ""
+try:
+    os.makedirs(os.path.join(xdg, "mainframe"))
+    with open(os.path.join(xdg, "mainframe", "hosts.json"), "w", encoding="utf-8") as handle:
+        handle.write('{"hosts":[{"name":"Away","ssh":"%s"}]}\n' % alias)
+    env = dict(os.environ)
+    env.pop("MAINFRAME_SMOKE_LIVE", None)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["MAINFRAME_SMOKE"] = "1"
+    env.pop("MAINFRAME_SMOKE_TAB", None)
+    env["MAINFRAME_SMOKE_TAB_NAME"] = "Away"
+    env["MAINFRAME_SMOKE_MS"] = "15000"
+    env["MAINFRAME_SMOKE_W"] = "900"
+    env["MAINFRAME_SMOKE_H"] = "700"
+    env["XDG_CONFIG_HOME"] = xdg
+    log_fd, log_path = tempfile.mkstemp(prefix="mainframe-unreach-")
+    os.close(log_fd)
+    with open(log_path, "w", encoding="utf-8") as logf:
+        proc = subprocess.Popen(
+            [qs, "-p", os.path.join(root, "mainframe")],
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+    deadline = time.monotonic() + 30.0
+    code = None
+    while time.monotonic() < deadline:
+        got = proc.poll()
+        if got is not None:
+            code = got
+            break
+        time.sleep(0.2)
+    if code is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            proc.terminate()
+        try:
+            code = proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                proc.kill()
+            code = proc.wait(timeout=2)
+    with open(log_path, encoding="utf-8", errors="replace") as handle:
+        log = handle.read()
+    log = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", log)
+    fail_re = re.compile(r"Error|Warning|Binding loop|Cannot assign|Unable to|failed|TypeError|ReferenceError")
+    bad = [line for line in log.splitlines() if fail_re.search(line)]
+    tab_re = re.compile(r'TAB index=(\d+) status=(\S+) wsl=\d+ local=\d+ name=(".*")')
+    tabs = [tab_re.search(line) for line in log.splitlines()]
+    reached = any(m and json.loads(m.group(3)) == "Away" and m.group(2) == "unreachable" for m in tabs)
+
+    def ssh_leftovers(target):
+        # argv0 may be an absolute path. Match the executable basename.
+        found = []
+        me = os.getpid()
+        for name in os.listdir("/proc"):
+            if not name.isdigit() or int(name) == me:
+                continue
+            try:
+                with open("/proc/%s/cmdline" % name, "rb") as handle:
+                    raw = handle.read()
+            except OSError:
+                continue
+            parts = [part for part in raw.split(b"\x00") if part]
+            if not parts:
+                continue
+            argv0 = parts[0].decode("utf-8", "replace")
+            base = argv0.rsplit("/", 1)[-1]
+            if base != "ssh":
+                continue
+            args = [part.decode("utf-8", "replace") for part in parts]
+            if target in args:
+                found.append(int(name))
+        return found
+
+    leftover = ssh_leftovers(alias)
+    for pid in leftover:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    if bad or not reached or leftover or code != 0:
+        print("unreachable host: FAIL exit=%s reached=%s leftover=%s" % (code, reached, leftover))
+        if bad:
+            sys.stdout.write("\n".join(bad[:30]) + "\n")
+        if not reached:
+            lines = [line for line in log.splitlines() if "TAB " in line or "SMOKE" in line]
+            sys.stdout.write("\n".join(lines[-30:]) + "\n")
+            if not lines:
+                sys.stdout.write(log[-2000:])
+        sys.exit(1)
+    print("unreachable host: tab status=unreachable, ssh gone")
+finally:
+    shutil.rmtree(xdg, ignore_errors=True)
+    if log_path:
+        try:
+            os.remove(log_path)
+        except OSError:
+            pass
+PY
+then
+  echo "unreachable host: pass"
+else
+  echo "unreachable host: FAIL"
+  fail=1
+fi
+
+fi
+
+echo "== selected remote tab =="
+if python3 - "$ROOT" <<'PYTEST'
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+
+with tempfile.TemporaryDirectory(prefix='mainframe-selected-') as tmp:
+    config = Path(tmp) / 'mainframe'
+    config.mkdir()
+    (config / 'hosts.json').write_text(json.dumps({'hosts': [{'name': 'Test host', 'ssh': 'test-host'}]}))
+    env = dict(os.environ, XDG_CONFIG_HOME=tmp, QT_QPA_PLATFORM='offscreen',
+               MAINFRAME_SMOKE='1', MAINFRAME_SMOKE_TAB='2', MAINFRAME_SMOKE_FAKE_REMOTE='1',
+               MAINFRAME_SMOKE_MS='3000')
+    env.pop('MAINFRAME_SMOKE_LIVE', None)
+    env.pop('MAINFRAME_SMOKE_TAB_NAME', None)
+    env.pop('MAINFRAME_SMOKE_NO_REMOTE', None)
+    result = subprocess.run(['qs', '-p', str(Path(sys.argv[1]) / 'mainframe')], env=env,
+                            capture_output=True, text=True, timeout=20)
+    matches = re.findall(r'ACTIVE tab=(\d+) selected=(\d+) highlighted=(\d+)', result.stdout + result.stderr)
+    if result.returncode != 0 or not matches or matches[-1] != ('2', '1', '2'):
+        raise SystemExit('selected remote tab: FAIL exit=%s active=%s\n%s' % (result.returncode, matches, (result.stdout + result.stderr)[-3000:]))
+    print('selected remote tab: tab=2 selected=1 highlighted=2')
+PYTEST
+then
+  echo "selected remote tab: pass"
+else
+  echo "selected remote tab: FAIL"
+  fail=1
+fi
+
+echo "== local tab with hosts =="
+# hosts.json has an entry, but the local tab stays selected. Local cards must
+# still sample and lay out, and that entry must not become the selected tab.
+if python3 - "$ROOT" <<'PY'
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+root = sys.argv[1]
+qs = shutil.which("qs")
+if not qs:
+    print("local tab: qs is not on PATH")
+    sys.exit(1)
+
+def online_cpus():
+    try:
+        text = subprocess.check_output(["nproc"], text=True).strip()
+        count = int(text)
+        if count > 0:
+            return count
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        pass
+    return 1
+
+def ssh_leftovers(target):
+    found = []
+    me = os.getpid()
+    for name in os.listdir("/proc"):
+        if not name.isdigit() or int(name) == me:
+            continue
+        try:
+            with open("/proc/%s/cmdline" % name, "rb") as handle:
+                raw = handle.read()
+        except OSError:
+            continue
+        parts = [part for part in raw.split(b"\x00") if part]
+        if not parts:
+            continue
+        argv0 = parts[0].decode("utf-8", "replace")
+        base = argv0.rsplit("/", 1)[-1]
+        if base != "ssh":
+            continue
+        args = [part.decode("utf-8", "replace") for part in parts]
+        if target in args:
+            found.append(int(name))
+    return found
+
+def field(line, key):
+    match = re.search(r"(?:^|\s)" + re.escape(key) + r"=(-?\d+)", line or "")
+    if not match:
+        return None
+    return int(match.group(1))
+
+alias = "mf-local-stay.invalid"
+nproc = online_cpus()
+xdg = tempfile.mkdtemp(prefix="mainframe-local-")
+log_path = ""
+try:
+    os.makedirs(os.path.join(xdg, "mainframe"))
+    with open(os.path.join(xdg, "mainframe", "hosts.json"), "w", encoding="utf-8") as handle:
+        handle.write('{"hosts":[{"name":"Away","ssh":"%s"}]}\n' % alias)
+    env = dict(os.environ)
+    env.pop("MAINFRAME_SMOKE_LIVE", None)
+    env.pop("MAINFRAME_SMOKE_TAB", None)
+    env.pop("MAINFRAME_SMOKE_TAB_NAME", None)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["MAINFRAME_SMOKE"] = "1"
+    env["MAINFRAME_SMOKE_START_LOCAL"] = "1"
+    env["MAINFRAME_SMOKE_MS"] = "10000"
+    env["MAINFRAME_SMOKE_W"] = "1800"
+    env["MAINFRAME_SMOKE_H"] = "1125"
+    env["XDG_CONFIG_HOME"] = xdg
+    log_fd, log_path = tempfile.mkstemp(prefix="mainframe-local-")
+    os.close(log_fd)
+    with open(log_path, "w", encoding="utf-8") as logf:
+        proc = subprocess.Popen(
+            [qs, "-p", os.path.join(root, "mainframe")],
+            stdout=logf,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+        )
+    deadline = time.monotonic() + 30.0
+    code = None
+    while time.monotonic() < deadline:
+        got = proc.poll()
+        if got is not None:
+            code = got
+            break
+        time.sleep(0.2)
+    if code is None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except OSError:
+            proc.terminate()
+        try:
+            code = proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                proc.kill()
+            code = proc.wait(timeout=2)
+    with open(log_path, encoding="utf-8", errors="replace") as handle:
+        log = handle.read()
+    log = re.sub(r"\x1b\[[0-9;]*[A-Za-z]", "", log)
+    fail_re = re.compile(r"Error|Warning|Binding loop|Cannot assign|Unable to|failed|TypeError|ReferenceError")
+    bad = [line for line in log.splitlines() if fail_re.search(line)]
+    sample_re = re.compile(r"(?:^|\s)SAMPLE(?:\s|$)")
+    samples = 0
+    layout_line = None
+    gauge_line = None
+    tab_re = re.compile(r'TAB index=(\d+) status=(\S+) wsl=\d+ local=(\d+) name=(".*")')
+    tab_rows = []
+    for line in log.splitlines():
+        if sample_re.search(line):
+            samples += 1
+        if re.search(r"(?:^|\s)LAYOUT(?:\s|$)", line):
+            layout_line = line
+        if re.search(r"(?:^|\s)GAUGE(?:\s|$)", line):
+            gauge_line = line
+        match = tab_re.search(line)
+        if match:
+            tab_rows.append((int(match.group(1)), match.group(2), match.group(3) == '1', json.loads(match.group(4))))
+    local_names = {name for _, _, local, name in tab_rows if local}
+    local_tab = any(local and name in local_names and status == 'connected' for _, status, local, name in tab_rows)
+    remote_rows = [(index, status) for index, status, _, name in tab_rows if name == 'Away']
+    remote_idle = any(status == 'none' for _, status in remote_rows)
+    remote_moved = any(status != 'none' for _, status in remote_rows)
+    cards = field(layout_line, "cards")
+    overflow = field(layout_line, "overflow")
+    laid_samples = field(layout_line, "samples")
+    meters = field(gauge_line, "meters")
+    want_meters = 0 if nproc > 32 else nproc
+    leftover = ssh_leftovers(alias)
+    for pid in leftover:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except OSError:
+            pass
+    problems = []
+    if bad:
+        problems.append("log")
+    if samples < 1:
+        problems.append("samples")
+    if layout_line is None or cards is None or cards < 1 or overflow != 0 or laid_samples is None or laid_samples < 1:
+        problems.append("layout")
+    if gauge_line is None or meters != want_meters:
+        problems.append("meters")
+    if not local_tab or not remote_idle or remote_moved:
+        problems.append("tabs")
+    if leftover:
+        problems.append("ssh")
+    if code != 0:
+        problems.append("exit")
+    if problems:
+        print("local tab: FAIL %s exit=%s samples=%s cards=%s overflow=%s laid=%s meters=%s want_meters=%s leftover=%s" % (
+            ",".join(problems), code, samples, cards, overflow, laid_samples, meters, want_meters, leftover,
+        ))
+        if bad:
+            sys.stdout.write("\n".join(bad[:30]) + "\n")
+        tail = [line for line in log.splitlines() if "TAB " in line or "LAYOUT" in line or "GAUGE" in line or "SAMPLE" in line or "SMOKE" in line]
+        sys.stdout.write("\n".join(tail[-40:]) + "\n")
+        sys.exit(1)
+    print("local tab: cards=%s samples=%s meters=%s ssh gone" % (cards, laid_samples, meters))
+finally:
+    shutil.rmtree(xdg, ignore_errors=True)
+    if log_path:
+        try:
+            os.remove(log_path)
+        except OSError:
+            pass
+PY
+then
+  echo "local tab with hosts: pass"
+else
+  echo "local tab with hosts: FAIL"
+  fail=1
+fi
+
+echo "== theme preview =="
+if python3 "$ROOT/mainframe/tests/theme-preview-smoke.py"; then
+  echo "theme preview: pass"
+else
+  echo "theme preview: FAIL"
+  fail=1
+fi
+
+echo "== v1.5 fixture views =="
+if python3 "$ROOT/mainframe/tests/v15-smoke.py"; then
+  echo "v1.5 fixture views: pass"
+else
+  echo "v1.5 fixture views: FAIL"
+  fail=1
+fi
+fi
+
+if [[ "${MAINFRAME_SMOKE_LIVE:-}" == "1" && "${MAINFRAME_SMOKE_NO_GUI:-}" != "1" ]]; then
   echo "== live window =="
   if command -v qs >/dev/null 2>&1; then
     # 45 s hold covers the 5 s wait plus the 30 s sample, then the app quits itself.

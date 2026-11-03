@@ -7,20 +7,36 @@ included every 3 seconds. A sweep longer than 40 ms stretches the next gap to
 6 seconds, and the sample reports that sweep's measured time. Stdin is watched
 only for EOF or "quit".
 
+--remote is the copy sent over ssh. It does not watch stdin (that stream is
+the script itself and closes immediately). It emits the same JSON plus host,
+os and kernel, samples once a second, and includes the process table every
+5 seconds. It does not ignore SIGPIPE. On SIGHUP, SIGTERM, SIGPIPE, a stdout
+write failure, or when the parent pid becomes 1, it kills every tracked
+child process group and exits.
+
 --once prints one sample (with a process sweep) and exits. --selftest runs
 the pure parser checks.
 """
 
+import atexit
 import ctypes
+import fcntl
 import glob
 import json
 import math
 import os
+import pty
+import plistlib
 import re
 import select
 import signal
+import struct
+import subprocess
 import sys
 import time
+import threading
+import xml.parsers.expat
+import shutil
 
 _NVME_PART = re.compile(r"^(nvme\d+n\d+)p\d+$")
 _NVME_DISK = re.compile(r"^nvme\d+n\d+$")
@@ -1563,8 +1579,1660 @@ def take_sensor(sample, errors, name, fn):
         errors[name] = _error_text(exc, name)
 
 
-def collect_sample(include_procs):
-    """One parsed sample. Counter files are read before the monotonic stamp."""
+# --- host identity, darwin parsers, and the --remote loop ---
+
+_DARWIN_IFACE = re.compile(r"^(?:disk\d+|en\d+|lo\d*|[a-zA-Z][a-zA-Z0-9]*)$")
+_DARWIN_DISK = re.compile(r"^(?:disk\d+|nvme\d+|ada\d+|da\d+)$")
+_DARWIN_VIRTUAL = re.compile(
+    r"^(?:lo\d*|gif\d*|stf\d*|awdl\d*|llw\d*|utun\d*|bridge\d*|ap\d*|"
+    r"ipsec\d*|pktap\d*|anpi\d*|XHC\d*|awdl|llw)$"
+)
+_DISK_NODE = re.compile(r"(disk\d+)")
+_ROUTE_IFACE = re.compile(r"^\s*interface:\s*(\S+)", re.MULTILINE)
+_SWAP_TOTAL = re.compile(r"total\s*=\s*([0-9.]+)\s*([KMGT]?)")
+_SWAP_USED = re.compile(r"used\s*=\s*([0-9.]+)\s*([KMGT]?)")
+_PMSET_PCT = re.compile(r"(\d+)%;\s*([^;\n]+)")
+_NET_IFACE_HEADER = re.compile(r"\(([^)\s]+)\)")
+
+# `-K` prints KB/t, tps and combined MB/s. There is no read/write split.
+IOSTAT_ARGV = ["iostat", "-d", "-w", "1", "-K"]
+_IOSTAT_MIB = 1048576
+NETSTAT_ARGV = ["netstat", "-ib", "-w", "1"]
+
+
+def netstat_argv(iface):
+    """Pin counters to the default interface. Unscoped netstat reports Total."""
+    name = str(iface or "")
+    if name and _DARWIN_IFACE.match(name) and not _DARWIN_VIRTUAL.match(name):
+        return ["netstat", "-I", name, "-b", "-w", "1"]
+    return list(NETSTAT_ARGV)
+_REMOTE_PROC_EVERY = 5
+
+_child_procs = []
+_children_stopped = False
+_children_lock = threading.RLock()
+
+
+def host_name():
+    try:
+        return os.uname().nodename
+    except OSError:
+        return ""
+
+
+def kernel_release():
+    try:
+        return os.uname().release
+    except OSError:
+        return ""
+
+
+def host_os_name():
+    if sys.platform == "darwin":
+        return "darwin"
+    return "linux"
+
+
+def kernel_is_wsl(release):
+    text = str(release or "").lower()
+    return "microsoft" in text or "wsl" in text
+
+
+def remote_includes(index):
+    """Process table on sample 0, 5, 10, ... in --remote mode."""
+    try:
+        slot = int(index)
+    except (TypeError, ValueError):
+        return False
+    return slot % _REMOTE_PROC_EVERY == 0
+
+
+def use_pdeathsig(remote):
+    """The local collector arms PDEATHSIG. The ssh copy does not."""
+    return not remote
+
+
+def gpu_na():
+    return {"present": False, "na": True, "name": None, "driver": None, "idle_ms": None, "mhz": None}
+
+
+def temps_na():
+    return {"na": True, "package_c": None, "disk_c": None}
+
+
+def apply_host_meta(sample, name, os_name, kernel):
+    """Add host identity. macOS and a GPU-less WSL report those sensors as n/a."""
+    if not isinstance(sample, dict):
+        sample = {}
+    sample["host"] = name or ""
+    sample["os"] = os_name if os_name in ("linux", "darwin") else "linux"
+    sample["kernel"] = kernel or ""
+    errors = sample.get("errors")
+    if not isinstance(errors, dict):
+        errors = None
+    if sample["os"] == "linux" and kernel_is_wsl(sample["kernel"]):
+        sample["wsl"] = True
+        gpu = sample.get("gpu")
+        if not isinstance(gpu, dict) or gpu.get("present") is not True:
+            sample["gpu"] = gpu_na()
+            if errors is not None:
+                errors.pop("gpu", None)
+    if sample["os"] == "darwin":
+        sample["gpu"] = gpu_na()
+        sample["temps"] = temps_na()
+        if errors is not None:
+            errors.pop("gpu", None)
+            errors.pop("temps", None)
+    if errors is not None:
+        if errors:
+            sample["errors"] = errors
+        elif "errors" in sample:
+            del sample["errors"]
+    return sample
+
+
+def _blank_ticks(user, nice, system, idle):
+    return {
+        "user": int(user),
+        "nice": int(nice),
+        "system": int(system),
+        "idle": int(idle),
+        "iowait": 0,
+        "irq": 0,
+        "softirq": 0,
+        "steal": 0,
+        "guest": 0,
+        "guestNice": 0,
+    }
+
+
+def parse_mach_cpu_blob(blob):
+    """Little-endian Mach PROCESSOR_CPU_LOAD_INFO: user, system, idle, nice per core."""
+    data = bytes(blob or b"")
+    cores = []
+    offset = 0
+    width = 16
+    while offset + width <= len(data):
+        user, system, idle, nice = struct.unpack_from("<4I", data, offset)
+        cores.append(_blank_ticks(user, nice, system, idle))
+        offset += width
+    return cores
+
+
+def sum_cpu_ticks(cores):
+    total = {name: 0 for name in _CPU_FIELDS}
+    for core in cores or []:
+        for name in _CPU_FIELDS:
+            total[name] += int(core.get(name) or 0)
+    return total
+
+
+def darwin_memory_from_counts(free, inactive, speculative, pagesize, memsize, swap_total, swap_used):
+    """available = (free + inactive + speculative) pages, clamped to physical RAM."""
+    try:
+        page = int(pagesize or 0)
+    except (TypeError, ValueError):
+        page = 0
+    if page <= 0:
+        page = 4096
+    try:
+        available = (int(free) + int(inactive) + int(speculative)) * page
+    except (TypeError, ValueError):
+        available = 0
+    if available < 0:
+        available = 0
+    try:
+        total = int(memsize or 0)
+    except (TypeError, ValueError):
+        total = 0
+    if total < 0:
+        total = 0
+    if total > 0 and available > total:
+        available = total
+    used = None
+    if total > 0:
+        used = total - available
+        if used < 0:
+            used = 0
+    try:
+        cached = (int(inactive) + int(speculative)) * page
+    except (TypeError, ValueError):
+        cached = 0
+    if cached < 0:
+        cached = 0
+    swap_free = None
+    if swap_total is not None and swap_used is not None:
+        try:
+            swap_free = int(swap_total) - int(swap_used)
+        except (TypeError, ValueError):
+            swap_free = None
+        if swap_free is not None and swap_free < 0:
+            swap_free = 0
+    return {
+        "total": total or None,
+        "free": int(free or 0) * page,
+        "available": available,
+        "cached": cached,
+        "buffers": 0,
+        "swapTotal": swap_total,
+        "swapFree": swap_free,
+        "used": used,
+        "swapUsed": swap_used,
+    }
+
+
+def _swap_bytes(number, unit):
+    value = float(number)
+    mult = {"": 1, "K": 1024, "M": 1024 ** 2, "G": 1024 ** 3, "T": 1024 ** 4}
+    scale = mult.get(str(unit or "").upper(), 1)
+    return int(round(value * scale))
+
+
+def parse_swapusage_text(text):
+    """`sysctl vm.swapusage` text: total = 2048.00M  used = 512.50M."""
+    blob = str(text or "")
+    total_m = _SWAP_TOTAL.search(blob)
+    used_m = _SWAP_USED.search(blob)
+    if not total_m or not used_m:
+        return None, None
+    try:
+        return _swap_bytes(total_m.group(1), total_m.group(2)), _swap_bytes(used_m.group(1), used_m.group(2))
+    except (TypeError, ValueError):
+        return None, None
+
+
+def parse_xsw_usage(blob):
+    """Packed xsw_usage: total, avail, used, pagesize, encrypted."""
+    data = bytes(blob or b"")
+    if len(data) < 32:
+        return None, None
+    total, _avail, used, _pagesize, _encrypted = struct.unpack_from("<QQQII", data)
+    return int(total), int(used)
+
+
+def parse_route_default(text):
+    match = _ROUTE_IFACE.search(str(text or ""))
+    if not match:
+        return None
+    return match.group(1)
+
+
+_PART_OF_WHOLE = re.compile(r"Part of Whole:\s*(\S+)")
+_APFS_STORE = re.compile(r"APFS Physical Store:\s*(\S+)")
+
+
+def apfs_whole_disk(text):
+    """`diskutil info /` field `Part of Whole: disk4`."""
+    match = _PART_OF_WHOLE.search(str(text or ""))
+    if not match:
+        return None
+    name = match.group(1)
+    if not _DARWIN_DISK.match(name):
+        return None
+    return name
+
+
+def apfs_physical_disk(text):
+    """`APFS Physical Store: disk0s2` reduced to the whole disk, disk0."""
+    match = _APFS_STORE.search(str(text or ""))
+    if not match:
+        return None
+    node = _DISK_NODE.search(match.group(1))
+    if not node:
+        return None
+    name = node.group(1)
+    if not _DARWIN_DISK.match(name):
+        return None
+    return name
+
+
+def darwin_physical_from_diskutil(root_info, whole_info):
+    """Physical store behind the APFS volume at /. None when it is unnamed."""
+    if not apfs_whole_disk(root_info):
+        return None
+    return apfs_physical_disk(whole_info)
+
+
+def fallback_physical_disk(name):
+    if name and _DARWIN_DISK.match(str(name)):
+        return str(name)
+    return "disk0"
+
+
+def resolve_darwin_physical_disk():
+    """Once, at collector start. disk0 when diskutil does not name a store."""
+    root_info = _run_text(["diskutil", "info", "/"], 2)
+    whole = apfs_whole_disk(root_info)
+    store = None
+    if whole:
+        store = apfs_physical_disk(_run_text(["diskutil", "info", whole], 2))
+    return fallback_physical_disk(store)
+
+
+def feed_iostat_line(state, line):
+    """One line of `iostat -d -w 1 -K`.
+
+    A device line names the columns. Each data line is KB/t, tps, MB/s per
+    device. The first data line is the since-boot average and is ignored.
+    MB/s is combined throughput for that one-second interval.
+    """
+    text = str(line or "").strip()
+    if not text:
+        return False
+    parts = text.split()
+    if parts and all(_DARWIN_DISK.match(part) for part in parts):
+        state["devices"] = parts
+        return False
+    if "KB/t" in parts or "MB/s" in parts or parts[0] in ("KB/t", "tps"):
+        return False
+    devices = state.get("devices") or []
+    width = 3 * len(devices)
+    if not devices or len(parts) < width:
+        return False
+    values = []
+    for part in parts[:width]:
+        try:
+            values.append(float(part))
+        except ValueError:
+            return False
+    if not state.get("boot_skipped"):
+        state["boot_skipped"] = True
+        return False
+    root = state.get("root") or state.get("device") or "disk0"
+    try:
+        index = devices.index(root)
+    except ValueError:
+        return False
+    mb_s = values[index * 3 + 2]
+    if mb_s < 0:
+        mb_s = 0.0
+    state["device"] = root
+    state["io_bytes_per_s"] = int(mb_s * _IOSTAT_MIB)
+    state["rows"] = int(state.get("rows") or 0) + 1
+    return True
+
+
+def darwin_disk_sample(state, root_used, root_total):
+    """Combined bytes/s for the physical disk. Read and write stay null."""
+    device = state.get("root") or state.get("device") or "disk0"
+    io = state.get("io_bytes_per_s")
+    if io is not None:
+        try:
+            io = int(io)
+        except (TypeError, ValueError):
+            io = None
+        if io is not None and io < 0:
+            io = 0
+    return {
+        "device": device,
+        "io_bytes_per_s": io,
+        "sectors_read": None,
+        "sectors_written": None,
+        "root_used": root_used,
+        "root_total": root_total,
+    }
+
+
+def darwin_virtual(name):
+    return bool(_DARWIN_VIRTUAL.match(str(name or "")))
+
+
+def _net_slot(state, name):
+    ifaces = state.setdefault("ifaces", {})
+    slot = ifaces.get(name)
+    if slot is None:
+        slot = {"abs_rx": 0, "abs_tx": 0, "last_rx": None, "last_tx": None, "mode": "unknown"}
+        ifaces[name] = slot
+    return slot
+
+
+def _note_net_reading(state, name, ibytes, obytes, kind):
+    """kind is 'absolute' (replace) or 'interval' (absolute until a drop, then deltas)."""
+    slot = _net_slot(state, name)
+    ibytes = int(ibytes)
+    obytes = int(obytes)
+    if kind == "absolute":
+        slot["mode"] = "absolute"
+        slot["abs_rx"] = ibytes
+        slot["abs_tx"] = obytes
+    elif slot["last_rx"] is None:
+        slot["abs_rx"] = ibytes
+        slot["abs_tx"] = obytes
+    elif ibytes < slot["last_rx"] or obytes < slot["last_tx"] or slot["mode"] == "delta":
+        slot["mode"] = "delta"
+        slot["abs_rx"] = int(slot["abs_rx"]) + ibytes
+        slot["abs_tx"] = int(slot["abs_tx"]) + obytes
+    else:
+        slot["mode"] = "absolute"
+        slot["abs_rx"] = ibytes
+        slot["abs_tx"] = obytes
+    slot["last_rx"] = ibytes
+    slot["last_tx"] = obytes
+    state["rows"] = int(state.get("rows") or 0) + 1
+
+
+def feed_netstat_line(state, line):
+    """One line of `netstat -ib` or `netstat -ib -w 1`."""
+    text = str(line or "").strip()
+    if not text:
+        return False
+    header = _NET_IFACE_HEADER.search(text)
+    if header and not text[0].isdigit():
+        state["current"] = header.group(1)
+        return False
+    lowered = text.lower()
+    if lowered.startswith("name ") or lowered.startswith("packets ") or lowered.startswith("input "):
+        return False
+    parts = text.split()
+    if not parts:
+        return False
+    if "<Link" in text or "<link" in lowered:
+        name = parts[0]
+        nums = []
+        for part in parts:
+            if part.isdigit():
+                nums.append(int(part))
+        # Mtu sits in front of the packet counters. The last 7 are the link row.
+        if len(nums) >= 8:
+            nums = nums[-7:]
+        if len(nums) >= 6:
+            obytes = nums[5]
+            _note_net_reading(state, name, nums[2], obytes, "absolute")
+            return True
+        return False
+    if all(part.isdigit() for part in parts) and len(parts) >= 6:
+        name = state.get("current") or ""
+        if not name:
+            return False
+        # `netstat -ib -w 1` with no -I labels the row Total. Pin it to the default.
+        if name == "Total" and state.get("default"):
+            name = state["default"]
+        ibytes = int(parts[2])
+        obytes = int(parts[5])
+        _note_net_reading(state, name, ibytes, obytes, "interval")
+        return True
+    return False
+
+
+def publish_darwin_disk(box, root_used, root_total):
+    """While iostat is dead the last interval must not go out with a new stamp."""
+    if box.iostat.dead:
+        box.disk["io_bytes_per_s"] = None
+    return darwin_disk_sample(box.disk, root_used, root_total)
+
+
+def publish_darwin_net(box):
+    """While netstat is dead the last counters are not a fresh rate."""
+    if box.netstat.dead:
+        box.net["ifaces"] = {}
+        box.net["rows"] = 0
+        box.net["current"] = ""
+        return {"na": True}
+    return net_sample_from_state(box.net, box.route_iface)
+
+
+def net_sample_from_state(state, default_iface):
+    rows = []
+    virtual = []
+    ifaces = state.get("ifaces") or {}
+    for name in sorted(ifaces):
+        slot = ifaces[name]
+        rows.append({"name": name, "rx": int(slot["abs_rx"]), "tx": int(slot["abs_tx"])})
+        if darwin_virtual(name):
+            virtual.append(name)
+    if "lo0" not in virtual:
+        virtual.append("lo0")
+    return {"ifaces": rows, "virtual": virtual, "default_iface": default_iface}
+
+
+def parse_pmset_batt(text):
+    """pmset -g batt. No InternalBattery and no percent hides the card."""
+    blob = str(text or "")
+    if "InternalBattery" not in blob and "Battery" not in blob:
+        return None
+    match = _PMSET_PCT.search(blob)
+    if not match:
+        return None
+    status = match.group(2).strip().lower()
+    if status:
+        status = status.split()[0]
+    else:
+        status = None
+    try:
+        capacity = int(match.group(1))
+    except ValueError:
+        return None
+    return {
+        "capacity": capacity,
+        "status": status,
+        "power_now_uw": None,
+        "current_now_ua": None,
+        "voltage_now_uv": None,
+    }
+
+
+def present_darwin_ps(text, mem_total):
+    """Group `ps -axo pid=,pcpu=,rss=,comm=` by basename. pcpu is already a percent."""
+    order = []
+    groups = {}
+    count = 0
+    try:
+        total = float(mem_total or 0)
+    except (TypeError, ValueError):
+        total = 0.0
+    for line in str(text or "").split("\n"):
+        parts = line.split(None, 3)
+        if len(parts) < 4:
+            continue
+        try:
+            pcpu = float(parts[1])
+            rss_kb = float(parts[2])
+        except ValueError:
+            continue
+        if pcpu < 0:
+            pcpu = 0.0
+        if rss_kb < 0:
+            rss_kb = 0.0
+        comm = parts[3].strip()
+        base = os.path.basename(comm) or comm or "?"
+        count += 1
+        mem = 0.0
+        if total > 0:
+            mem = 100.0 * (rss_kb * 1024.0) / total
+        group = groups.get(base)
+        if group is None:
+            group = {"cpu": 0.0, "mem": 0.0, "count": 0}
+            groups[base] = group
+            order.append(base)
+        group["cpu"] += pcpu
+        group["mem"] += mem
+        group["count"] += 1
+    items = []
+    for name in order:
+        group = groups[name]
+        label = name if group["count"] <= 1 else "%s ×%d" % (name, group["count"])
+        items.append((label, group["cpu"], group["mem"]))
+
+    def top(index):
+        ranked = sorted(items, key=lambda item: (-item[index], item[0]))
+        return [{"name": item[0], "text": format_percent_precise(item[index])} for item in ranked[:8]]
+
+    return {"byCpu": top(1), "byMem": top(2)}, count
+
+
+def _track_child(proc):
+    if proc is not None:
+        with _children_lock:
+            _child_procs.append(proc)
+
+
+def stop_children():
+    """SIGTERM, then SIGKILL after 0.5 s, every long-lived child process group."""
+    global _children_stopped
+    with _children_lock:
+        _children_stopped = True
+        children = list(_child_procs)
+    for child in list(_line_children):
+        child.stop()
+    for proc in children:
+        _stop_group(proc)
+
+
+def _stop_group(proc):
+    if proc is None:
+        return
+    def send(sig):
+        try:
+            os.killpg(proc.pid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+    alive = send(signal.SIGTERM)
+    deadline = time.monotonic() + 0.5
+    while alive and time.monotonic() < deadline:
+        proc.poll()  # Reap the leader even if other group members remain.
+        try:
+            os.killpg(proc.pid, 0)
+        except ProcessLookupError:
+            alive = False
+            break
+        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
+    if alive:
+        send(signal.SIGKILL)
+    proc.wait()
+    with _children_lock:
+        if proc in _child_procs:
+            _child_procs.remove(proc)
+
+
+def _run_tracked(args, timeout, **kwargs):
+    with _children_lock:
+        if _children_stopped:
+            raise subprocess.SubprocessError('collector is stopping')
+        proc = subprocess.Popen(args, start_new_session=True, **kwargs)
+        _track_child(proc)
+    try:
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _stop_group(proc)
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+            raise
+        if proc.returncode:
+            raise subprocess.CalledProcessError(proc.returncode, args, output=stdout, stderr=stderr)
+        return stdout
+    finally:
+        with _children_lock:
+            if proc in _child_procs:
+                _child_procs.remove(proc)
+
+
+def finalize():
+    stop_children()
+
+
+atexit.register(finalize)
+
+
+_line_children = []
+
+
+class LineChild(object):
+    """One long-lived stdout producer. A pty makes iostat flush each line.
+
+    The child is its own session, same as the macOS iostat and netstat
+    helpers. When it dies, proc and the pty are cleared and the next start
+    waits 30 s. While it is dead the sensor must not republish the last rate.
+    """
+
+    def __init__(self, argv):
+        self.argv = list(argv)
+        self.proc = None
+        self.master = None
+        self.buf = b""
+        self.dead = False
+        self.fresh = False
+        self.generation = 0
+        self.next_start = 0.0
+        _line_children.append(self)
+
+    def close_master(self):
+        if self.master is None:
+            return
+        try:
+            os.close(self.master)
+        except OSError:
+            pass
+        self.master = None
+
+    def _mark_dead(self):
+        if not self.dead:
+            self.next_start = time.monotonic() + 30.0
+        self.stop()
+
+    def stop(self):
+        proc = self.proc
+        self.dead = True
+        self.fresh = False
+        try:
+            _stop_group(proc)
+        finally:
+            self.close_master()
+            self.proc = None
+            if self in _line_children:
+                _line_children.remove(self)
+
+    def ensure(self):
+        if _children_stopped:
+            self._mark_dead()
+            return
+        if self.proc is not None and self.proc.poll() is None:
+            self.dead = False
+            return
+        if self.proc is not None:
+            self._mark_dead()
+            return
+        now = time.monotonic()
+        if now < self.next_start:
+            self.dead = True
+            return
+        if self not in _line_children:
+            _line_children.append(self)
+        self.close_master()
+        master = None
+        slave = None
+        try:
+            master, slave = pty.openpty()
+            self.proc = subprocess.Popen(
+                self.argv,
+                stdin=subprocess.DEVNULL,
+                stdout=slave,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+                close_fds=True,
+            )
+        except OSError:
+            self.proc = None
+            self.dead = True
+            self.fresh = False
+            self.next_start = now + 30.0
+            if master is not None:
+                try:
+                    os.close(master)
+                except OSError:
+                    pass
+            if slave is not None:
+                try:
+                    os.close(slave)
+                except OSError:
+                    pass
+            return
+        try:
+            os.close(slave)
+        except OSError:
+            pass
+        self.master = master
+        try:
+            flags = fcntl.fcntl(master, fcntl.F_GETFL)
+            fcntl.fcntl(master, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        except OSError:
+            pass
+        self.buf = b""
+        self.dead = False
+        self.fresh = True
+        self.generation += 1
+        _track_child(self.proc)
+
+    def read_ready(self):
+        if self.proc is None or self.master is None:
+            return []
+        lines = []
+        while True:
+            try:
+                ready, _, _ = select.select([self.master], [], [], 0)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                break
+            try:
+                chunk = os.read(self.master, 65536)
+            except BlockingIOError:
+                break
+            except OSError:
+                self._mark_dead()
+                break
+            if not chunk:
+                self._mark_dead()
+                break
+            self.buf += chunk
+            while b"\n" in self.buf:
+                raw, self.buf = self.buf.split(b"\n", 1)
+                lines.append(raw.decode("utf-8", "replace"))
+        if self.proc is not None and self.proc.poll() is not None:
+            self._mark_dead()
+        return lines
+
+    def drain(self):
+        self.ensure()
+        return self.read_ready()
+
+
+def _run_text(argv, timeout):
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError:
+        return ""
+    _track_child(proc)
+    try:
+        try:
+            stdout, _ = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return ""
+        return stdout.decode("utf-8", "replace")
+    finally:
+        _stop_group(proc)
+        if proc.stdout is not None:
+            proc.stdout.close()
+
+
+_darwin_libc = None
+_mach_host = None
+
+
+def _libc():
+    global _darwin_libc
+    if _darwin_libc is None:
+        _darwin_libc = ctypes.CDLL(None, use_errno=True)
+    return _darwin_libc
+
+
+def _host_port(libc):
+    global _mach_host
+    if _mach_host is None:
+        libc.mach_host_self.restype = ctypes.c_uint
+        _mach_host = libc.mach_host_self()
+    return _mach_host
+
+
+class VMStatistics64(ctypes.Structure):
+    _fields_ = [
+        ("free_count", ctypes.c_uint32),
+        ("active_count", ctypes.c_uint32),
+        ("inactive_count", ctypes.c_uint32),
+        ("wire_count", ctypes.c_uint32),
+        ("zero_fill_count", ctypes.c_uint64),
+        ("reactivations", ctypes.c_uint64),
+        ("pageins", ctypes.c_uint64),
+        ("pageouts", ctypes.c_uint64),
+        ("faults", ctypes.c_uint64),
+        ("cow_faults", ctypes.c_uint64),
+        ("lookups", ctypes.c_uint64),
+        ("hits", ctypes.c_uint64),
+        ("purges", ctypes.c_uint64),
+        ("purgeable_count", ctypes.c_uint32),
+        ("speculative_count", ctypes.c_uint32),
+        ("decompressions", ctypes.c_uint64),
+        ("compressions", ctypes.c_uint64),
+        ("swapins", ctypes.c_uint64),
+        ("swapouts", ctypes.c_uint64),
+        ("compressor_page_count", ctypes.c_uint32),
+        ("throttled_count", ctypes.c_uint32),
+        ("external_page_count", ctypes.c_uint32),
+        ("internal_page_count", ctypes.c_uint32),
+        ("total_uncompressed_pages_in_compressor", ctypes.c_uint64),
+    ]
+
+
+class XSWUsage(ctypes.Structure):
+    _fields_ = [
+        ("xsu_total", ctypes.c_uint64),
+        ("xsu_avail", ctypes.c_uint64),
+        ("xsu_used", ctypes.c_uint64),
+        ("xsu_pagesize", ctypes.c_uint32),
+        ("xsu_encrypted", ctypes.c_uint32),
+    ]
+
+
+def darwin_cpu_cores():
+    """Per-core Mach ticks. Caller maps a failure to n/a."""
+    libc = _libc()
+    libc.mach_task_self.restype = ctypes.c_uint
+    libc.host_processor_info.argtypes = [
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.POINTER(ctypes.c_uint),
+        ctypes.POINTER(ctypes.c_void_p),
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    libc.host_processor_info.restype = ctypes.c_int
+    libc.vm_deallocate.argtypes = [ctypes.c_uint, ctypes.c_void_p, ctypes.c_size_t]
+    libc.vm_deallocate.restype = ctypes.c_int
+    host = _host_port(libc)
+    cpu_count = ctypes.c_uint(0)
+    info = ctypes.c_void_p()
+    info_count = ctypes.c_uint(0)
+    kr = libc.host_processor_info(host, 2, ctypes.byref(cpu_count), ctypes.byref(info), ctypes.byref(info_count))
+    try:
+        if kr != 0 or not info.value or info_count.value <= 0:
+            raise OSError("host_processor_info %s" % kr)
+        blob = ctypes.string_at(info.value, int(info_count.value) * 4)
+    finally:
+        if info.value:
+            libc.vm_deallocate(libc.mach_task_self(), info, int(info_count.value) * 4)
+    cores = parse_mach_cpu_blob(blob)
+    if not cores:
+        raise OSError("host_processor_info returned no cpus")
+    return cores
+
+
+def darwin_page_size():
+    libc = _libc()
+    page = ctypes.c_ulong(0)
+    libc.host_page_size.argtypes = [ctypes.c_uint, ctypes.POINTER(ctypes.c_ulong)]
+    libc.host_page_size.restype = ctypes.c_int
+    kr = libc.host_page_size(_host_port(libc), ctypes.byref(page))
+    if kr != 0 or page.value <= 0:
+        return 4096
+    return int(page.value)
+
+
+def _c_void(buf):
+    """Address as c_void_p. byref() is rejected when the argtype is c_void_p."""
+    return ctypes.c_void_p(ctypes.addressof(buf))
+
+
+def darwin_vm_stats():
+    libc = _libc()
+    stats = VMStatistics64()
+    count = ctypes.c_uint(ctypes.sizeof(stats) // 4)
+    libc.host_statistics64.argtypes = [
+        ctypes.c_uint,
+        ctypes.c_int,
+        ctypes.POINTER(VMStatistics64),
+        ctypes.POINTER(ctypes.c_uint),
+    ]
+    libc.host_statistics64.restype = ctypes.c_int
+    kr = libc.host_statistics64(_host_port(libc), 4, ctypes.byref(stats), ctypes.byref(count))
+    if kr != 0:
+        raise OSError("host_statistics64 %s" % kr)
+    return stats
+
+
+def _sysctl_prepare(libc):
+    libc.sysctlbyname.argtypes = [
+        ctypes.c_char_p,
+        ctypes.c_void_p,
+        ctypes.POINTER(ctypes.c_size_t),
+        ctypes.c_void_p,
+        ctypes.c_size_t,
+    ]
+    libc.sysctlbyname.restype = ctypes.c_int
+
+
+def darwin_memsize():
+    libc = _libc()
+    _sysctl_prepare(libc)
+    size = ctypes.c_size_t(8)
+    value = ctypes.c_uint64(0)
+    if libc.sysctlbyname(b"hw.memsize", _c_void(value), ctypes.byref(size), None, 0) != 0:
+        raise OSError("hw.memsize")
+    return int(value.value)
+
+
+def darwin_swap_pair():
+    libc = _libc()
+    _sysctl_prepare(libc)
+    usage = XSWUsage()
+    size = ctypes.c_size_t(ctypes.sizeof(usage))
+    if libc.sysctlbyname(b"vm.swapusage", _c_void(usage), ctypes.byref(size), None, 0) != 0:
+        return None, None
+    return int(usage.xsu_total), int(usage.xsu_used)
+
+
+def darwin_hw_mhz():
+    """Apple Silicon often reports 0. Leave MHz null rather than invent a number."""
+    libc = _libc()
+    _sysctl_prepare(libc)
+    for key in (b"hw.cpufrequency", b"hw.cpufrequency_max"):
+        size = ctypes.c_size_t(8)
+        value = ctypes.c_uint64(0)
+        if libc.sysctlbyname(key, _c_void(value), ctypes.byref(size), None, 0) != 0:
+            continue
+        hz = int(value.value)
+        if hz > 0:
+            return int(hz / 1000000)
+    return None
+
+
+class DarwinCollector(object):
+    def __init__(self):
+        physical = resolve_darwin_physical_disk()
+        self.disk = {
+            "io_bytes_per_s": None,
+            "device": physical,
+            "root": physical,
+            "devices": None,
+            "boot_skipped": False,
+            "rows": 0,
+        }
+        self.net = {"ifaces": {}, "current": "", "rows": 0}
+        self.iostat = LineChild(IOSTAT_ARGV)
+        self.netstat = LineChild(netstat_argv(None))
+        self.route_at = 0.0
+        self.route_iface = None
+        self.batt_at = 0.0
+        self.memsize = None
+        self.page = None
+
+    def _reset_disk_parser(self):
+        self.disk["boot_skipped"] = False
+        self.disk["io_bytes_per_s"] = None
+        self.disk["devices"] = None
+        self.disk["rows"] = 0
+
+    def _reset_net_parser(self):
+        self.net = {"ifaces": {}, "current": "", "rows": 0, "default": self.route_iface or ""}
+
+    def poll_rates(self):
+        now = time.monotonic()
+        if self.route_at <= 0 or (now - self.route_at) >= 60:
+            self.route_iface = parse_route_default(_run_text(["route", "-n", "get", "default"], 2))
+            self.route_at = now
+            want = netstat_argv(self.route_iface)
+            if self.netstat.argv != want:
+                self.netstat.stop()
+                self.netstat = LineChild(want)
+        self.iostat.ensure()
+        self.netstat.ensure()
+        if self.iostat.fresh:
+            self._reset_disk_parser()
+            self.iostat.fresh = False
+        if self.netstat.fresh:
+            self._reset_net_parser()
+            self.netstat.fresh = False
+        self.net["default"] = self.route_iface or ""
+        for line in self.iostat.read_ready():
+            feed_iostat_line(self.disk, line)
+        for line in self.netstat.read_ready():
+            feed_netstat_line(self.net, line)
+
+
+_darwin_collector = None
+
+
+def darwin_collector():
+    global _darwin_collector
+    if _darwin_collector is None:
+        _darwin_collector = DarwinCollector()
+    return _darwin_collector
+
+
+def collect_darwin(include_procs):
+    """macOS sample. GPU and temperatures are n/a without root."""
+    errors = {}
+    sample = {"t_ms": int(time.time() * 1000)}
+    box = darwin_collector()
+    try:
+        box.poll_rates()
+    except Exception as exc:  # noqa: BLE001
+        errors["collector"] = _error_text(exc, "collector")
+    sample["mono_ms"] = time.monotonic() * 1000.0
+
+    try:
+        cores = darwin_cpu_cores()
+        mhz = None
+        try:
+            mhz = darwin_hw_mhz()
+        except Exception:  # noqa: BLE001 — frequency is optional
+            mhz = None
+        core_mhz = []
+        for _core in cores:
+            core_mhz.append(mhz)
+        sample["cpu"] = {
+            "total": sum_cpu_ticks(cores),
+            "cores": cores,
+            "mhz": mhz,
+            "core_mhz": core_mhz,
+        }
+    except Exception:  # noqa: BLE001 — no Mach counters on this host
+        sample["cpu"] = {"na": True}
+
+    try:
+        if box.page is None:
+            box.page = darwin_page_size()
+        if box.memsize is None:
+            box.memsize = darwin_memsize()
+        stats = darwin_vm_stats()
+        swap_total, swap_used = darwin_swap_pair()
+        sample["mem"] = darwin_memory_from_counts(
+            stats.free_count,
+            stats.inactive_count,
+            stats.speculative_count,
+            box.page,
+            box.memsize,
+            swap_total,
+            swap_used,
+        )
+    except Exception:  # noqa: BLE001
+        sample["mem"] = {"na": True}
+
+    root_used, root_total = root_fs()
+    sample["disk"] = publish_darwin_disk(box, root_used, root_total)
+    sample["net"] = publish_darwin_net(box)
+
+    sample["gpu"] = gpu_na()
+    sample["temps"] = temps_na()
+
+    now = time.monotonic()
+    if box.batt_at and (now - box.batt_at) < 30.0:
+        sample["battery_skip"] = True
+        sample["battery"] = None
+    else:
+        sample["battery"] = parse_pmset_batt(_run_text(["pmset", "-g", "batt"], 2))
+        box.batt_at = now
+
+    if include_procs:
+        started = time.monotonic()
+        mem_total = 0
+        mem = sample.get("mem")
+        if isinstance(mem, dict) and mem.get("total"):
+            mem_total = mem.get("total") or 0
+        text = _run_text(["ps", "-axo", "pid=,pcpu=,rss=,comm="], 4)
+        presented, count = present_darwin_ps(text, mem_total)
+        sample["procs"] = {
+            "presented": presented,
+            "sweep_ms": round((time.monotonic() - started) * 1000.0, 3),
+            "count": count,
+        }
+    else:
+        sample["procs"] = None
+    if errors:
+        sample["errors"] = errors
+    return sample
+
+
+def safe_sample(include_procs):
+    try:
+        return collect_sample(include_procs)
+    except Exception as exc:  # noqa: BLE001
+        sample = {
+            "t_ms": int(time.time() * 1000),
+            "mono_ms": time.monotonic() * 1000.0,
+            "cpu": None,
+            "mem": None,
+            "disk": None,
+            "net": None,
+            "gpu": None,
+            "temps": None,
+            "battery": None,
+            "procs": None,
+            "errors": {"collector": _error_text(exc, "collector")},
+        }
+        return apply_host_meta(sample, host_name(), host_os_name(), kernel_release())
+
+
+def remote_shutdown():
+    """Kill every tracked child process group, then the caller exits."""
+    finalize()
+
+
+def remote_parent_gone(ppid=None):
+    """sshd is gone when this process has been reparented to pid 1."""
+    if ppid is None:
+        try:
+            ppid = os.getppid()
+        except OSError:
+            return True
+    try:
+        return int(ppid) == 1
+    except (TypeError, ValueError):
+        return True
+
+
+def _die_remote(_signum, _frame):
+    _die_term(_signum, _frame)
+
+
+def install_remote_signals():
+    """Handle SIGHUP, SIGTERM and SIGPIPE. Do not ignore SIGPIPE."""
+    signal.signal(signal.SIGHUP, _die_remote)
+    signal.signal(signal.SIGTERM, _die_remote)
+    try:
+        signal.signal(signal.SIGPIPE, _die_remote)
+    except (OSError, ValueError):
+        pass
+
+
+def serve_remote():
+    """1 Hz, no stdin. Process table every 5 samples. Children die with us."""
+    period = 1.0
+    next_at = time.monotonic()
+    index = 0
+    while True:
+        if remote_parent_gone():
+            return 0
+        now = time.monotonic()
+        delay = next_at - now
+        if delay > 0:
+            time.sleep(delay if delay < 0.25 else 0.25)
+            continue
+        if remote_parent_gone():
+            return 0
+        sample = safe_sample(remote_includes(index))
+        try:
+            emit_sample(sample)
+        except BrokenPipeError:
+            return 0
+        except OSError:
+            return 0
+        except ValueError as exc:
+            if "closed" in str(exc).lower():
+                return 0
+            raise
+        index += 1
+        next_at += period
+        now = time.monotonic()
+        if next_at < now:
+            skipped = int((now - next_at) / period)
+            if skipped > 0:
+                index += skipped
+                next_at += skipped * period
+    return 0
+
+
+def remote_shutdown_fixture():
+    """One session child, then wait until the remote shutdown path runs.
+
+    The child is started the same way as iostat: pty, new session. The test
+    signals this process. This process must reap the child itself.
+    """
+    install_remote_signals()
+    child = LineChild(["sleep", "60"])
+    child.ensure()
+    proc = child.proc
+    if proc is None or proc.poll() is not None:
+        sys.stderr.write("fixture: helper child did not start\n")
+        return 2
+    sys.stdout.write("ready %s\n" % proc.pid)
+    sys.stdout.flush()
+    while True:
+        if remote_parent_gone():
+            remote_shutdown()
+            return 0
+        if proc.poll() is not None:
+            sys.stderr.write("fixture: helper exited on its own\n")
+            return 3
+        time.sleep(0.05)
+    return 0
+
+
+def remote_shutdown_selftest():
+    """SIGTERM the fixture only. The sleep child must die without us signaling it."""
+    try:
+        source_path = __file__
+    except NameError:
+        return "remote shutdown selftest has no script path"
+    proc = subprocess.Popen(
+        [sys.executable, "-u", source_path, "--remote-shutdown-selftest"],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    sleep_pid = None
+    try:
+        deadline = time.monotonic() + 5.0
+        buf = b""
+        while time.monotonic() < deadline and b"\n" not in buf:
+            if proc.poll() is not None and not buf:
+                err = b""
+                if proc.stderr is not None:
+                    try:
+                        err = proc.stderr.read()
+                    except OSError:
+                        err = b""
+                return "remote shutdown fixture exited early %s %s" % (
+                    proc.returncode, err.decode("utf-8", "replace").strip(),
+                )
+            try:
+                ready, _, _ = select.select([proc.stdout], [], [], 0.2)
+            except (OSError, ValueError):
+                break
+            if not ready:
+                continue
+            try:
+                chunk = os.read(proc.stdout.fileno(), 256)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+        line = buf.split(b"\n", 1)[0].decode("utf-8", "replace").strip()
+        if not line.startswith("ready "):
+            return "remote shutdown fixture did not report ready: %s" % line
+        try:
+            sleep_pid = int(line.split()[1])
+        except (IndexError, ValueError):
+            return "remote shutdown fixture pid unreadable"
+        try:
+            with open("/proc/%s/stat" % sleep_pid, "r", encoding="utf-8") as handle:
+                stat = handle.read()
+            fields = stat[stat.rfind(")") + 2:].split()
+            pgrp = int(fields[2])
+        except (OSError, ValueError, IndexError):
+            return "helper is not a session leader"
+        if pgrp != sleep_pid:
+            return "helper pgrp %s is not its pid" % pgrp
+        try:
+            os.kill(sleep_pid, 0)
+        except OSError:
+            return "helper was already gone"
+        proc.send_signal(signal.SIGTERM)
+        try:
+            code = proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            return "remote shutdown fixture ignored SIGTERM"
+        if code != 0:
+            err = b""
+            if proc.stderr is not None:
+                try:
+                    err = proc.stderr.read()
+                except OSError:
+                    err = b""
+            return "remote shutdown fixture exit %s %s" % (code, err.decode("utf-8", "replace").strip())
+        try:
+            os.kill(sleep_pid, 0)
+        except ProcessLookupError:
+            sleep_pid = None
+            return None
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 3:
+                sleep_pid = None
+                return None
+            return "helper still signalable: %s" % exc
+        return "helper still alive after remote shutdown"
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+
+        if sleep_pid is not None:
+            try:
+                os.kill(-sleep_pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    os.kill(sleep_pid, signal.SIGKILL)
+                except OSError:
+                    pass
+
+
+def remote_loopback():
+    """Run this file under --remote locally. Three samples, then SIGHUP."""
+    try:
+        source_path = __file__
+    except NameError:
+        return "remote loopback has no script path"
+    try:
+        with open(source_path, "rb") as handle:
+            source = handle.read()
+    except OSError as exc:
+        return "remote loopback could not read the script: %s" % exc
+    proc = subprocess.Popen(
+        [sys.executable, "-u", "-", "--remote"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        proc.stdin.write(source)
+        proc.stdin.close()
+        lines = []
+        deadline = time.monotonic() + 12.0
+        buf = b""
+        while len(lines) < 3 and time.monotonic() < deadline:
+            if proc.poll() is not None and not buf:
+                break
+            timeout = deadline - time.monotonic()
+            if timeout <= 0:
+                break
+            try:
+                ready, _, _ = select.select([proc.stdout], [], [], min(timeout, 1.0))
+            except (OSError, ValueError):
+                break
+            if not ready:
+                continue
+            try:
+                chunk = os.read(proc.stdout.fileno(), 65536)
+            except OSError:
+                break
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                if raw.strip():
+                    lines.append(raw)
+        if len(lines) < 3:
+            return "remote loopback got %d samples" % len(lines)
+        samples = []
+        for raw in lines[:3]:
+            try:
+                samples.append(json.loads(raw.decode("utf-8")))
+            except (ValueError, UnicodeError):
+                return "remote loopback line was not json"
+        for sample in samples:
+            if "host" not in sample or sample.get("os") not in ("linux", "darwin"):
+                return "remote sample missing host or os"
+            if "kernel" not in sample:
+                return "remote sample missing kernel"
+            if "error" in sample:
+                return "remote sample has a top-level error"
+        if not isinstance(samples[0].get("procs"), dict):
+            return "remote sample 0 missing procs"
+        if samples[1].get("procs") is not None or samples[2].get("procs") is not None:
+            return "remote samples 1-2 included procs"
+        proc.send_signal(signal.SIGHUP)
+        try:
+            code = proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            return "remote ignored SIGHUP"
+        if code != 0:
+            return "remote exit %s" % code
+        return None
+    finally:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+def darwin_parser_checks(check):
+    """Recorded iostat, netstat, ps, pmset, route, swap and Mach fixtures."""
+    check(IOSTAT_ARGV == ["iostat", "-d", "-w", "1", "-K"], "one iostat child, one second interval")
+    check(NETSTAT_ARGV == ["netstat", "-ib", "-w", "1"], "one netstat child, one second interval")
+    check(netstat_argv(None) == NETSTAT_ARGV, "netstat fallback has no interface")
+    check(netstat_argv("en0") == ["netstat", "-I", "en0", "-b", "-w", "1"], "netstat pins the default interface")
+    check(netstat_argv("lo0") == NETSTAT_ARGV, "netstat does not pin loopback")
+    check(remote_includes(0) and remote_includes(5) and not remote_includes(1), "remote procs every 5 s")
+    check(use_pdeathsig(False) is True and use_pdeathsig(True) is False, "no pdeathsig in --remote")
+    check(kernel_is_wsl("5.15.153.1-microsoft-standard-WSL2"), "wsl kernel")
+    check(kernel_is_wsl("6.6.87.2-microsoft-standard-WSL2"), "microsoft kernel")
+    check(not kernel_is_wsl("6.8.0-arch1-1"), "linux kernel is not wsl")
+    check(not kernel_is_wsl("24.5.0"), "darwin kernel is not wsl")
+
+    blob = struct.pack("<4I", 100, 10, 900, 5) + struct.pack("<4I", 50, 20, 400, 1)
+    cores = parse_mach_cpu_blob(blob)
+    check(len(cores) == 2, "mach blob has two cores")
+    check(cores[0]["user"] == 100 and cores[0]["system"] == 10, "mach user and system")
+    check(cores[0]["idle"] == 900 and cores[0]["nice"] == 5, "mach idle and nice")
+    check(cores[0]["iowait"] == 0 and cores[1]["user"] == 50, "mach second core")
+    total = sum_cpu_ticks(cores)
+    check(total["user"] == 150 and total["idle"] == 1300 and total["nice"] == 6, "mach total")
+
+    stats = VMStatistics64()
+    stats.free_count = 100
+    stats.inactive_count = 50
+    stats.speculative_count = 25
+    mem = darwin_memory_from_counts(
+        stats.free_count, stats.inactive_count, stats.speculative_count,
+        4096, 1000 * 4096, 2048 * 1024 * 1024, int(round(512.5 * 1024 * 1024)),
+    )
+    check(mem["available"] == 175 * 4096, "darwin available pages")
+    check(mem["used"] == (1000 - 175) * 4096, "darwin used is physical minus available")
+    check(mem["cached"] == 75 * 4096, "darwin cached")
+    check(mem["total"] == 1000 * 4096, "darwin memsize")
+    packed = struct.pack("<QQQII", 2048 * 1024 * 1024, 100, int(round(512.5 * 1024 * 1024)), 4096, 1)
+    swap_total, swap_used = parse_xsw_usage(packed)
+    check(swap_total == 2048 * 1024 * 1024 and swap_used == int(round(512.5 * 1024 * 1024)), "xsw_usage")
+    text_total, text_used = parse_swapusage_text("total = 2048.00M  used = 512.50M  free = 1535.50M")
+    check(text_total == 2048 * 1024 * 1024, "swapusage total")
+    check(text_used == int(round(512.5 * 1024 * 1024)), "swapusage used")
+
+    root_info = (
+        "   Device Identifier:         disk4s1s1\n"
+        "   Device Node:               /dev/disk4s1s1\n"
+        "   Whole:                     No\n"
+        "   Part of Whole:             disk4\n"
+    )
+    whole_info = (
+        "   Device Identifier:         disk4\n"
+        "   Part of Whole:             disk4\n"
+        "   APFS Physical Store:       disk0s2\n"
+    )
+    check(apfs_whole_disk(root_info) == "disk4", "diskutil part of whole")
+    check(apfs_physical_disk(whole_info) == "disk0", "apfs physical store disk0s2")
+    check(apfs_physical_disk("   APFS Physical Store:       disk10s2\n") == "disk10", "slice reduces to the whole disk")
+    check(darwin_physical_from_diskutil(root_info, whole_info) == "disk0", "synthesized volume maps to the physical store")
+    check(darwin_physical_from_diskutil("no disk", whole_info) is None, "missing whole disk")
+    check(darwin_physical_from_diskutil(root_info, "no store") is None, "missing physical store")
+    check(fallback_physical_disk(None) == "disk0", "diskutil fallback is disk0")
+    check(fallback_physical_disk("disk0s2") == "disk0", "a slice name is not a whole disk")
+
+    def blank_disk(root):
+        return {
+            "io_bytes_per_s": None,
+            "device": root,
+            "root": root,
+            "devices": None,
+            "boot_skipped": False,
+            "rows": 0,
+        }
+
+    disk = blank_disk("disk0")
+    feed_iostat_line(disk, "              disk0               disk3               disk6               disk7 ")
+    feed_iostat_line(disk, "    KB/t  tps  MB/s     KB/t  tps  MB/s     KB/t  tps  MB/s     KB/t  tps  MB/s ")
+    feed_iostat_line(disk, "   16.00   10  9.00    32.00    2  8.00     8.00    1  0.50     4.00    1  0.25 ")
+    check(disk["io_bytes_per_s"] is None and disk["rows"] == 0, "iostat ignores the since-boot average")
+    feed_iostat_line(disk, "   20.00    4  1.00    10.00    1  3.00    12.00    2  0.50    12.00    3  2.00 ")
+    check(disk["device"] == "disk0", "iostat uses the physical disk")
+    check(disk["io_bytes_per_s"] == int(1.00 * _IOSTAT_MIB), "iostat MB/s is combined bytes per second")
+    check(disk["rows"] == 1, "one interval row")
+    shaped = darwin_disk_sample(disk, 10, 100)
+    check(shaped["device"] == "disk0", "darwin disk device")
+    check(shaped["io_bytes_per_s"] == int(1.00 * _IOSTAT_MIB), "darwin io_bytes_per_s")
+    check(shaped["sectors_read"] is None and shaped["sectors_written"] is None, "darwin read/write split is null")
+    check(shaped["root_used"] == 10 and shaped["root_total"] == 100, "root usage passed through")
+    feed_iostat_line(disk, "    8.00    2  2.00     0.00    0  0.00     0.00    0  0.00     0.00    0  0.00 ")
+    check(disk["io_bytes_per_s"] == int(2.00 * _IOSTAT_MIB), "iostat keeps the latest interval")
+    feed_iostat_line(disk, "disk0 disk3 disk6 disk7")
+    feed_iostat_line(disk, "KB/t tps MB/s KB/t tps MB/s KB/t tps MB/s KB/t tps MB/s")
+    feed_iostat_line(disk, "8.00 2 0.25 0.00 0 0.00 0.00 0 0.00 0.00 0 0.00")
+    check(disk["io_bytes_per_s"] == int(0.25 * _IOSTAT_MIB), "a repeated header does not skip the next interval")
+
+    other = blank_disk("disk6")
+    feed_iostat_line(other, "disk0 disk3 disk6 disk7")
+    feed_iostat_line(other, "KB/t  tps  MB/s  KB/t  tps  MB/s  KB/t  tps  MB/s  KB/t  tps  MB/s")
+    feed_iostat_line(other, "16.00 10 9.00 32.00 2 8.00 8.00 1 0.50 4.00 1 0.25")
+    feed_iostat_line(other, "20.00 4 1.00 10.00 1 3.00 12.00 2 0.50 12.00 3 2.00")
+    check(other["io_bytes_per_s"] == int(0.50 * _IOSTAT_MIB), "iostat reads the physical disk column")
+    absent = blank_disk("disk9")
+    feed_iostat_line(absent, "disk0 disk3 disk6 disk7")
+    feed_iostat_line(absent, "KB/t tps MB/s KB/t tps MB/s KB/t tps MB/s KB/t tps MB/s")
+    feed_iostat_line(absent, "16.00 10 9.00 32.00 2 8.00 8.00 1 0.50 4.00 1 0.25")
+    feed_iostat_line(absent, "20.00 4 1.00 10.00 1 3.00 12.00 2 0.50 12.00 3 2.00")
+    check(absent["io_bytes_per_s"] is None and absent["rows"] == 0, "a missing column stays null")
+    missed = darwin_disk_sample(absent, 1, 2)
+    check(missed["device"] == "disk9" and missed["sectors_read"] is None, "device stays the resolved disk")
+
+    net = {"ifaces": {}, "current": "", "rows": 0}
+    feed_netstat_line(net, "            input          (en0)           output")
+    feed_netstat_line(net, "   packets  errs      bytes    packets  errs      bytes colls")
+    feed_netstat_line(net, "       10     0     1000000         1     0        2000     0")
+    feed_netstat_line(net, "        4     0        5000         1     0         100     0")
+    check(net["ifaces"]["en0"]["abs_rx"] == 1005000, "netstat absolute then delta")
+    check(net["ifaces"]["en0"]["abs_tx"] == 2100, "netstat tx delta")
+    check(net["ifaces"]["en0"]["mode"] == "delta", "a drop switches netstat to deltas")
+    classic = {"ifaces": {}, "current": "", "rows": 0}
+    table = "\n".join([
+        "Name  Mtu   Network     Address   Ipkts Ierrs Ibytes Opkts Oerrs Obytes Coll",
+        "en0   1500  <Link#14>   aa:bb     10 0 5000 80 0 3000 0",
+        "en0   1500  192.0.2.5 192.0.2.5 10 0 9999 80 0 9999 0",
+        "lo0   16384 <Link#1>    1 0 100 1 0 100 0",
+    ])
+    for row in table.split("\n"):
+        feed_netstat_line(classic, row)
+    check(classic["ifaces"]["en0"]["abs_rx"] == 5000, "link row bytes, not the address row")
+    check(classic["ifaces"]["en0"]["abs_tx"] == 3000, "link row obytes")
+    check(classic["ifaces"]["lo0"]["abs_rx"] == 100, "lo0 link row")
+    shaped_net = net_sample_from_state(classic, "en0")
+    check("lo0" in shaped_net["virtual"] and shaped_net["default_iface"] == "en0", "lo0 is virtual")
+    check(parse_route_default("   route to: default\ndestination: default\n  interface: en0\n") == "en0", "route interface")
+    total_net = {"ifaces": {}, "current": "", "rows": 0, "default": "en0"}
+    feed_netstat_line(total_net, "            input          (Total)           output")
+    feed_netstat_line(total_net, "       10     0        4000         1     0         250     0")
+    check(total_net["ifaces"]["en0"]["abs_rx"] == 4000, "Total row is pinned to the default interface")
+    unresolved = darwin_disk_sample(blank_disk(None), 1, 2)
+    check(unresolved["device"] == "disk0" and unresolved["io_bytes_per_s"] is None, "sample falls back to disk0")
+
+    ps_text = "\n".join([
+        "  101  12.5  20480 Safari",
+        "  102   1.0   1024 Safari",
+        "  103   0.5    512 /usr/libexec/trustd",
+    ])
+    presented, count = present_darwin_ps(ps_text, 8 * 1024 * 1024 * 1024)
+    check(count == 3, "ps row count")
+    check(presented["byCpu"][0]["name"] == "Safari ×2", "ps groups basename")
+    check(presented["byCpu"][0]["text"] == "13.5%", "ps sums pcpu")
+    check(presented["byMem"][0]["name"] == "Safari ×2", "ps memory leader")
+
+    batt = parse_pmset_batt(
+        "Now drawing from 'Battery Power'\n"
+        " -InternalBattery-0 (id=1)\t76%; discharging; 3:12 remaining present: true\n"
+    )
+    check(batt and batt["capacity"] == 76 and batt["status"] == "discharging", "pmset percent")
+    check(parse_pmset_batt("Now drawing from 'AC Power'\n") is None, "pmset without a battery hides")
+
+    wsl = {"gpu": {"present": False}, "temps": {"package_c": None, "disk_c": None}, "errors": {"gpu": "no card"}}
+    apply_host_meta(wsl, "host-b", "linux", "5.15.153.1-microsoft-standard-WSL2")
+    check(wsl.get("wsl") is True and wsl["gpu"].get("na") is True, "wsl gpu is n/a")
+    check("errors" not in wsl or "gpu" not in wsl.get("errors", {}), "wsl drops the gpu error")
+    plain_linux = {"gpu": {"present": False, "name": None}}
+    apply_host_meta(plain_linux, "box", "linux", "6.8.0-arch1-1")
+    check(plain_linux.get("wsl") is not True and plain_linux["gpu"].get("na") is not True, "linux keeps gpu absent")
+    mac = {"gpu": {"present": True}, "temps": {"package_c": 40}, "errors": {"temps": "denied", "cpu": "no"}}
+    apply_host_meta(mac, "host-a", "darwin", "24.5.0")
+    check(mac["gpu"].get("na") is True and mac["temps"].get("na") is True, "darwin gpu and temps are n/a")
+    check("temps" not in mac["errors"] and mac["errors"].get("cpu") == "no", "darwin keeps unrelated errors")
+
+    dead_box = type("Box", (), {})()
+    dead_box.iostat = LineChild(["true"])
+    dead_box.iostat.dead = True
+    dead_box.disk = {
+        "io_bytes_per_s": 999,
+        "device": "disk0",
+        "root": "disk0",
+        "rows": 4,
+    }
+    dead_box.netstat = LineChild(["true"])
+    dead_box.netstat.dead = True
+    dead_box.net = {
+        "ifaces": {"en0": {"abs_rx": 10, "abs_tx": 4, "last_rx": 10, "last_tx": 4, "mode": "absolute"}},
+        "rows": 3,
+        "current": "en0",
+    }
+    dead_box.route_iface = "en0"
+    dead_disk = publish_darwin_disk(dead_box, 1, 2)
+    check(dead_disk["io_bytes_per_s"] is None, "dead iostat publishes null, not the last rate")
+    check(dead_box.disk["io_bytes_per_s"] is None, "dead iostat clears the stored rate")
+    check("t_ms" not in dead_disk, "the disk value itself is not restamped")
+    dead_net = publish_darwin_net(dead_box)
+    check(dead_net.get("na") is True and "ifaces" not in dead_net, "dead netstat is unavailable")
+    check(dead_box.net.get("rows") == 0, "dead netstat drops the last counters")
+
+    quick = None
+    restarted = None
+    try:
+        quick = LineChild([sys.executable, "-c", "import time; time.sleep(0.05)"])
+        quick.ensure()
+        deadline = time.monotonic() + 3.0
+        while quick.proc is not None and quick.proc.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.02)
+        quick.drain()
+        check(quick.dead is True, "exited helper is dead")
+        check(quick.proc is None, "dead helper clears proc")
+        check(quick.master is None, "dead helper clears master")
+        held_until = quick.next_start
+        quick.drain()
+        check(quick.proc is None, "backoff does not restart the helper")
+        check(quick.next_start == held_until, "backoff is not pushed while the helper stays dead")
+        quick.next_start = 0
+        quick.ensure()
+        restarted = quick.proc
+        check(restarted is not None and restarted.poll() is None, "helper restarts after the backoff")
+        check(quick.fresh is True, "a restarted helper is a new sample generation")
+    finally:
+        if restarted is not None and restarted.poll() is None:
+            try:
+                os.kill(-restarted.pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    restarted.kill()
+                except OSError:
+                    pass
+            try:
+                restarted.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+    stubborn = LineChild([sys.executable, "-u", "-c",
+                          "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); print('ready', flush=True); time.sleep(60)"])
+    stubborn.ensure()
+    deadline = time.monotonic() + 3
+    ready = False
+    while time.monotonic() < deadline and not ready:
+        ready = any(line.strip() == "ready" for line in stubborn.read_ready())
+        if not ready:
+            time.sleep(0.01)
+    old_proc = stubborn.proc
+    check(ready and old_proc is not None, "stubborn helper started")
+    stubborn.stop()
+    check(old_proc is not None and old_proc.returncode == -signal.SIGKILL, "stubborn helper killed and reaped")
+    check(stubborn.master is None and stubborn not in _line_children and old_proc not in _child_procs,
+          "stopped helper releases pty and tracking")
+
+
+def collect_linux(include_procs):
+    """Linux sample. Counter files are read before the monotonic stamp."""
     errors = {}
     sample = {"t_ms": int(time.time() * 1000)}
     texts = {}
@@ -1615,13 +3283,425 @@ def collect_sample(include_procs):
     return sample
 
 
+# Slow host probes run independently of the one-second sampling clock.
+_probe = {"windows": None, "storage": [], "windows_at": 0.0, "storage_at": 0.0,
+          "windows_busy": False, "storage_busy": False}
+_PS_QUERY = r"""$o=Get-CimInstance Win32_OperatingSystem; $p=Get-CimInstance Win32_Processor; $d=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'; @{total=$o.TotalVisibleMemorySize;free=$o.FreePhysicalMemory;cpu=@($p | ForEach-Object {$_.LoadPercentage});disks=@($d | ForEach-Object {@{name=$_.DeviceID;size=$_.Size;free=$_.FreeSpace}})} | ConvertTo-Json -Compress -Depth 4"""
+
+
+def parse_windows(text):
+    try:
+        data = json.loads(text.lstrip('\ufeff').strip())
+        total, free = int(data['total']) * 1024, int(data['free']) * 1024
+        if total <= 0 or free < 0 or free > total:
+            return None
+        cpus = [float(x) for x in data.get('cpu', []) if x is not None and 0 <= float(x) <= 100]
+        disks = []
+        for d in data.get('disks', []):
+            size, avail = int(d['size']), int(d['free'])
+            if size > 0 and 0 <= avail <= size:
+                disks.append({'device': str(d['name']), 'mount': str(d['name']), 'total': size, 'used': size - avail})
+        return {'total': total, 'used': total - free, 'cpu': sum(cpus) / len(cpus) if cpus else None, 'disks': disks}
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return None
+
+
+def windows_probe():
+    exe = shutil.which('powershell.exe')
+    if not exe:
+        suffix = 'Windows/System32/WindowsPowerShell/v1.0/powershell.exe'
+        candidates = ['/mnt/c/' + suffix] + sorted(glob.glob('/mnt/[a-zA-Z]/' + suffix))
+        exe = next((path for path in candidates if os.path.isfile(path)), None)
+    if not exe:
+        return None
+    try:
+        result = _run_tracked([exe, '-NoProfile', '-NonInteractive', '-Command', _PS_QUERY],
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
+        return parse_windows(result.decode('utf-8-sig', 'replace').replace('\x00', ''))
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+_network_mount_timeouts = set()
+_network_mount_probes = {}
+_network_mount_lock = threading.Lock()
+
+
+def _network_statvfs(mount, stat_fn):
+    with _network_mount_lock:
+        previous = _network_mount_probes.get(mount)
+        if previous and (previous[0].is_alive() or time.monotonic() - previous[1] < 600):
+            return None
+        outcome = []
+        def probe():
+            try:
+                outcome.append((stat_fn(mount), None))
+            except Exception as error:
+                outcome.append((None, error))
+        thread = threading.Thread(target=probe, daemon=True)
+        _network_mount_probes[mount] = (thread, float('inf'))
+        thread.start()
+    thread.join(2)
+    with _network_mount_lock:
+        if thread.is_alive():
+            _network_mount_timeouts.add(mount)
+            _network_mount_probes[mount] = (thread, time.monotonic())
+            return None
+        _network_mount_timeouts.discard(mount)
+        _network_mount_probes.pop(mount, None)
+    value, error = outcome[0]
+    if error:
+        raise error
+    return value
+
+
+def parse_mounts(text, stat_fn=os.statvfs, wsl=False):
+    result, seen = [], set()
+    excluded = {'tmpfs', 'devtmpfs', 'overlay', 'squashfs', 'proc', 'sysfs', 'cgroup', 'cgroup2', 'devpts', 'securityfs', 'debugfs', 'tracefs', 'pstore', 'configfs', 'fusectl', 'mqueue', 'hugetlbfs', 'autofs', 'binfmt_misc', 'nsfs'}
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) < 4:
+            continue
+        device, mount, fs, opts = fields[:4]
+        mount = re.sub(r'\\([0-7]{3})', lambda m: chr(int(m.group(1), 8)), mount)
+        options = opts.split(',')
+        drive = wsl and fs in ('9p', 'drvfs') and re.fullmatch(r'/mnt/[a-zA-Z]', mount)
+        if (fs in excluded or device.startswith('/dev/loop') or 'ro' in options or 'bind' in options
+                or device in seen or any(mount == p or mount.startswith(p + '/')
+                                         for p in ('/usr/lib/wsl', '/usr/src', '/mnt/wsl', '/init', '/snap'))):
+            continue
+        if fs in ('9p', 'drvfs') and not drive:
+            continue
+        if wsl and mount != '/' and not drive:
+            continue
+        if not (device.startswith('/dev/') or drive or fs in ('fuseblk', 'nfs', 'nfs4', 'cifs', 'smb3', 'fuse.sshfs', 'btrfs', 'zfs')):
+            continue
+        try:
+            st = _network_statvfs(mount, stat_fn) if fs in ('nfs', 'nfs4', 'cifs', 'smb3', 'fuse.sshfs') else stat_fn(mount)
+            if st is None:
+                continue
+            total = st.f_blocks * st.f_frsize
+            if total <= 0:
+                continue
+            seen.add(device)
+            result.append({'device': device, 'mount': mount, 'total': total, 'used': total - st.f_bfree * st.f_frsize})
+        except OSError:
+            continue
+    return result
+
+
+# Cache successful lookups by device and capacity; failures by device for 60s.
+_darwin_disk_info = {}
+_darwin_disk_failures = {}
+
+
+def darwin_disk_info(device, total):
+    key = (device, total)
+    if key not in _darwin_disk_info:
+        if time.monotonic() < _darwin_disk_failures.get(device, 0):
+            return None
+        try:
+            data = _run_tracked(['diskutil', 'info', '-plist', device], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL, timeout=3)
+            info = plistlib.loads(data)
+            if not isinstance(info, dict):
+                raise ValueError('invalid diskutil metadata')
+            _darwin_disk_info[key] = info
+            _darwin_disk_failures.pop(device, None)
+        except (OSError, subprocess.SubprocessError, ValueError, plistlib.InvalidFileException, xml.parsers.expat.ExpatError, TypeError, OverflowError):
+            _darwin_disk_failures[device] = time.monotonic() + 60
+            return None
+    return _darwin_disk_info[key]
+
+
+def parse_df(text):
+    candidates = []
+    now = time.monotonic()
+    for device, expiry in list(_darwin_disk_failures.items()):
+        if expiry <= now:
+            del _darwin_disk_failures[device]
+    lines = text.splitlines()[1:]
+    present = {}
+    for line in lines:
+        fields = line.split(None, 5)
+        if len(fields) >= 4:
+            try:
+                present.setdefault(fields[0], set()).add(int(fields[1]) * 1024)
+            except ValueError:
+                pass
+    for key in list(_darwin_disk_info):
+        if key[1] not in present.get(key[0], set()):
+            del _darwin_disk_info[key]
+    for line in lines:
+        fields = line.split(None, 5)
+        if len(fields) < 6:
+            continue
+        device, mount = fields[0], fields[5]
+        disk = re.match(r'^/dev/(disk\d+)', device)
+        if not disk or mount.startswith('/System/Volumes/') or mount == '/private/var/vm' or mount.startswith('/private/var/vm/') or mount == '/Volumes/Recovery' or mount.startswith('/Volumes/Recovery/'):
+            continue
+        try:
+            total, available = int(fields[1]) * 1024, int(fields[3]) * 1024
+            if total <= 0:
+                continue
+        except ValueError:
+            continue
+        info = darwin_disk_info(device, total)
+        dedupe = ('disk', disk.group(1)) if info is None else (('container', info['APFSContainerReference']) if info.get('APFSContainerReference') else ('device', device))
+        info = info or {}
+        protocol = info.get('Protocol') or info.get('BusProtocol') or ''
+        if str(protocol).casefold() == 'disk image' or str(info.get('BusProtocol') or '').casefold() == 'disk image':
+            continue
+        bus = next((name for name in ('USB', 'Thunderbolt') if name.casefold() in str(protocol).casefold() or name.casefold() in str(info.get('BusProtocol') or '').casefold()), '')
+        if not bus and info.get('Internal') is True:
+            bus = 'Internal'
+        label = 'Mac (internal)' if mount == '/' else mount[len('/Volumes/'):] if mount.startswith('/Volumes/') else mount
+        candidates.append((dedupe, disk.group(1), {'device': device, 'mount': mount, 'total': total, 'used': total - available, 'label': label, 'bus': bus}))
+    candidates.sort(key=lambda item: item[2]['mount'] != '/')
+    result, seen, whole_seen, fallback_seen = [], set(), set(), set()
+    for key, whole, row in candidates:
+        fallback = key[0] == 'disk'
+        if key not in seen and whole not in fallback_seen and not (fallback and whole in whole_seen):
+            seen.add(key)
+            whole_seen.add(whole)
+            if fallback:
+                fallback_seen.add(whole)
+            result.append(row)
+    return result
+
+
+def storage_probe(wsl=False):
+    if sys.platform == 'darwin':
+        try:
+            return parse_df(_run_tracked(['df', '-k', '-P'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, text=True))
+        except (OSError, subprocess.SubprocessError):
+            return []
+    return parse_mounts(read_text('/proc/mounts'), wsl=wsl)
+
+
+def _background_probe(name, function):
+    try:
+        _probe[name] = function()
+    except Exception:
+        _probe[name] = None if name == 'windows' else []
+    finally:
+        _probe[name + '_busy'] = False
+
+
+def wsl_filesystems(storage, windows):
+    result, drives = [], {}
+    for disk in storage:
+        mount = disk.get('mount', '')
+        if mount == '/':
+            result.append(dict(disk, mount='WSL (/)'))
+        elif re.fullmatch(r'/mnt/[a-zA-Z]', mount):
+            label = mount[-1].upper() + ':'
+            drives[label] = dict(disk, device=label, mount=label)
+    if windows is not None:
+        for disk in windows.get('disks', []):
+            label = str(disk.get('mount', '')).upper()
+            drives[label] = disk
+    return result + [drives[label] for label in sorted(drives)]
+
+
+def slow_probes(sample):
+    now = time.monotonic()
+    for name, interval, enabled, fn in (('storage', 30, True, lambda: storage_probe(sample.get('wsl') is True)), ('windows', 15, sample.get('wsl') is True, windows_probe)):
+        if enabled and not _probe[name + '_busy'] and (not _probe[name + '_at'] or now - _probe[name + '_at'] >= interval):
+            _probe[name + '_busy'] = True
+            _probe[name + '_at'] = now
+            threading.Thread(target=_background_probe, args=(name, fn), daemon=True).start()
+    sample['windows'] = _probe['windows'] if sample.get('wsl') else None
+    sample['filesystems'] = list(_probe['storage'] or [])
+    if sample.get('wsl') is True:
+        sample['filesystems'] = wsl_filesystems(sample['filesystems'], sample['windows'])
+    return sample
+
+
+def collect_sample(include_procs):
+    """One sample for this machine. Linux reads /proc; macOS uses the darwin backend."""
+    if sys.platform == "darwin":
+        sample = collect_darwin(include_procs)
+    else:
+        sample = collect_linux(include_procs)
+    return slow_probes(apply_host_meta(sample, host_name(), host_os_name(), kernel_release()))
+
+
 def emit_sample(sample):
-    sys.stdout.write(json.dumps(sample, separators=(",", ":")) + "\n")
-    sys.stdout.flush()
+    try:
+        payload = json.dumps(sample, separators=(",", ":")) + "\n"
+    except (TypeError, ValueError):
+        raise
+    try:
+        sys.stdout.write(payload)
+        sys.stdout.flush()
+    except BrokenPipeError:
+        raise
+    except OSError as exc:
+        raise BrokenPipeError(str(exc))
+    except ValueError as exc:
+        if "closed" in str(exc).lower():
+            raise BrokenPipeError(str(exc))
+        raise
 
 
 def emit(include_procs):
     emit_sample(collect_sample(include_procs))
+
+
+class _CheckedFunc(object):
+    """Stand-in for a ctypes function. c_void_p rejects byref (CArgObject)."""
+
+    def __init__(self, impl):
+        self.argtypes = []
+        self.restype = None
+        self._impl = impl
+
+    def __call__(self, *args):
+        specs = list(self.argtypes or [])
+        paired = min(len(specs), len(args))
+        index = 0
+        while index < paired:
+            spec = specs[index]
+            arg = args[index]
+            if spec == ctypes.c_void_p and arg is not None and type(arg).__name__ == "CArgObject":
+                raise ctypes.ArgumentError("c_void_p does not accept byref")
+            index += 1
+        return self._impl(*args)
+
+
+class _StubLibc(object):
+    """Enough of libSystem for the darwin sysctl and vm_stat call shapes."""
+
+    def __init__(self):
+        self.sysctlbyname = _CheckedFunc(self._sysctl)
+        self.host_statistics64 = _CheckedFunc(self._host_stats)
+        self.host_calls = 0
+        self.freed = []
+        self.cpu_blob = (ctypes.c_int * 4)(1, 2, 3, 4)
+        self.mach_host_self = _CheckedFunc(self._host)
+        self.mach_task_self = _CheckedFunc(lambda: 7)
+        self.host_processor_info = _CheckedFunc(self._cpu_info)
+        self.vm_deallocate = _CheckedFunc(self._free)
+        self.host_page_size = _CheckedFunc(self._page)
+
+    def _host(self):
+        self.host_calls += 1
+        return 1
+
+    def _cpu_info(self, host, flavor, cpus, info, count):
+        assert host == 1 and flavor == 2
+        cpus._obj.value = 1
+        info._obj.value = ctypes.addressof(self.cpu_blob)
+        count._obj.value = 4
+        return 0
+
+    def _free(self, task, address, size):
+        self.freed.append((task, address.value, size))
+        return 0
+
+    def _page(self, host, page):
+        assert host == 1
+        page._obj.value = 4096
+        return 0
+
+    def _sysctl(self, name, oldp, _oldlenp, _newp, _newlen):
+        addr = None
+        if isinstance(oldp, ctypes.c_void_p):
+            addr = oldp.value
+        elif isinstance(oldp, int):
+            addr = oldp
+        else:
+            raise ctypes.ArgumentError("oldp is %s" % type(oldp).__name__)
+        if name == b"hw.memsize":
+            ctypes.cast(addr, ctypes.POINTER(ctypes.c_uint64))[0] = 8 * 1024 * 1024 * 1024
+            return 0
+        if name == b"vm.swapusage":
+            usage = ctypes.cast(addr, ctypes.POINTER(XSWUsage)).contents
+            usage.xsu_total = 2 * 1024 * 1024 * 1024
+            usage.xsu_used = 512 * 1024 * 1024
+            usage.xsu_avail = usage.xsu_total - usage.xsu_used
+            usage.xsu_pagesize = 4096
+            usage.xsu_encrypted = 1
+            return 0
+        if name in (b"hw.cpufrequency", b"hw.cpufrequency_max"):
+            ctypes.cast(addr, ctypes.POINTER(ctypes.c_uint64))[0] = 3200000000
+            return 0
+        return 1
+
+    def _host_stats(self, _host, flavor, stats, _count):
+        if int(flavor) != 4:
+            return 1
+        target = stats
+        if type(stats).__name__ == "CArgObject":
+            target = stats._obj
+        if hasattr(target, "contents"):
+            target = target.contents
+        target.free_count = 100
+        target.inactive_count = 40
+        target.speculative_count = 10
+        return 0
+
+
+def ctypes_call_checks(check):
+    """Call the real darwin helpers against a stub that rejects byref-as-c_void_p."""
+    saved = globals().get("_darwin_libc")
+    saved_host = globals().get("_mach_host")
+    libc = _StubLibc()
+    globals()["_darwin_libc"] = libc
+    globals()["_mach_host"] = None
+    try:
+        _sysctl_prepare(libc)
+        rejected = False
+        try:
+            libc.sysctlbyname(
+                b"hw.memsize",
+                ctypes.byref(ctypes.c_uint64(0)),
+                ctypes.byref(ctypes.c_size_t(8)),
+                None,
+                0,
+            )
+        except (ctypes.ArgumentError, TypeError):
+            rejected = True
+        check(rejected, "sysctlbyname rejects byref for c_void_p")
+        try:
+            mem = darwin_memsize()
+        except Exception as exc:  # noqa: BLE001
+            check(False, "darwin_memsize stub: %s" % exc)
+            mem = None
+        check(mem == 8 * 1024 * 1024 * 1024, "stub memsize")
+        try:
+            swap_total, swap_used = darwin_swap_pair()
+        except Exception as exc:  # noqa: BLE001
+            check(False, "darwin_swap_pair stub: %s" % exc)
+            swap_total, swap_used = None, None
+        check(swap_total == 2 * 1024 * 1024 * 1024 and swap_used == 512 * 1024 * 1024, "stub swap")
+        try:
+            mhz = darwin_hw_mhz()
+        except Exception as exc:  # noqa: BLE001
+            check(False, "darwin_hw_mhz stub: %s" % exc)
+            mhz = None
+        check(mhz == 3200, "stub mhz")
+        try:
+            stats = darwin_vm_stats()
+        except Exception as exc:  # noqa: BLE001
+            check(False, "darwin_vm_stats stub: %s" % exc)
+            stats = None
+        check(
+            stats is not None
+            and stats.free_count == 100
+            and stats.inactive_count == 40
+            and stats.speculative_count == 10,
+            "stub vm stats",
+        )
+        cores = darwin_cpu_cores()
+        check(len(cores) == 1, "stub mach cpu info")
+        check(darwin_page_size() == 4096, "stub mach page size")
+        check(libc.host_calls == 1, "mach host send right reused")
+        check(libc.freed == [(7, ctypes.addressof(libc.cpu_blob), 16)], "mach cpu allocation freed")
+    finally:
+        globals()["_darwin_libc"] = saved
+        globals()["_mach_host"] = saved_host
 
 
 def selftest():
@@ -1631,6 +3711,62 @@ def selftest():
     def check(cond, msg):
         if not cond:
             failures.append(msg)
+
+    # Observed on the real WSL hosts. The second excerpt was truncated in the report.
+    real_wsl_lines = [
+        '{"device":"/dev/sdb","mount":"/usr/src/linux-headers-6.18.54.1-microsoft-standard-WSL2","total":101089280,"used":101089280}',
+        '{"device":"drivers","mount":"/usr/lib/wsl/drivers","total":994553696256,...}',
+    ]
+    real_wsl_rows = [json.loads(real_wsl_lines[0]),
+                     json.loads(real_wsl_lines[1].replace(',...}', ',"used":0}'))]
+    root_row = {'device': '/dev/sdc', 'mount': '/', 'total': 100, 'used': 20}
+    fallback_row = {'device': 'C:', 'mount': '/mnt/c', 'total': 200, 'used': 50}
+    disks = wsl_filesystems(real_wsl_rows + [root_row, fallback_row], None)
+    check([row['mount'] for row in disks] == ['WSL (/)', 'C:'], "WSL excludes observed internal mounts and labels fallback")
+    fixed = {'disks': [{'device': 'D:', 'mount': 'D:', 'total': 300, 'used': 100}]}
+    check([row['mount'] for row in wsl_filesystems(real_wsl_rows + [root_row, fallback_row], fixed)]
+          == ['WSL (/)', 'C:', 'D:'], "WSL merges Windows fixed disks")
+
+    saved_finalize = globals()["finalize"]
+    saved_signal = signal.signal
+    saved_exit = os._exit
+    calls = []
+    class ExitCalled(BaseException):
+        pass
+    try:
+        globals()["finalize"] = lambda: calls.append("finalize")
+        check(_finalized(lambda: 42)() == 42 and calls == ["finalize"], "normal return finalizes")
+        calls.clear()
+        def fail():
+            raise ValueError("test")
+        try:
+            _finalized(fail)()
+        except ValueError:
+            pass
+        check(calls == ["finalize"], "exception finalizes")
+        def failing_finalize():
+            raise RuntimeError("cleanup failure")
+        def fake_exit(code):
+            calls.append(code)
+            raise ExitCalled()
+        globals()["finalize"] = failing_finalize
+        signal.signal = lambda *_args: None
+        os._exit = fake_exit
+        try:
+            _die_term(signal.SIGTERM, None)
+        except ExitCalled:
+            pass
+        check(calls[-1:] == [0], "signal exits even when finalizer fails")
+    finally:
+        globals()["finalize"] = saved_finalize
+        signal.signal = saved_signal
+        os._exit = saved_exit
+
+    check(_run_text([sys.executable, "-c", "print('ok')"], 2).strip() == "ok", "short helper output")
+    before_helpers = list(_child_procs)
+    check(_run_text([sys.executable, "-c", "import time; time.sleep(5)"], 0.1) == "",
+          "timed-out short helper stops")
+    check(_child_procs == before_helpers, "short helper is reaped and untracked")
 
     check(parent_disk("nvme0n1p1") == "nvme0n1", "nvme partition")
     check(parent_disk("nvme1n2p12") == "nvme1n2", "nvme multi-digit partition")
@@ -1879,6 +4015,13 @@ def selftest():
         globals()["_gpu_paths"] = saved_paths
         globals()["_gpu_discover_at"] = saved_at
 
+    darwin_parser_checks(check)
+    loop_msg = remote_loopback()
+    check(loop_msg is None, loop_msg or "remote loopback")
+    shut_msg = remote_shutdown_selftest()
+    check(shut_msg is None, shut_msg or "remote shutdown")
+    ctypes_call_checks(check)
+
     if failures:
         for msg in failures:
             sys.stderr.write("selftest: %s\n" % msg)
@@ -1903,13 +4046,20 @@ def arm_parent_death():
     pr_set_pdeathsig = 1
     ppid = os.getppid()
     if libc.prctl(pr_set_pdeathsig, ctypes.c_ulong(signal.SIGTERM), 0, 0, 0) != 0:
-        os._exit(1)
+        raise OSError("could not arm parent death signal")
     if os.getppid() != ppid:
-        os._exit(0)
+        _die_term(signal.SIGTERM, None)
 
 
 def _die_term(_signum, _frame):
-    os._exit(0)
+    try:
+        try:
+            for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGPIPE):
+                signal.signal(sig, signal.SIG_IGN)
+        finally:
+            finalize()
+    finally:
+        os._exit(0)
 
 
 def wait_until(deadline):
@@ -2004,7 +4154,7 @@ def scheduled_sweeps(costs, samples=20):
     return got
 
 
-def serve():
+def _serve():
     """One sample per second, phase-locked to the start.
 
     The process table is on the first sample and then every 3 s. A sweep
@@ -2018,28 +4168,16 @@ def serve():
         if wait_until(next_at):
             return 0
         include = proc_due(since, every)
-        try:
-            sample = collect_sample(include)
-        except Exception as exc:  # noqa: BLE001 — still one line, never {"error": ...} alone
-            sample = {
-                "t_ms": int(time.time() * 1000),
-                "mono_ms": time.monotonic() * 1000.0,
-                "cpu": None,
-                "mem": None,
-                "disk": None,
-                "net": None,
-                "gpu": None,
-                "temps": None,
-                "battery": None,
-                "procs": None,
-                "errors": {"collector": _error_text(exc, "collector")},
-            }
+        sample = safe_sample(include)
         sweep_ms = None
         if include and isinstance(sample, dict):
             procs = sample.get("procs")
             if isinstance(procs, dict):
                 sweep_ms = procs.get("sweep_ms")
-        emit_sample(sample)
+        try:
+            emit_sample(sample)
+        except BrokenPipeError:
+            return 0
         next_at += period
         now = time.monotonic()
         skipped = 0
@@ -2051,15 +4189,47 @@ def serve():
     return 0
 
 
-def main():
+def _main():
+    if "--storage" in sys.argv:
+        import storage_scan
+        arm_parent_death()
+        signal.signal(signal.SIGTERM, _die_term)
+        return storage_scan.run("--force" in sys.argv)
+    if "--storage-open" in sys.argv:
+        import storage_scan
+        index = sys.argv.index("--storage-open")
+        return storage_scan.open_category(sys.argv[index + 1] if index + 1 < len(sys.argv) else "")
     if "--selftest" in sys.argv:
         return selftest()
     if "--once" in sys.argv:
         emit(True)
         return 0
-    arm_parent_death()
+    if "--remote-shutdown-selftest" in sys.argv:
+        install_remote_signals()
+        return remote_shutdown_fixture()
+    if "--remote" in sys.argv:
+        # Stdin is the script source and is already closed. Do not watch it.
+        # SIGPIPE is handled, not ignored: a dead ssh must kill the helpers.
+        install_remote_signals()
+        return serve_remote()
     signal.signal(signal.SIGTERM, _die_term)
+    signal.signal(signal.SIGHUP, _die_term)
+    arm_parent_death()
     return serve()
+
+
+def _finalized(function):
+    def run(*args, **kwargs):
+        try:
+            return function(*args, **kwargs)
+        finally:
+            finalize()
+    return run
+
+
+serve = _finalized(_serve)
+serve_remote = _finalized(serve_remote)
+main = _finalized(_main)
 
 
 if __name__ == "__main__":

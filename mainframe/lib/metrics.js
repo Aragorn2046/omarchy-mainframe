@@ -590,6 +590,50 @@ function relativeLuminance(hex) {
   return 0.2126 * srgbChannel(rgb.r) + 0.7152 * srgbChannel(rgb.g) + 0.0722 * srgbChannel(rgb.b);
 }
 
+// OKLab distance on a 0–100 scale (the conventional ΔE_OK scale).
+function oklabDistance(a, b) {
+  function lab(hex) {
+    var p = parseHex(hex);
+    if (!p) return null;
+    var r = srgbChannel(p.r), g = srgbChannel(p.g), b = srgbChannel(p.b);
+    var l = Math.pow(0.4122214708*r + 0.5363325363*g + 0.0514459929*b, 1/3);
+    var m = Math.pow(0.2119034982*r + 0.6806995451*g + 0.1073969566*b, 1/3);
+    var s = Math.pow(0.0883024619*r + 0.2817188376*g + 0.6299787005*b, 1/3);
+    return [0.2104542553*l + 0.793617785*m - 0.0040720468*s,
+      1.9779984951*l - 2.428592205*m + 0.4505937099*s,
+      0.0259040371*l + 0.7827717662*m - 0.808675766*s];
+  }
+  var x = lab(a), y = lab(b);
+  if (!x || !y) return 0;
+  return 100 * Math.sqrt(Math.pow(x[0]-y[0], 2) + Math.pow(x[1]-y[1], 2) + Math.pow(x[2]-y[2], 2));
+}
+
+function warningColor(accent, desired, palette, background) {
+  if (oklabDistance(accent, desired) >= 15) return desired;
+  var candidates = (palette || []).concat(["#f2b84b", "#f05a67", "#ffffff", "#000000"]);
+  var best = desired, score = -1;
+  for (var i = 0; i < candidates.length; i++) {
+    var c = validColor(candidates[i]);
+    if (!c) continue;
+    var distance = oklabDistance(accent, c);
+    var backgroundDistance = oklabDistance(background, c);
+    var value = Math.min(distance, backgroundDistance);
+    if (value > score) { best = c; score = value; }
+  }
+  return best;
+}
+
+function seriesFlat(samples) {
+  if (!samples || samples.length < 2) return false;
+  var first = Number(samples[0]);
+  if (!isFinite(first)) return false;
+  for (var i = 1; i < samples.length; i++) {
+    var value = Number(samples[i]);
+    if (!isFinite(value) || Math.abs(value - first) > 0.000001) return false;
+  }
+  return true;
+}
+
 function meterColor(fraction, colors) {
   var c = colors || {};
   var accent = validColor(c.accent) || "#7aa2f7";
@@ -622,6 +666,9 @@ function resolveTheme(parsed) {
   var accent = validColor(c.accent) || "#7aa2f7";
   var yellow = validColor(c.yellow) || "#e0c36a";
   var red = validColor(c.red) || "#e06c75";
+  var palette = [foreground, c.blue, c.cyan, c.magenta, c.green, c.yellow, c.red];
+  yellow = warningColor(accent, yellow, palette, background);
+  red = warningColor(accent, red, palette, background);
   var card = validColor(c.lighter_background) || mixHex(background, foreground, 0.06);
   // Labels sit between the text colour and the card, about halfway, so they
   // stay readable without using dark_foreground (that one is too close to the card).
@@ -1247,6 +1294,7 @@ function emptyView() {
     gpu: null,
     disk: {
       device: "—",
+      readLabel: "read",
       readText: "unavailable",
       writeText: "unavailable",
       usageText: "—",
@@ -1494,6 +1542,15 @@ function diskBlock(sample) {
   return parseDiskstats(sample && sample.diskstats);
 }
 
+// Darwin iostat publishes one combined rate. Null means the key is absent
+// (Linux counters). An object with bps null means no interval has arrived.
+function diskIoBytes(sample) {
+  var disk = sample && sample.disk;
+  if (!disk || typeof disk !== "object" || isArray(disk)) return null;
+  if (!Object.prototype.hasOwnProperty.call(disk, "io_bytes_per_s")) return null;
+  return { bps: finiteOrNull(disk.io_bytes_per_s) };
+}
+
 function rowsHaveReadTimes(spec, prevSnap) {
   var list = (spec && spec.rows) || [];
   if (!list.length || !prevSnap || !prevSnap.reads) return false;
@@ -1512,6 +1569,26 @@ function copyDiskMap(prevMap) {
     if (Object.prototype.hasOwnProperty.call(map, key) && map[key]) next[key] = map[key];
   }
   return next;
+}
+
+// Keep only the fields the storage view understands. Collector data is untrusted.
+function filesystemRows(value) {
+  if (!isArray(value)) return [];
+  var rows = [];
+  for (var i = 0; i < value.length && rows.length < 32; i++) {
+    var row = value[i];
+    if (!row || typeof row !== "object" || isArray(row)) continue;
+    function cleanText(text) {
+      return (typeof text === "string" ? text : "").replace(/[\x00-\x1f\x7f-\x9f]/g, "").slice(0, 120);
+    }
+    var total = isFiniteNumber(row.total) && row.total >= 0 ? row.total : 0;
+    var used = isFiniteNumber(row.used) && row.used >= 0 ? Math.min(row.used, total) : 0;
+    var cleaned = { mount: cleanText(row.mount), device: cleanText(row.device),
+      label: cleanText(row.label), total: total, used: used };
+    if (typeof row.bus === "string") cleaned.bus = cleanText(row.bus);
+    rows.push(cleaned);
+  }
+  return rows;
 }
 
 function step(state, raw, nowMs) {
@@ -1548,6 +1625,13 @@ function step(state, raw, nowMs) {
   var gpuFailed = sensorDown(sample, "gpu");
   var tempsFailed = sensorDown(sample, "temps");
   var batFailed = sensorDown(sample, "battery");
+  // na is a host that cannot provide the sensor. It is not a failure.
+  var cpuNa = !!(sample.cpu && sample.cpu.na === true);
+  var memNa = !!(sample.mem && sample.mem.na === true);
+  var diskNa = !!(sample.disk && sample.disk.na === true);
+  var netNa = !!(sample.net && sample.net.na === true);
+  var gpuNa = !!(sample.gpu && sample.gpu.na === true);
+  var tempsNa = !!(sample.temps && sample.temps.na === true);
 
   var proc = cpuFailed ? (prev.proc || parseProcStat("")) : cpuBlock(sample);
   var mem = memFailed
@@ -1574,7 +1658,7 @@ function step(state, raw, nowMs) {
   if (!rateGap && monoEarly != null && monoEarly > 0) rateDt = monoEarly;
 
   var cpuHist = prev.cpuHist || [];
-  if (live && !cpuFailed) cpuHist = pushHistory(cpuHist, cpu.total, HISTORY_LIMIT);
+  if (live && !cpuFailed && !cpuNa) cpuHist = pushHistory(cpuHist, cpu.total, HISTORY_LIMIT);
 
   var memHist = prev.memHist || [];
   var memFraction = (mem.total && mem.used != null) ? clamp01(mem.used / mem.total) : 0;
@@ -1601,7 +1685,7 @@ function step(state, raw, nowMs) {
 
   var rxHist = prev.rxHist || [];
   var txHist = prev.txHist || [];
-  if (live && !netFailed && !rateGap) {
+  if (live && !netFailed && !rateGap && !netNa) {
     rxHist = pushHistory(rxHist, net.rxBps, HISTORY_LIMIT);
     txHist = pushHistory(txHist, net.txBps, HISTORY_LIMIT);
   }
@@ -1616,8 +1700,10 @@ function step(state, raw, nowMs) {
   var device = sample.disk_device || null;
   if (!device && sample.disk && typeof sample.disk === "object") device = sample.disk.device || null;
   if (diskFailed) device = prev.diskDevice || null;
+  var ioRate = diskFailed ? null : diskIoBytes(sample);
+  var combined = ioRate != null;
   var diskRate = { readBps: 0, writeBps: 0, found: false };
-  if (!diskFailed && live && !rateGap && prev.disk && device) diskRate = diskRates(prev.disk, diskList, rateDt, device);
+  if (!combined && !diskFailed && live && !rateGap && prev.disk && device) diskRate = diskRates(prev.disk, diskList, rateDt, device);
 
   // Histories are keyed by device. A change, or no device, drops the other
   // device's series from the card instead of stitching the curves together.
@@ -1627,15 +1713,58 @@ function step(state, raw, nowMs) {
   var diskWriteHist = [];
   var readText = "unavailable";
   var writeText = "unavailable";
+  var readLabel = "read";
   var prevDisk = cardOf(prevView, "disk");
   if (diskFailed) {
     diskHistMap = prev.diskHistMap || {};
     if (prevDisk) {
       readText = prevDisk.readText;
       writeText = prevDisk.writeText;
+      readLabel = prevDisk.readLabel || "read";
       diskReadHist = prevDisk.readHistory || [];
       diskWriteHist = prevDisk.writeHistory || [];
     }
+  } else if (combined) {
+    // Already a one-second rate. History moves only on a live sample that
+    // brought a number. A held sector read is not total I/O.
+    var haveIo = ioRate.bps != null;
+    var prevIsIo = !!(device && prevDevice === device && prevDisk && prevDisk.readLabel === "I/O");
+    var prevReadRate = !!(device && prevDevice === device && prevDisk && prevDisk.readLabel !== "I/O" &&
+      prevDisk.readText && prevDisk.readText !== "unavailable" && prevDisk.readText !== "n/a");
+    if (device) {
+      var ioBucket = diskHistMap[device] || { read: [], write: [] };
+      diskReadHist = ioBucket.read || [];
+      diskWriteHist = ioBucket.write || [];
+    }
+    if (!haveIo && prevReadRate) {
+      readLabel = prevDisk.readLabel || "read";
+      readText = prevDisk.readText;
+      writeText = prevDisk.writeText;
+      diskReadHist = prevDisk.readHistory || diskReadHist;
+      diskWriteHist = prevDisk.writeHistory || diskWriteHist;
+    } else {
+      readLabel = "I/O";
+      writeText = "n/a";
+      diskWriteHist = [];
+      if (!haveIo) {
+        if (prevIsIo && prevDisk.readText && prevDisk.readText !== "unavailable" && prevDisk.readText !== "n/a") {
+          readText = prevDisk.readText;
+          diskReadHist = prevDisk.readHistory || diskReadHist;
+        } else {
+          readText = "unavailable";
+          if (!prevIsIo) diskReadHist = [];
+        }
+      } else if (live && !rateGap) {
+        readText = formatRate(ioRate.bps);
+        if (!prevIsIo) diskReadHist = [];
+        diskReadHist = pushHistory(diskReadHist, ioRate.bps, HISTORY_LIMIT);
+      } else {
+        readText = formatRate(ioRate.bps);
+        if (prevIsIo && prevDisk) diskReadHist = prevDisk.readHistory || diskReadHist;
+        else diskReadHist = [];
+      }
+    }
+    if (device) diskHistMap[device] = { read: diskReadHist, write: diskWriteHist };
   } else if (device) {
     var bucket = diskHistMap[device] || { read: [], write: [] };
     diskReadHist = bucket.read || [];
@@ -1661,6 +1790,20 @@ function step(state, raw, nowMs) {
   var gpu = sample.gpu;
   if (gpuFailed) {
     gpuView = prevGpu;
+  } else if (gpuNa) {
+    gpuIdle = null;
+    gpuAt = null;
+    gpuHist = [];
+    gpuView = {
+      percent: null,
+      percentText: "n/a",
+      freqText: "",
+      fraction: 0,
+      history: [],
+      driver: "",
+      unsupported: false,
+      na: true
+    };
   } else if (gpu && gpu.present) {
     var idleNum = finiteOrNull(gpu.idle_ms);
     var directBusy = finiteOrNull(gpu.busy_pct);
@@ -1817,7 +1960,7 @@ function step(state, raw, nowMs) {
 
   var packageTemp = sample.package_temp_c;
   var diskTemp = sample.nvme_temp_c;
-  if (sample.temps && typeof sample.temps === "object") {
+  if (sample.temps && typeof sample.temps === "object" && !tempsNa) {
     packageTemp = sample.temps.package_c;
     diskTemp = sample.temps.disk_c;
   }
@@ -1845,7 +1988,14 @@ function step(state, raw, nowMs) {
   var upText = "—";
   var perIface = blankPerIface(orderedNames);
   var iface = ifaceLabel(orderedNames, preferred);
-  if (live && !netFailed && !rateGap) {
+  if (netNa) {
+    downText = "n/a";
+    upText = "n/a";
+    iface = "n/a";
+    perIface = [];
+    rxHist = [];
+    txHist = [];
+  } else if (live && !netFailed && !rateGap) {
     downText = formatRate(net.rxBps);
     upText = formatRate(net.txBps);
     perIface = ratePerIface(net.interfaces, orderedNames);
@@ -1857,13 +2007,23 @@ function step(state, raw, nowMs) {
   }
 
   var cpuCard;
-  if (cpuFailed && prevCpu) {
+  if (cpuNa) {
+    cpuCard = {
+      percent: null,
+      percentText: "n/a",
+      tempText: tempsNa ? "n/a" : "—",
+      freqText: "n/a",
+      cores: [],
+      history: []
+    };
+    cpuHist = [];
+  } else if (cpuFailed && prevCpu) {
     cpuCard = prevCpu;
     cpuHist = prev.cpuHist || [];
   } else {
     var cores = coreViews(percents, freqs, live, prevCpu ? prevCpu.cores : null);
-    var cpuTempText = formatTemp(packageTemp);
-    if (tempsFailed && prevCpu) cpuTempText = prevCpu.tempText || cpuTempText;
+    var cpuTempText = tempsNa ? "n/a" : formatTemp(packageTemp);
+    if (!tempsNa && tempsFailed && prevCpu) cpuTempText = prevCpu.tempText || cpuTempText;
     var cpuFreqText = freqAvg == null || freqAvg === "" ? "—" : formatMhz(freqAvg);
     if (!live && prevCpu && (freqAvg == null || freqAvg === "")) cpuFreqText = prevCpu.freqText || cpuFreqText;
     cpuCard = {
@@ -1877,7 +2037,17 @@ function step(state, raw, nowMs) {
   }
 
   var memCard;
-  if (memFailed && prevMem) {
+  if (memNa) {
+    memCard = {
+      usedText: "n/a",
+      availableText: "n/a",
+      cachedText: "n/a",
+      swapText: "n/a",
+      fraction: 0,
+      history: []
+    };
+    memHist = [];
+  } else if (memFailed && prevMem) {
     memCard = prevMem;
     memHist = prev.memHist || [];
   } else {
@@ -1891,14 +2061,39 @@ function step(state, raw, nowMs) {
     };
   }
 
-  var diskTempText = formatTemp(diskTemp);
-  if (tempsFailed && prevDisk) diskTempText = prevDisk.tempText || diskTempText;
+  if (sample.wsl === true) {
+    var win = sample.windows;
+    memCard.wslText = "WSL " + formatUsage(mem.used, mem.total);
+    memCard.windowsUnavailable = !(win && Number(win.total) > 0 && Number(win.used) >= 0 && Number(win.used) <= Number(win.total));
+    if (!memCard.windowsUnavailable) {
+      memCard.usedText = formatUsage(win.used, win.total);
+      memCard.fraction = clamp01(win.used / win.total);
+      memCard.wslFraction = clamp01(Math.min(Number(mem.used) || 0, win.used) / win.total);
+      cpuCard.windowsText = win.cpu == null ? "" : "Windows " + formatPercent(win.cpu);
+    }
+  }
+
+  var diskTempText = tempsNa ? "n/a" : formatTemp(diskTemp);
+  if (!tempsNa && tempsFailed && prevDisk) diskTempText = prevDisk.tempText || diskTempText;
   var diskCard;
-  if (diskFailed && prevDisk) {
+  if (diskNa) {
+    diskCard = {
+      device: "n/a",
+      readLabel: "read",
+      readText: "n/a",
+      writeText: "n/a",
+      usageText: "n/a",
+      tempText: "n/a",
+      fraction: 0,
+      readHistory: [],
+      writeHistory: []
+    };
+  } else if (diskFailed && prevDisk) {
     diskCard = prevDisk;
   } else {
     diskCard = {
       device: device || "—",
+      readLabel: readLabel,
       readText: readText,
       writeText: writeText,
       usageText: formatUsage(rootUsed, rootTotal),
@@ -1917,6 +2112,11 @@ function step(state, raw, nowMs) {
   var view = {
     cpu: cpuCard,
     mem: memCard,
+    filesystems: filesystemRows(sample.filesystems),
+    windows: sample.windows && typeof sample.windows === "object" && !isArray(sample.windows) ? {
+      total: sample.windows.total, used: sample.windows.used, cpu: sample.windows.cpu,
+      disks: filesystemRows(sample.windows.disks)
+    } : null,
     gpu: gpuView,
     disk: diskCard,
     net: {
@@ -1988,6 +2188,9 @@ var api = {
   collectorKillDue: collectorKillDue,
   collectorExitIgnored: collectorExitIgnored,
   parseColorsToml: parseColorsToml,
+  oklabDistance: oklabDistance,
+  warningColor: warningColor,
+  seriesFlat: seriesFlat,
   meterColor: meterColor,
   batteryMeterColor: batteryMeterColor,
   mixHex: mixHex,

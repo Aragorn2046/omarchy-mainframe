@@ -1,7 +1,7 @@
 # Mainframe
 
 **A beautiful, theme-aware system monitor for [Omarchy](https://omarchy.org).** Every core, memory, GPU, disk,
-network, battery and your busiest apps, on one screen, at once. No tabs. No 1991 terminal look.
+network, battery and your busiest apps, on one screen, at once. Other machines get a tab. No 1991 terminal look.
 
 ![Mainframe on Omarchy](docs/screenshot.png)
 
@@ -23,7 +23,10 @@ screen, and it wears your Omarchy theme: switch themes and Mainframe follows wit
 - **Battery** charge, state and power draw (hidden gracefully on desktops)
 - **Top apps** by live CPU and by memory, grouped by name (`chromium ×42`)
 - **Follows your Omarchy theme live**, dark and light, using your Omarchy font
-- **Light**: about 1.3% of one CPU core and ~180 MB RAM while open on a real Wayland session; nothing runs when it is
+- **Other machines as tabs.** Point Mainframe at an SSH host and it gets the same cards. Nothing is installed on that
+  machine, and nothing keeps running there after you close the window. When the connection closes, the remote sampler
+  detects the loss and stops its helper processes before exiting.
+- **Light**: about 2% of one CPU core and ~180 MB RAM while open on a real Wayland session (measured on a 16-thread laptop); nothing runs when it is
   closed. No root, no daemons, no compiled code: plain QML, JavaScript and Python.
 
 ## Requirements
@@ -85,7 +88,12 @@ succeeds. Remove the key binding from `bindings.lua` if you added one.
 | Key | Action |
 |---|---|
 | `Esc` / `q` | Close |
-| `r` | Restart the data collector if it stopped |
+| `r` | Refresh accounts in Agents, or restart the current machine collector |
+| `1`–`9` | Switch to the corresponding tab |
+| `s` / `d` / `a` | Select Systems, Storage, or Agents in Overview |
+| `Tab` / `Shift+Tab` | Cycle Overview views |
+| `,` / `Ctrl+,` | Open settings |
+| `Ctrl+Tab` | Next top-level tab |
 
 ## How it works
 
@@ -102,6 +110,45 @@ scripts/mainframe-smoke.sh                    # headless load, layout, CPU and c
 MAINFRAME_SMOKE_LIVE=1 scripts/mainframe-smoke.sh   # also measures CPU on a real window (opens it for ~40 s)
 ```
 
+## Monitor your other machines
+
+Mainframe watches the computer it is running on. To keep an eye on another one, open settings with `,` and add its name and SSH alias.
+You can also edit `$XDG_CONFIG_HOME/mainframe/hosts.json` (that is `~/.config/mainframe/hosts.json` when
+`XDG_CONFIG_HOME` is unset):
+
+```json
+{
+  "hosts": [
+    {"name": "Host A", "ssh": "host-a"},
+    {"name": "Host B", "ssh": "host-b"},
+    {"name": "Host C", "ssh": "host-c"}
+  ]
+}
+```
+
+Each `ssh` value is the Host alias from your SSH config, the same name you would pass to `ssh`.
+The name is the tab label. Mainframe re-reads this file when it changes. A missing or unreadable
+file leaves you with this machine only, and a small "add machines: see README" hint.
+
+Requirements: key login to that host (`BatchMode`, no password prompt) and `python3` on the host.
+Mainframe does not install anything there and does not open a port. While a remote tab is selected
+it runs `ssh … exec python3 -u - --remote` and sends its own sampler on stdin. Switch away and that
+connection stays up for a minute, so coming back is instant, then it closes. Closing the window
+stops every connection. A laptop that is asleep or away shows "Can't reach …" and is tried again
+every 30 seconds while its tab is open.
+
+What you see depends on the host:
+
+- **Linux** uses the same `/proc` numbers as this machine, including GPU and temperatures when the
+  host exposes them.
+- **macOS** shows per-core CPU, memory, swap, disk throughput, root disk usage, network, battery and
+  the busiest processes. GPU and temperatures need root, so those cards say "n/a". The process CPU
+  figure is the decayed average `ps` already reports.
+- **WSL** (a Linux kernel that says `microsoft` or `WSL`) shows Windows host memory and CPU when PowerShell is available, with a WSL memory breakdown.
+  If the Windows sample fails, the card falls back to WSL figures. The GPU usually shows "n/a".
+
+A sensor the host cannot provide says "n/a". It does not take the rest of the cards down with it.
+
 ## Contributing
 
 Mainframe is a community project: issues, fixes, hardware support and design ideas are welcome. See
@@ -110,3 +157,15 @@ Mainframe is a community project: issues, fixes, hardware support and design ide
 ## License
 
 MIT
+
+### Overview and agent usage
+
+Overview has Systems, Storage and Agents views. Collectors run independently for all machines while Overview is open. Select a machine card to open its dashboard.
+
+Add accounts in settings. Claude and Codex use the Omarchy collectors with the account directory and an isolated cache. A command account accepts a JSON array of arguments and must print one Omarchy-format JSON record. Mainframe never reads provider credentials. Records refresh when stale, every ten minutes while Agents is open, and on `r`. Existing Omarchy usage files also appear. Unavailable providers are hidden unless enabled in Display settings.
+
+A usage JSON file can set `category` to `llm`, `video`, `image`, `voice`, or `other` to choose its section in Agents. The value is case-insensitive; without it, Mainframe infers the section from the provider, ID, or name.
+
+Mainframe stores settings, hosts and accounts under `$XDG_CONFIG_HOME/mainframe/`. Account records use `$XDG_CACHE_HOME/mainframe/agents/`. Storage reports mounted filesystems and Windows drives when available.
+
+Run the offline view checks with `python3 mainframe/tests/v16-smoke.py`. They use temporary XDG directories and fixture hosts.

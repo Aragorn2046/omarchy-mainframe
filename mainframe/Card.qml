@@ -2,6 +2,8 @@ import QtQuick
 
 Rectangle {
   id: root
+  property bool clickable: false
+  signal activated()
   property string title: ""
   property string hint: ""
   property color hintColor: "#e06c75"
@@ -47,6 +49,8 @@ Rectangle {
     font.letterSpacing: 0.6
     elide: Text.ElideRight
   }
+
+  MouseArea { anchors.fill: parent; z: 100; enabled: root.clickable; cursorShape: Qt.PointingHandCursor; onClicked: root.activated() }
 
   Item {
     id: body

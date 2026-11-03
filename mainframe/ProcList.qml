@@ -93,6 +93,7 @@ ColumnLayout {
   }
 
   Text {
+    textFormat: Text.PlainText
     id: headingText
     objectName: "metric-label"
     visible: root.headingShown
