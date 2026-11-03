@@ -3297,6 +3297,7 @@ _USAGE_LINE_LIMIT = 2 * 1024 * 1024
 _USAGE_CHECKPOINT_BYTES = 64 * 1024 * 1024
 _USAGE_SEEN_LIMIT = 500000
 _USAGE_INDEX_LIMIT = 64 * 1024 * 1024
+_USAGE_FILE_LIMIT = 20000
 
 
 def _usage_hour(timestamp):
@@ -3338,6 +3339,10 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
         delta = {key: max(0, current[key] - cursor.get(key, 0)) for key in keys}
         sessions[session] = {key: max(current[key], cursor.get(key, 0)) for key in keys}
         sessions[session]['day'] = max(cursor.get('day', ''), _usage_hour(data.get('timestamp'))[:10])
+        key = hashlib.sha1(json.dumps(['codex', data['timestamp'], totals], sort_keys=True, separators=(',', ':')).encode()).hexdigest()[:12]
+        if key in seen:
+            return
+        seen[key] = counted_day
         tokens = {'input': delta['input_tokens'], 'output': delta['output_tokens'], 'cached_input': delta['cached_input_tokens']}
         model = state.get('model') or 'unknown'
     else:
@@ -3374,7 +3379,7 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
 
 
 def _usage_empty():
-    return {'version': 3, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
+    return {'version': 4, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
 
 
 def _usage_write(path, index):
@@ -3414,6 +3419,11 @@ def _usage_int(value, maximum=(1 << 63) - 1):
     return type(value) is int and 0 <= value <= maximum
 
 
+def _usage_valid_cursor(value):
+    return (isinstance(value, dict) and isinstance(value.get('day', ''), str) and
+            all(_usage_int(value.get(k, 0)) for k in ('input_tokens', 'output_tokens', 'cached_input_tokens')))
+
+
 def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
     """Incrementally scan recent transcripts and checkpoint consistent cursors."""
     home = os.path.expanduser('~') if home is None else str(home)
@@ -3434,9 +3444,13 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             if os.fstat(stream.fileno()).st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
             loaded = json.load(stream)
-        if (not isinstance(loaded, dict) or loaded.get('version') != 3 or
+        if (not isinstance(loaded, dict) or loaded.get('version') != 4 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
-                any(not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)', k) for k in loaded['hours'])):
+                any(not _usage_valid_cursor(value) for value in loaded['sessions'].values()) or
+                any(not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)', k) or
+                    not isinstance(models, dict) or any(not isinstance(counts, dict) or
+                    any(type(value) is not int or value < 0 for value in counts.values()) for counts in models.values())
+                    for k, models in loaded['hours'].items())):
             raise ValueError('invalid index')
         index = loaded
     except FileNotFoundError:
@@ -3460,6 +3474,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
     roots += [('claude', p) for p in sorted(glob.glob(os.path.join(home, '.claude-accounts', '*', 'projects')))]
     roots.append(('codex', os.path.join(home, '.codex', 'sessions')))
     visited, candidates, present = set(), [], set()
+    file_count, too_many_files = 0, False
     for provider, root in roots:
         try:
             os.lstat(root)
@@ -3468,7 +3483,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         except OSError:
             skipped += 1
             continue
-        for directory, subdirs, names in os.walk(root, followlinks=True, onerror=walk_error):
+        for directory, subdirs, names in os.walk(root, followlinks=False, onerror=walk_error):
             real = os.path.realpath(directory)
             if real in visited:
                 subdirs[:] = []
@@ -3478,6 +3493,10 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             for name in sorted(names):
                 if not name.endswith('.jsonl'):
                     continue
+                if file_count >= _USAGE_FILE_LIMIT:
+                    too_many_files = True
+                    break
+                file_count += 1
                 file = os.path.realpath(os.path.join(directory, name))
                 present.add(file)
                 try:
@@ -3488,14 +3507,15 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                         present.discard(file)
                 except OSError:
                     skipped += 1
-    if not skipped:
+            if too_many_files:
+                break
+        if too_many_files:
+            break
+    if not skipped and not too_many_files:
         for file in list(files):
             if file not in present:
                 del files[file]
-    def valid_cursor(v):
-        return (isinstance(v, dict) and isinstance(v.get('day', ''), str) and
-                all(_usage_int(v.get(k, 0)) for k in ('input_tokens', 'output_tokens', 'cached_input_tokens')))
-    invalid_sessions = {k for k, v in index['sessions'].items() if not valid_cursor(v)}
+    invalid_sessions = {k for k, v in index['sessions'].items() if not _usage_valid_cursor(v)}
     index['sessions'] = {k: v for k, v in index['sessions'].items() if k not in invalid_sessions and v.get('day', '') >= cutoff}
     dirty |= index != before
     read_bytes, checkpoint_bytes, limited = 0, 0, False
@@ -3526,12 +3546,14 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                 valid = valid and previous['head_len'] <= previous['size']
                 valid = valid and isinstance(previous.get('session', ''), str) and (previous.get('session') or file) not in invalid_sessions
                 valid = valid and isinstance(previous.get('model', ''), str) and type(previous.get('skip_line', False)) is bool
+                valid = valid and type(previous.get('skip_mark', False)) is bool and isinstance(previous.get('skip_tail', ''), str) and len(previous.get('skip_tail', '')) <= ((65536 + 2) // 3) * 4
                 skip_days = previous.get('skip_days', {}) if valid else {}
                 valid = valid and isinstance(skip_days, dict) and all(isinstance(k, str) and _usage_int(v) for k, v in skip_days.items())
                 if valid:
                     try:
                         pending = base64.b64decode(previous.get('pending', ''), validate=True)
-                        valid = len(pending) <= _USAGE_LINE_LIMIT
+                        tail = base64.b64decode(previous.get('skip_tail', ''), validate=True)
+                        valid = len(pending) <= _USAGE_LINE_LIMIT and len(tail) <= 65536
                     except (ValueError, TypeError):
                         valid = False
                 stream.seek(0)
@@ -3543,6 +3565,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                         previous['ino'] != stat.st_ino or previous['dev'] != stat.st_dev or previous.get('head') != old_head):
                     previous = {'provider': provider, 'path': file, 'offset': 0, 'skip_days': {}}
                     pending = b''
+                    tail = b''
                 state = copy.deepcopy(previous)
                 state['skip_days'] = {k: v for k, v in state.get('skip_days', {}).items() if k >= skip_cutoff}
                 stream.seek(state['offset'])
@@ -3559,6 +3582,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     nonlocal staged_seen, staged_sessions, staged_hours, dirty, dedupe_full
                     state['offset'] = stream.tell()
                     state['pending'] = base64.b64encode(pending).decode('ascii')
+                    state['skip_tail'] = base64.b64encode(tail).decode('ascii')
                     state.update(size=stat.st_size, mtime_ns=stat.st_mtime_ns, ino=stat.st_ino, dev=stat.st_dev,
                                  head=head, head_len=len(head_data))
                     if files.get(file) != state or staged_seen or staged_sessions or staged_hours:
@@ -3591,23 +3615,36 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     read_bytes += len(chunk)
                     checkpoint_bytes += len(chunk)
                     if state.get('skip_line'):
-                        if chunk.endswith(b'\n'): state['skip_line'] = False
+                        tail = (tail + chunk)[-65536:]
+                        if chunk.endswith(b'\n'):
+                            if not state.get('skip_mark') and (b'"usage"' in tail or b'token_count' in tail):
+                                day = utc_now.date().isoformat()
+                                state['skip_days'][day] = state['skip_days'].get(day, 0) + 1
+                            state['skip_line'] = state['skip_mark'] = False
+                            tail = b''
                     else:
                         pending += chunk
                         if len(pending) > _USAGE_LINE_LIMIT:
                             prefix = pending[:65536]
-                            if b'"usage"' in prefix or b'token_count' in prefix:
+                            tail = pending[-65536:]
+                            state['skip_mark'] = b'"usage"' in prefix or b'token_count' in prefix
+                            if state['skip_mark'] or (chunk.endswith(b'\n') and (b'"usage"' in tail or b'token_count' in tail)):
                                 day = utc_now.date().isoformat()
                                 state['skip_days'][day] = state['skip_days'].get(day, 0) + 1
                             pending = b''
                             state['skip_line'] = not chunk.endswith(b'\n')
+                            if not state['skip_line']:
+                                state['skip_mark'], tail = False, b''
                         elif chunk.endswith(b'\n'):
-                            if (b'"usage"' in pending if provider == 'claude' else any(x in pending for x in (b'token_count', b'turn_context', b'session_meta'))):
+                            if (b'"usage"' in pending or b'token_count' in pending or
+                                    (provider == 'codex' and any(x in pending for x in (b'turn_context', b'session_meta')))):
                                 try:
                                     data = json.loads(pending)
                                     if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat())
                                 except (ValueError, UnicodeError, TypeError, RecursionError):
-                                    pass
+                                    if b'"usage"' in pending or b'token_count' in pending:
+                                        day = utc_now.date().isoformat()
+                                        state['skip_days'][day] = state['skip_days'].get(day, 0) + 1
                             pending = b''
                     if checkpoint_bytes >= _USAGE_CHECKPOINT_BYTES or time.monotonic() - checkpoint_at >= 30:
                         commit(); write_checkpoint()
@@ -3622,8 +3659,9 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             break
     skipped += sum(sum(v for k, v in state.get('skip_days', {}).items() if k >= skip_cutoff) for state in files.values() if isinstance(state, dict) and isinstance(state.get('skip_days', {}), dict) and all(isinstance(k, str) and _usage_int(v) for k, v in state.get('skip_days', {}).items()))
     write_checkpoint()
-    result = {'days': index['hours'], 'partial': bool(skipped or limited or write_failed or reset_index or dedupe_full), 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
-    if dedupe_full: result['reason'] = 'dedupe window full'
+    result = {'days': index['hours'], 'partial': bool(skipped or limited or write_failed or reset_index or dedupe_full or too_many_files), 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
+    if too_many_files: result['reason'] = 'too many files'
+    elif dedupe_full: result['reason'] = 'dedupe window full'
     elif write_failed: result['reason'] = 'index write failed'
     elif reset_index: result['reason'] = 'index too large'
     return result

@@ -94,6 +94,48 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(self.scan()['days'][self.day]['codex/c']['input'], 150)
         self.assertEqual(self.scan()['days'][self.day]['codex/c']['input'], 150)
 
+    def test_codex_fork_deduplicates_parent_events(self):
+        def meta(ident): return {'type':'session_meta', 'payload':{'id':ident}}
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        self.lines(self.file('.codex/sessions/a.jsonl'), [meta('parent'), count(100)])
+        self.lines(self.file('.codex/sessions/b.jsonl'), [meta('fork'), count(100), count(120)])
+        for _ in range(2):
+            self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 120)
+
+    def test_file_cap_preserves_existing_files_and_marks_partial(self):
+        from unittest.mock import patch
+        for name in ('a', 'b', 'c'):
+            self.lines(self.file('.claude/projects/' + name + '.jsonl'), [self.claude(name)])
+        self.scan()
+        with patch.object(c, '_USAGE_FILE_LIMIT', 2):
+            result = self.scan()
+        self.assertTrue(result['partial']); self.assertEqual(result['reason'], 'too many files')
+        self.assertEqual(len(json.loads((self.cache / 'usage-index.json').read_text())['files']), 3)
+
+    def test_discovery_does_not_follow_nested_directory_symlinks(self):
+        outside = self.file('outside/a.jsonl'); self.lines(outside, [self.claude('outside')])
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('inside')])
+        (self.home / '.claude/projects/link').symlink_to(outside.parent, target_is_directory=True)
+        self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 10)
+
+    def test_invalid_hour_values_rebuild_index(self):
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('one')]); self.scan()
+        path = self.cache / 'usage-index.json'
+        baseline = json.loads(path.read_text())
+        for value in (None, {'model': None}, {'model': {'input': -1}}, {'model': {'input': True}}):
+            index = json.loads(json.dumps(baseline)); index['hours'][self.day] = value
+            path.write_text(json.dumps(index))
+            self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 10)
+
+    def test_oversized_tail_and_malformed_usage_lines_are_skipped(self):
+        path = self.file('.claude/projects/a.jsonl')
+        path.write_bytes(b'x' * (c._USAGE_LINE_LIMIT + 100) + b'"usage"}\n' + b'{"usage": invalid}\n')
+        for _ in range(2):
+            result = self.scan(limit=1024 * 1024)
+        result = self.scan(limit=1024 * 1024)
+        self.assertTrue(result['partial']); self.assertEqual(result['skipped'], 2)
+        self.assertEqual(self.scan()['skipped'], 2)
+
     def test_killed_after_first_file_keeps_checkpoint(self):
         import subprocess, sys
         self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('a')])

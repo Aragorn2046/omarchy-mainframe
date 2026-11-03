@@ -122,7 +122,8 @@ runpy.run_path(sys.argv[1], run_name="__main__")
                     for key in ('id', 'name', 'provider', 'dir', 'configHash'):
                         self.assertEqual(by_name[record['name']][key], record[key])
                 self.assertEqual(by_name['alice@']['data'], 'newer')
-                self.assertNotIn('sharedStatsWith', by_name['bob@'])
+                self.assertEqual(by_name['bob@']['sharedStatsWith'], 'alice@')
+                self.assertTrue(by_name['bob@']['sharedProjectsFolder'])
 
     def test_configured_anchors_prefer_id_over_other_name(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -253,6 +254,19 @@ runpy.run_path(sys.argv[1], run_name="__main__")
 
 
 class SharedHistoryTest(unittest.TestCase):
+    def test_same_folder_is_shared_with_small_different_totals(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); cache = root / 'cache/mainframe/agents'; cache.mkdir(parents=True)
+            for i in range(2):
+                record = {'id':str(i), 'name':'Account ' + str(i), 'provider':'claude',
+                          'dir':str(root / 'account'), 'modelUsage':{'m':{'inputTokens':i + 1}}}
+                (cache / (str(i) + '.json')).write_text(json.dumps(record))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run(['python3', str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            data = [json.loads(item['raw']) for item in json.loads(result.stdout)]
+            self.assertEqual(data[1]['sharedStatsWith'], 'Account 0')
+            self.assertTrue(data[1]['sharedProjectsFolder'])
+
     def test_identical_history_without_directories_is_shared_per_provider(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)

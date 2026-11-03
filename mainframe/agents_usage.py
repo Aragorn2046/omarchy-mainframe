@@ -177,8 +177,8 @@ for i, (item, raw) in enumerate(merged):
     except (ValueError, OSError):
         continue
     break
-# Identical history can come from separate account directories or records without one.
-histories = {}
+# Configured projects folders determine sharing; use history only without a directory.
+histories, folders = {}, {}
 for item, raw in merged:
     if isinstance(raw, dict) and ('sharedStatsWith' in raw or 'sharedProjectsFolder' in raw):
         raw.pop('sharedStatsWith', None)
@@ -187,6 +187,18 @@ for item, raw in merged:
     d = identity(raw)
     if not d or d.get('provider') not in ('claude', 'codex') or not isinstance(d.get('name'), str):
         continue
+    if d.get('dir'):
+        try:
+            key = (d['provider'], realpath(os.path.join(os.path.expanduser(d['dir']), 'projects')))
+            if key in folders:
+                raw['sharedStatsWith'] = folders[key]
+                raw['sharedProjectsFolder'] = True
+                item['raw'] = json.dumps(raw, ensure_ascii=True)
+            elif d['name']:
+                folders[key] = d['name']
+        except (ValueError, OSError):
+            pass
+        continue
     days = d.get('recentDays') if isinstance(d.get('recentDays'), list) else []
     models = d.get('modelUsage') if isinstance(d.get('modelUsage'), dict) else {}
     active_days = len({day['date'] for day in days if isinstance(day, dict) and isinstance(day.get('date'), str) and day['date'] and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in day.values())})
@@ -194,20 +206,9 @@ for item, raw in merged:
     if active_days < 2 or tokens < 1000000:
         continue
     key = (d['provider'], json.dumps(days, sort_keys=True), json.dumps(models, sort_keys=True))
-    if key in histories and not raw.get('sharedStatsWith'):
-        owner_name, owner_dir = histories[key]
-        raw['sharedStatsWith'] = owner_name
-        if d.get('provider') == 'claude' and d.get('dir') and owner_dir:
-            try:
-                if realpath(os.path.join(os.path.expanduser(d['dir']), 'projects')) == owner_dir:
-                    raw['sharedProjectsFolder'] = True
-            except (ValueError, OSError):
-                pass
+    if key in histories:
+        raw['sharedStatsWith'] = histories[key]
         item['raw'] = json.dumps(raw, ensure_ascii=True)
-    elif key not in histories and d['name']:
-        try:
-            directory = realpath(os.path.join(os.path.expanduser(d['dir']), 'projects')) if d.get('provider') == 'claude' and d.get('dir') else None
-        except (ValueError, OSError):
-            directory = None
-        histories[key] = (d['name'], directory)
+    elif d['name']:
+        histories[key] = d['name']
 json.dump([item for item, _ in merged], sys.stdout, ensure_ascii=True)
