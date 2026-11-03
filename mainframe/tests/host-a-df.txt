@@ -1,0 +1,17 @@
+Filesystem                              1024-blocks       Used Available Capacity  Mounted on
+/dev/disk4s1s1                            482797652   13338992  79116288    15%    /
+devfs                                           245        245         0   100%    /dev
+/dev/disk4s6                              482797652    4194576  79116288     6%    /System/Volumes/VM
+/dev/disk4s2                              482797652   10595972  79116288    12%    /System/Volumes/Preboot
+/dev/disk4s4                              482797652      28112  79116288     1%    /System/Volumes/Update
+/dev/disk1s2                                 512000       6164    494304     2%    /System/Volumes/xarts
+/dev/disk1s1                                 512000       6124    494304     2%    /System/Volumes/iSCPreboot
+/dev/disk1s3                                 512000        548    494304     1%    /System/Volumes/Hardware
+/dev/disk4s5                              482797652  373880932  79116288    83%    /System/Volumes/Data
+map auto_home                                     0          0         0   100%    /System/Volumes/Data/home
+/dev/disk4s3                              482797652    1486172  79116288     2%    /Volumes/Recovery
+/dev/disk5s1                              488181744  290912640 197112044    60%    /Volumes/Media
+//share@100.64.0.10/Shared  4000666620 3457081900 543584720    87%    /Volumes/shared
+/dev/disk6s1                                 584748     581868      2880   100%    /Volumes/Synergy 3.8.4-arm64
+//admin@100.64.0.11/Shared    971243844  750924336 220319508    78%    /Users/example/Mounts/shared-host-c
+/dev/disk7s1                              250642432      13440 250628992     1%    /Volumes/Backup240

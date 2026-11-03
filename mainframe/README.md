@@ -1,7 +1,7 @@
 # Mainframe
 
 Single-screen system dashboard for [Quickshell](https://quickshell.org/) 0.3.2.
-One floating window, seven cards, no pages. Colours follow the live Omarchy theme.
+One floating window with seven cards and an on-demand storage view. Colours follow Omarchy by default, or use a theme you choose for Mainframe.
 
 ## Launch
 
@@ -19,7 +19,7 @@ qs -c mainframe
 
 The Wayland app id is `mainframe` and the window title is `Mainframe`.
 Escape or `q` closes the window and quits the process. Closing the window does the same.
-`r` restarts the collector after it has stopped.
+`r` restarts the collector after it has stopped. Press `t` or the theme button to choose a theme. Click the Disk card to open Storage; Escape or Back returns to the dashboard.
 
 ## Install
 
@@ -36,6 +36,8 @@ Install symlinks `~/.config/quickshell/mainframe` (or `$XDG_CONFIG_HOME/quickshe
 
 `collect.py` samples on its own once a second and prints one parsed JSON line. The shell publishes every sample. The process table is included every 3 seconds, or every 6 seconds when a sweep takes longer than 40 ms. `procs.sweep_ms` is that sweep's measured cost. Each history graph keeps 60 samples and redraws when a new point arrives. The shell only watches stdin for EOF or `quit`, and restarts the collector if it goes quiet.
 
+`--remote` is the same program sent over SSH. It does not watch stdin, because that stream is the script and closes as soon as it has been read. Samples stay at 1 Hz and the process table is every 5 seconds. Each line adds `host`, `os` (`linux` or `darwin`) and `kernel`. A Linux kernel that contains `microsoft` or `WSL` also sets `wsl`. macOS fills CPU, memory, disk, network, battery and processes without root; GPU and temperatures are `n/a`. The remote process exits on SIGHUP, SIGTERM or a broken pipe, and it does not arm the parent-death signal.
+
 | Card | Source |
 | --- | --- |
 | CPU | `/proc/stat` busy percent for the total and each cpu id, per-core MHz from the cpufreq file for that id, package temperature from `coretemp` / `k10temp` / `zenpower` |
@@ -48,17 +50,26 @@ Install symlinks `~/.config/quickshell/mainframe` (or `$XDG_CONFIG_HOME/quickshe
 
 A sensor that throws is `null` with an entry in `errors`. The rest of that sample is still sent. The collector exits when its parent dies, when stdin closes, or on SIGTERM.
 
+## Storage
+
+Click Disk to see root filesystem usage by category. Storage uses allocated blocks, counts hard links once, skips symbolic links and other devices or subvolumes, and scans readable parts of the home directory and system Flatpak and `/opt` directories. Unrecognised home files appear under Other. System & other is the remaining used space; system files are not scanned without admin rights. Filesystem snapshots and compressed or shared blocks can make category estimates approximate.
+
+The scan runs on demand at low CPU and I/O priority. It shows progress and stops after ten minutes with partial results. Close Storage to cancel it, or select Rescan to start again. Results are cached for one hour in `$XDG_CACHE_HOME/mainframe/storage.json`. Remote tabs display a local-only notice. Select a category to open its folder in Baobab, or in the file manager if Baobab is unavailable.
+
 ## Theme
 
-Colours come from `~/.local/state/omarchy/current/theme/colors.toml`.
-The file is watched, and it is also re-read every 2 seconds so a theme switch that swaps the `current/theme` symlink shows up within 2 seconds.
+Choose a theme with `t` or the button in the window. Mainframe opens Omarchy's image picker, using previews from your Omarchy themes and the installed themes. Select `follow-omarchy` to track the system theme. If Omarchy's picker is unavailable, Mainframe shows a message and keeps working.
 
-`background` paints the window. `lighter_background` paints the cards (or background mixed 6% toward foreground). Text uses `foreground`, labels use `dark_foreground` (or `muted`). Meters and graphs use `accent`, then `yellow` from 70% and `red` from 90%. The font is the `monospace` fontconfig alias.
+The choice is saved in `$XDG_CONFIG_HOME/mainframe/settings.json` (normally `~/.config/mainframe/settings.json`). Preview links are kept under `$XDG_CACHE_HOME/mainframe/theme-previews/`. If a selected theme is removed, Mainframe follows Omarchy and shows a hint. Mainframe watches the chosen `colors.toml` and reloads it when it changes.
+
+Text uses foreground ink. Graphs use theme colours, with a dashed line for outgoing traffic. Hover over a graph for a sample. Rate graphs show their peak and the history window. Flat histories show `steady`. Meters use warning colours above 70% and a visible outline at 90%; battery warnings use low charge instead. The font is the `monospace` fontconfig alias.
 
 ## Checks
 
 ```sh
 node --test mainframe/tests/
+python3 -m unittest discover -s mainframe/tests -p 'test_*.py'
+python3 mainframe/tests/storage-smoke.py
 scripts/mainframe-smoke.sh
 ```
 

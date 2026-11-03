@@ -1,0 +1,115 @@
+import QtQuick
+import QtQuick.Layouts
+import "lib/agents.js" as Agents
+
+Item {
+  id: root
+  property var rows: []
+  property color ink; property color mutedInk; property color accent; property color warning; property color critical
+  property color cardColor; property color borderColor; property color track
+  property bool busy: false
+  property string status: ''
+  signal refresh()
+  function checkLayout() {
+    var failures = 0
+    for (var i = 0; i < sectionRepeater.count; i++) { var section = sectionRepeater.itemAt(i); if (section) failures += section.checkLayout() }
+    return failures
+  }
+  ColumnLayout {
+    anchors.fill: parent; spacing: 10
+    RowLayout {
+      Layout.fillWidth: true
+      Text { textFormat: Text.PlainText; text: 'AGENT USAGE'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12; Layout.fillWidth: true }
+      Text { textFormat: Text.PlainText; text: root.status; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+
+    }
+    Text { textFormat: Text.PlainText; visible: root.rows.length === 0; text: 'No agent usage reports yet.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 13 }
+    Flickable {
+      Layout.fillWidth: true; Layout.fillHeight: true; clip: true
+      contentWidth: width; contentHeight: sections.implicitHeight
+      ColumnLayout {
+        id: sections; width: parent.width; spacing: 10
+        Repeater {
+          id: sectionRepeater; model: Agents.sections(root.rows)
+          delegate: ColumnLayout {
+            id: section
+            required property var modelData
+            Layout.fillWidth: true; spacing: 10
+            function checkLayout() {
+              var failures = 0
+              for (var i = 0; i < repeater.count; i++) { var c = repeater.itemAt(i); var first = repeater.itemAt(Math.floor(i / grid.columns) * grid.columns); if (c && (c.width > grid.width + 1 || c.height + 1 < c.contentHeight || (first && Math.abs(c.y - first.y) > 1))) failures++ }
+              return failures
+            }
+            Text { text: section.modelData.heading; textFormat: Text.PlainText; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+            GridLayout {
+              id: grid; Layout.fillWidth: true; columns: width >= 1300 ? 3 : 2; columnSpacing: 10; rowSpacing: 10
+              Repeater {
+                id: repeater; model: section.modelData.cards
+                delegate: Rectangle {
+                  id: card
+                  required property var modelData
+                  readonly property real contentHeight: content.implicitHeight + 24
+                  Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: contentHeight; Layout.alignment: Qt.AlignTop
+                  radius: 10; color: root.cardColor; border.color: root.borderColor; opacity: modelData.stale ? 0.55 : 1; clip: true
+                  ColumnLayout {
+                    id: content; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12; spacing: 7
+                    RowLayout {
+                      Layout.fillWidth: true
+                      Text { text: card.modelData.name; color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                      Text { text: card.modelData.tier || ''; color: root.mutedInk; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight; Layout.maximumWidth: 130 }
+                    }
+                    Text { textFormat: Text.PlainText; visible: card.modelData.broken; text: "Can't read this report"; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+                    Text { textFormat: Text.PlainText; visible: !card.modelData.broken; text: card.modelData.age; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11 }
+                    Text { visible: !!card.modelData.status; Layout.fillWidth: true; text: card.modelData.status || ''; textFormat: Text.PlainText; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+                    Text { visible: !!card.modelData.help; Layout.fillWidth: true; text: card.modelData.help || ''; textFormat: Text.PlainText; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+                    Repeater {
+                      model: card.modelData.limits
+                      delegate: ColumnLayout {
+                        required property var modelData
+                        Layout.fillWidth: true; spacing: 3
+                        RowLayout {
+                          Layout.fillWidth: true
+                          Text { Layout.fillWidth: true; text: modelData.label; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
+                          Text { textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent === null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
+                        }
+                        Meter { Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent === null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
+                        Text { textFormat: Text.PlainText; visible: modelData.reset !== ''; text: modelData.reset; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+                      }
+                    }
+                    Text { textFormat: Text.PlainText; visible: !!card.modelData.sharedStatsWith; Layout.fillWidth: true; text: 'Local stats shared with ' + card.modelData.sharedStatsWith + ' (same projects folder)'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+                    Text { textFormat: Text.PlainText; visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; Layout.fillWidth: true; text: 'Today  ' + Agents.units(card.modelData.prompts) + ' prompts · ' + Agents.units(card.modelData.sessions) + ' sessions · ' + Agents.units(card.modelData.tokens) + ' tokens'; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
+                    Text { textFormat: Text.PlainText; visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; text: 'ACTIVITY · 14 DAYS'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+                    Row {
+                      visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; Layout.fillWidth: true; Layout.preferredHeight: 25; spacing: 3
+                      property real peak: Math.max(1, ...card.modelData.activity.map(function(day) { return day.count }))
+                      Repeater {
+                        model: card.modelData.activity
+                        delegate: Item {
+                          required property var modelData
+                          width: Math.max(3, (parent.width - 39) / 14); height: 25
+                          Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: Math.max(2, parent.height * modelData.count / parent.parent.peak); color: root.accent; opacity: modelData.count ? 0.8 : 0.2; radius: 1 }
+                          MouseArea { id: hover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                          Rectangle { visible: hover.containsMouse; z: 10; y: -20; width: tip.implicitWidth + 8; height: 20; color: root.cardColor; border.color: root.borderColor
+                            Text { textFormat: Text.PlainText; id: tip; anchors.centerIn: parent; text: modelData.date + ': ' + modelData.count; color: root.ink; font.pixelSize: 10 } }
+                        }
+                      }
+                    }
+                    Repeater {
+                      model: card.modelData.sharedStatsWith ? [] : card.modelData.models
+                      delegate: Text {
+                        required property var modelData
+                        Layout.fillWidth: true
+                        text: modelData.name + '  ' + (modelData.total !== undefined ? Agents.units(modelData.total) + ' total' : 'in ' + Agents.units(modelData.input) + ' · out ' + Agents.units(modelData.output) + ' · cache ' + Agents.units(modelData.cache))
+                        textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 10; elide: Text.ElideRight
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

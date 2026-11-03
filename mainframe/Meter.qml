@@ -4,6 +4,8 @@ Rectangle {
   id: root
   property real fraction: 0
   property bool vertical: false
+  property bool critical: fraction >= 0.9
+  property color warningInk: "#cacccc"
   property color fill: "#8a8f98"
   property color track: "#2a2e33"
   implicitHeight: 14
@@ -37,5 +39,12 @@ Rectangle {
       if (!(h > 0)) return 0
       return h
     }
+  }
+  Rectangle {
+    anchors.fill: parent
+    color: "transparent"
+    radius: parent.radius
+    border.width: root.critical ? 2 : 0
+    border.color: root.warningInk
   }
 }
