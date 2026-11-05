@@ -10,3 +10,5 @@ import "./v16.test.mjs";
 import "./qml-text.test.mjs";
 import "./usage_value.test.mjs";
 import "./themed-controls.test.mjs";
+
+import "./navigation.test.mjs";

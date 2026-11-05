@@ -5,6 +5,7 @@ import "lib/usage_value.js" as UsageValue
 
 Item {
   id: root
+  property alias flick: scrollView
   property var rows: []
   property var valueData: ({totals:{today:0,seven:0,thirty:0},providers:{claude:{},codex:{}},hosts:[],unpriced:[],partial:true,excluded:0})
   property color ink; property color mutedInk; property color accent; property color warning; property color critical
@@ -27,6 +28,7 @@ Item {
     }
     Text { textFormat: Text.PlainText; visible: root.rows.length === 0; text: 'No agent usage reports yet.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 13 }
     Flickable {
+      id: scrollView
       Layout.fillWidth: true; Layout.fillHeight: true; clip: true
       contentWidth: width; contentHeight: sections.implicitHeight
       ColumnLayout {

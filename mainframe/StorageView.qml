@@ -17,6 +17,22 @@ Card {
   property var progress: ({})
   property double now: Date.now()
   property var rows: Storage.model(data, palette, Metrics.oklabDistance)
+  property alias flick: list
+  property color accent
+  property int currentRow: 0
+  onRowsChanged: currentRow = 0
+  function moveRow(step) {
+    if (!list.visible || rows.length === 0) return
+    currentRow = Math.max(0, Math.min(rows.length - 1, currentRow + step))
+    var row = rowRepeater.itemAt(currentRow)
+    if (!row) return
+    if (row.y < list.contentY) list.contentY = row.y
+    else if (row.y + row.height > list.contentY + list.height) list.contentY = row.y + row.height - list.height
+    list.contentY = Math.max(0, Math.min(Math.max(0, list.contentHeight - list.height), list.contentY))
+  }
+  function openCurrentRow() {
+    if (list.visible && rows.length > 0) root.openCategory(rows[currentRow].name)
+  }
   function checkStorageLayout() {
     var bad = 0
     var width = list.width
@@ -101,11 +117,14 @@ Card {
       Column {
         id: rowsColumn; width: list.width; spacing: 1
         Repeater {
+          id: rowRepeater
           model: root.rows
           Rectangle {
             required property var modelData
+            required property int index
             objectName: "storage-row"
             width: rowsColumn.width; height: 36; radius: 4; color: rowMouse.containsMouse ? root.track : "transparent"
+            Rectangle { anchors.fill: parent; radius: parent.radius; color: root.accent; opacity: index === root.currentRow ? 0.16 : 0 }
             RowLayout {
               anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 10
               Rectangle {

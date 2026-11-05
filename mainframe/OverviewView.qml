@@ -4,6 +4,7 @@ import "lib/agents.js" as Agents
 
 Item {
   id: root
+  property alias flick: scrollView
   property var rows: []
   property color ink; property color mutedInk; property color accent; property color secondary
   property color cardColor; property color borderColor; property color track
@@ -14,6 +15,7 @@ Item {
     return failures
   }
   Flickable {
+    id: scrollView
     anchors.fill: parent
     contentWidth: width
     contentHeight: Math.max(height, column.implicitHeight)

@@ -91,13 +91,23 @@ succeeds. Remove the key binding from `bindings.lua` if you added one.
 
 | Key | Action |
 |---|---|
-| `Esc` / `q` | Close |
-| `r` | Refresh accounts in Agents, or restart the current machine collector |
-| `1`–`9` | Switch to the corresponding tab |
+| `Left` / `h` | Previous tab; Back in storage detail |
+| `Right` / `l` / `Ctrl+Tab` / `Ctrl+PgDown` | Next tab |
+| `Ctrl+Shift+Tab` / `Ctrl+Backtab` / `Ctrl+PgUp` | Previous tab |
+| `1–9` | Select the corresponding tab |
 | `s` / `d` / `a` | Select Systems, Storage, or Agents in Overview |
-| `Tab` / `Shift+Tab` | Cycle Overview views |
-| `,` / `Ctrl+,` | Open settings |
-| `Ctrl+Tab` | Next top-level tab |
+| `Tab` / `Shift+Tab` / `Backtab` | Cycle Overview views |
+| `Backspace` / `Alt+Left` | Back from storage detail or a machine tab |
+| `Down` / `j` / `Up` / `k` | Scroll one step or select a storage row |
+| `PgDown` / `Space` / `PgUp` / `Shift+Space` | Scroll one page |
+| `Home` / `g` / `End` / `G` | Jump to the top or bottom |
+| `Enter` / `Return` | Open the selected storage row |
+| `?` / `F1` | Toggle keyboard help |
+| `Esc` | Close help, settings, storage detail, or the window |
+| `q` / `Q` | Close storage detail or the window |
+| `t` / `T` | Open the theme picker |
+| `r` / `R` | Refresh Agents or restart the current machine collector |
+| `,` / `Ctrl+,` | Open settings; Ctrl+, also closes settings |
 
 ## How it works
 
