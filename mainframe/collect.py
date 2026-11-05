@@ -3297,7 +3297,6 @@ _USAGE_LIMIT = 1024 * 1024 * 1024
 _USAGE_LINE_LIMIT = 2 * 1024 * 1024
 _USAGE_CHECKPOINT_BYTES = 64 * 1024 * 1024
 _USAGE_SEEN_LIMIT = 200000
-_USAGE_HEADER_LIMIT = 20000
 _USAGE_INDEX_LIMIT = 64 * 1024 * 1024
 _USAGE_FILE_LIMIT = 200000
 
@@ -3317,7 +3316,7 @@ def _usage_number(value):
     return max(0, value) if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
-def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lineage):
+def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
     payload = data.get('payload') or {}
     if not isinstance(payload, dict):
         return
@@ -3327,7 +3326,6 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lin
             parent_id = str(payload.get('forked_from_id') or '')
             state['session'] = session_id if len(session_id) <= 128 else ''
             state['forked_from_id'] = parent_id if len(parent_id) <= 128 else ''
-        session = state.get('session') or state['path']
         cursor = sessions.setdefault(state['path'], {})
         if data.get('type') in ('turn_context', 'session_meta'):
             if isinstance(payload.get('model'), str) and payload['model']:
@@ -3345,13 +3343,7 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lin
         sessions[state['path']] = {key: max(current[key], cursor.get(key, 0)) for key in keys}
         sessions[state['path']]['day'] = max(cursor.get('day', ''), _usage_hour(data.get('timestamp'))[:10])
         state['has_usage_cursor'] = True
-        root = session
-        for _ in range(32):
-            parent = lineage.get(root)
-            if not parent or parent == root:
-                break
-            root = parent
-        key = hashlib.sha1(json.dumps(['codex', root, data['timestamp'], sorted(totals.items())], separators=(',', ':')).encode()).hexdigest()[:12]
+        key = hashlib.sha1(json.dumps(['codex', sorted(totals.items())]).encode()).hexdigest()[:12]
         if key in seen:
             return
         seen[key] = counted_day
@@ -3394,7 +3386,7 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lin
 
 
 def _usage_empty():
-    return {'version': 6, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
+    return {'version': 7, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
 
 
 def _usage_seen_day(value):
@@ -3472,7 +3464,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             if info.st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
             loaded = json.load(stream)
-        if (not isinstance(loaded, dict) or loaded.get('version') != 6 or
+        if (not isinstance(loaded, dict) or loaded.get('version') != 7 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
                 any(not _usage_valid_cursor(value) for value in loaded['sessions'].values()) or
                 any(not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)', k) or
@@ -3514,6 +3506,10 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         index['dedupe_evicted_at'] = utc_now.isoformat()
         dedupe_full = dirty = True
     files = index['files']
+    for entry in files.values():
+        if isinstance(entry, dict) and 'header_scan' in entry:
+            del entry['header_scan']
+            dirty = True
     skipped = 0
     roots = [('claude', os.path.join(home, '.claude', 'projects'))]
     roots += [('claude', p) for p in sorted(glob.glob(os.path.join(home, '.claude-accounts', '*', 'projects')))]
@@ -3589,109 +3585,6 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         checkpoint_bytes = 0
         checkpoint_at = time.monotonic()
 
-    # Read session metadata before events so forks work in any file order.
-    # Retain partial headers as well as complete ones across budget-limited scans.
-    lineage = {}
-    header_files = set()
-    header_limited = False
-    for provider, file, _ in candidates:
-        if provider != 'codex':
-            continue
-        if len(header_files) >= _USAGE_HEADER_LIMIT:
-            header_limited = True
-            continue
-        header_files.add(file)
-        try:
-            fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
-            with os.fdopen(fd, 'rb') as stream:
-                info = os.fstat(stream.fileno())
-                if not stat.S_ISREG(info.st_mode):
-                    continue
-                entry = files.get(file)
-                if not isinstance(entry, dict):
-                    entry = {}
-                cached = copy.deepcopy(entry.get('header_scan'))
-                valid_header = (isinstance(cached, dict) and cached.get('ino') == info.st_ino and
-                                cached.get('dev') == info.st_dev and _usage_int(cached.get('head_len')) and
-                                cached['head_len'] <= 4096 and cached['head_len'] <= info.st_size and
-                                _usage_int(cached.get('offset')) and cached['offset'] <= info.st_size and
-                                isinstance(cached.get('head'), str) and isinstance(cached.get('pending'), str) and
-                                type(cached.get('done')) is bool and isinstance(cached.get('session'), str) and
-                                isinstance(cached.get('parent'), str) and len(cached['session']) <= 128 and len(cached['parent']) <= 128 and
-                                (not cached.get('eof') or cached.get('size') == info.st_size))
-                if valid_header:
-                    valid_header = hashlib.sha1(stream.read(cached['head_len'])).hexdigest() == cached['head']
-                if not valid_header:
-                    stream.seek(0)
-                    head_data = stream.read(min(4096, info.st_size))
-                    cached = {'ino': info.st_ino, 'dev': info.st_dev, 'head_len': len(head_data),
-                              'head': hashlib.sha1(head_data).hexdigest(), 'offset': 0, 'pending': '',
-                              'done': False, 'session': '', 'parent': ''}
-                if not cached['done']:
-                    stream.seek(cached['offset'])
-                    remaining = min(limit - read_bytes, _USAGE_LINE_LIMIT + 1 - cached['offset'])
-                    if remaining <= 0:
-                        limited = True
-                    else:
-                        chunk = stream.readline(remaining)
-                        read_bytes += len(chunk)
-                        cached['offset'] += len(chunk)
-                        try:
-                            pending_header = base64.b64decode(cached['pending'], validate=True) + chunk
-                        except (ValueError, TypeError):
-                            pending_header = b''
-                        if chunk.endswith(b'\n') or cached['offset'] >= _USAGE_LINE_LIMIT + 1 or not chunk:
-                            cached['done'] = True
-                            cached['eof'] = not chunk
-                            cached['size'] = info.st_size
-                            try:
-                                record = json.loads(pending_header)
-                                payload = record.get('payload') if isinstance(record, dict) and record.get('type') == 'session_meta' else None
-                                if isinstance(payload, dict) and (payload.get('id') or payload.get('session_id')):
-                                    session_id = str(payload.get('id') or payload['session_id'])
-                                    parent_id = str(payload.get('forked_from_id') or '')
-                                    cached['session'] = session_id if len(session_id) <= 128 else ''
-                                    cached['parent'] = parent_id if len(parent_id) <= 128 else ''
-                            except (ValueError, TypeError, UnicodeError, RecursionError):
-                                pass
-                            cached['pending'] = ''
-                        else:
-                            cached['pending'] = base64.b64encode(pending_header).decode('ascii')
-                            limited = True
-                if cached['session']:
-                    lineage[cached['session']] = cached['parent']
-                if entry.get('header_scan') != cached or file not in files:
-                    entry['header_scan'] = cached
-                    files[file] = entry
-                    dirty = True
-                if limited:
-                    break
-        except (OSError, ValueError, TypeError, RecursionError):
-            pass
-    if limited:
-        write_checkpoint()
-        result = {'days': index['hours'], 'partial': True, 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
-        if too_many_files: result['reason'] = 'too many files'
-        elif dedupe_full: result['reason'] = 'dedupe window full'
-        elif write_failed: result['reason'] = 'index write failed'
-        elif reset_index: result['reason'] = 'index too large'
-        return result
-    for provider, file, _ in candidates:
-        if provider != 'codex' or file not in header_files:
-            continue
-        entry = files.get(file, {})
-        header = entry.get('header_scan', {}) if isinstance(entry, dict) else {}
-        if not isinstance(header, dict) or not header.get('session'):
-            continue
-        root = header['session']
-        for _ in range(32):
-            parent = lineage.get(root)
-            if not parent or parent == root:
-                break
-            root = parent
-        if header.get('root') != root:
-            header['root'] = root
-            dirty = True
     for provider, file, info in candidates:
         try:
             fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
@@ -3723,24 +3616,31 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     except (ValueError, TypeError):
                         valid = False
                 stream.seek(0)
-                old_head = hashlib.sha1(stream.read(previous['head_len'] if valid else 0)).hexdigest()
+                if valid:
+                    if read_bytes >= limit:
+                        limited = True
+                        break
+                    old_head_data = stream.read(previous['head_len'])
+                    read_bytes += len(old_head_data)
+                else:
+                    old_head_data = b''
+                old_head = hashlib.sha1(old_head_data).hexdigest()
                 stream.seek(0)
+                if read_bytes >= limit:
+                    limited = True
+                    break
                 head_data = stream.read(4096)
+                read_bytes += len(head_data)
                 head = hashlib.sha1(head_data).hexdigest()
                 reset_cursor = (not valid or info.st_size < previous['size'] or info.st_mtime_ns < previous['mtime_ns'] or
                                 previous['ino'] != info.st_ino or previous['dev'] != info.st_dev or previous.get('head') != old_head)
                 if reset_cursor:
-                    header_scan = previous.get('header_scan') if isinstance(previous, dict) else None
                     previous = {'provider': provider, 'path': file, 'offset': 0, 'skip_days': {},
                                 'session': '', 'forked_from_id': '', 'model': '', 'has_usage_cursor': False,
                                 'skip_line': False, 'skip_mark': False}
-                    if header_scan is not None:
-                        previous['header_scan'] = header_scan
                     pending = b''
                     tail = b''
                 state = copy.deepcopy(previous)
-                if provider == 'codex' and file not in header_files:
-                    state.pop('header_scan', None)
                 state['skip_days'] = {k: v for k, v in state.get('skip_days', {}).items() if k >= skip_cutoff}
                 stream.seek(state['offset'])
                 staged_seen, staged_hours = {}, {}
@@ -3821,7 +3721,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                                     (provider == 'codex' and any(x in pending for x in (b'turn_context', b'session_meta')))):
                                 try:
                                     data = json.loads(pending)
-                                    if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat(), lineage)
+                                    if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat())
                                 except (ValueError, UnicodeError, TypeError, RecursionError):
                                     if b'"usage"' in pending or b'token_count' in pending:
                                         day = utc_now.date().isoformat()
@@ -3840,9 +3740,8 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             break
     skipped += sum(sum(v for k, v in state.get('skip_days', {}).items() if k >= skip_cutoff) for state in files.values() if isinstance(state, dict) and isinstance(state.get('skip_days', {}), dict) and all(isinstance(k, str) and _usage_int(v) for k, v in state.get('skip_days', {}).items()))
     write_checkpoint()
-    result = {'days': index['hours'], 'partial': bool(skipped or limited or write_failed or reset_index or dedupe_full or too_many_files or header_limited), 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
+    result = {'days': index['hours'], 'partial': bool(skipped or limited or write_failed or reset_index or dedupe_full or too_many_files), 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
     if too_many_files: result['reason'] = 'too many files'
-    elif header_limited: result['reason'] = 'too many codex headers'
     elif dedupe_full: result['reason'] = 'dedupe window full'
     elif write_failed: result['reason'] = 'index write failed'
     elif reset_index: result['reason'] = 'index too large'

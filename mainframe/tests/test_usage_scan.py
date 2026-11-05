@@ -97,9 +97,9 @@ class ScannerTest(unittest.TestCase):
     def test_old_file_and_partial_resume(self):
         old = self.file('.claude/projects/old.jsonl'); self.lines(old,[self.claude('old')]); os.utime(old,(self.now.timestamp()-32*86400,)*2)
         p = self.file('.claude/projects/new.jsonl'); self.lines(p,[self.claude('new')])
-        result = self.scan(limit=25); self.assertTrue(result['partial'])
+        result = self.scan(limit=p.stat().st_size + 25); self.assertTrue(result['partial'])
         for _ in range(30):
-            result = self.scan(limit=25)
+            result = self.scan(limit=2 * p.stat().st_size + 25)
             if not result['partial']: break
         self.assertFalse(result['partial']); self.assertEqual(result['days'][self.day]['claude/model-a']['input'],10)
     def test_corrupt_and_symlink_index(self):
@@ -161,16 +161,14 @@ class ScannerTest(unittest.TestCase):
             self.scan()
         self.assertEqual(sum(header_bytes), 0)
 
-    def test_codex_header_reads_obey_budget_and_resume(self):
+    def test_codex_reads_obey_budget_and_resume(self):
         path = self.file('.codex/sessions/a.jsonl')
         self.lines(path, [{'type':'session_meta', 'payload':{'id':'s', 'padding':'x' * 100}},
                           {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':10}}}}])
-        result = self.scan(limit=25)
-        index = json.loads((self.cache / 'usage-index.json').read_text())
-        self.assertTrue(result['partial'])
-        self.assertEqual(index['files'][str(path)]['header_scan']['offset'], 25)
+        self.assertTrue(self.scan(limit=path.stat().st_size + 25)['partial'])
+        self.assertEqual(json.loads((self.cache / 'usage-index.json').read_text())['files'][str(path)]['offset'], 25)
         for _ in range(30):
-            result = self.scan(limit=25)
+            result = self.scan(limit=2 * path.stat().st_size + 25)
             if not result['partial']: break
         self.assertFalse(result['partial'])
         self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 10)
@@ -234,34 +232,84 @@ class ScannerTest(unittest.TestCase):
         self.assertNotIn('s' * 129, index)
         self.assertNotIn('p' * 129, index)
 
-    def test_codex_header_cap_marks_partial(self):
-        from unittest.mock import patch
-        for name in ('a', 'b'):
-            self.lines(self.file('.codex/sessions/' + name + '.jsonl'), [{'type': 'session_meta', 'payload': {'id': name}}])
-        with patch.object(c, '_USAGE_HEADER_LIMIT', 1):
-            result = self.scan()
-        self.assertTrue(result['partial'])
-        self.assertEqual(result['reason'], 'too many codex headers')
-        index = json.loads((self.cache / 'usage-index.json').read_text())
-        self.assertEqual(sum('header_scan' in value for value in index['files'].values()), 1)
-
-    def test_codex_independent_sessions_with_identical_events(self):
-        def meta(ident): return {'type':'session_meta', 'payload':{'id':ident}}
+    def test_codex_independent_sessions_with_different_totals(self):
         def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
-        self.lines(self.file('.codex/sessions/a.jsonl'), [meta('one'), count(100), count(110)])
-        self.lines(self.file('.codex/sessions/b.jsonl'), [meta('two'), count(100), count(110)])
+        self.lines(self.file('.codex/sessions/a.jsonl'), [{'type':'session_meta', 'payload':{'id':'one'}}, count(100)])
+        self.lines(self.file('.codex/sessions/b.jsonl'), [{'type':'session_meta', 'payload':{'id':'two'}}, count(110)])
         for _ in range(2):
-            self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 220)
+            self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 210)
 
-    def test_codex_multigeneration_lineage_in_reverse_order(self):
+    def test_codex_multigeneration_copies_in_reverse_order(self):
         def meta(ident, parent=None): return {'type':'session_meta', 'payload':{'session_id':ident, 'forked_from_id':parent, 'parent_thread_id':'unrelated'}}
         def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
         self.lines(self.file('.codex/sessions/a.jsonl'), [meta('grandchild', 'child'), count(100)])
         self.lines(self.file('.codex/sessions/b.jsonl'), [meta('child', 'parent'), count(100)])
         self.lines(self.file('.codex/sessions/c.jsonl'), [meta('parent'), count(100)])
         self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 100)
-        index = json.loads((self.cache / 'usage-index.json').read_text())
-        self.assertEqual(index['files'][str(self.home / '.codex/sessions/a.jsonl')]['header_scan']['root'], 'parent')
+
+    def test_codex_parent_appears_after_child(self):
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        child = self.file('.codex/sessions/a.jsonl')
+        self.lines(child, [{'type':'session_meta', 'payload':{'id':'child', 'forked_from_id':'parent'}}, count(100)])
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 100)
+        parent = self.file('.codex/sessions/b.jsonl')
+        self.lines(parent, [{'type':'session_meta', 'payload':{'id':'parent', 'forked_from_id':'grandparent'}}, count(100)])
+        for _ in range(2):
+            self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 100)
+
+    def test_codex_fork_copy_with_new_timestamp(self):
+        def count(stamp): return {'type':'event_msg', 'timestamp':stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':100}}}}
+        self.lines(self.file('.codex/sessions/a.jsonl'), [{'type':'session_meta', 'payload':{'id':'parent'}}, count(self.stamp)])
+        later = (self.now + datetime.timedelta(minutes=1)).isoformat()
+        self.lines(self.file('.codex/sessions/b.jsonl'), [{'type':'session_meta', 'payload':{'id':'fork', 'forked_from_id':'parent'}}, count(later)])
+        result = self.scan()
+        self.assertEqual(sum(counts.get('input', 0) for models in result['days'].values() for counts in models.values()), 100)
+
+    def test_version_six_index_is_rebuilt(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
+        self.lines(path, [count(100), count(200)])
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 200)
+        index_path = self.cache / 'usage-index.json'
+        index = json.loads(index_path.read_text()); index['version'] = 6
+        index_path.write_text(json.dumps(index))
+        for _ in range(2):
+            self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 200)
+        self.assertEqual(json.loads(index_path.read_text())['version'], 7)
+
+    def test_legacy_header_scan_is_removed(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        self.lines(path, [{'type':'session_meta', 'payload':{'id':'session'}}])
+        self.scan()
+        index_path = self.cache / 'usage-index.json'
+        index = json.loads(index_path.read_text()); index['files'][str(path)]['header_scan'] = {'root':'old'}
+        index_path.write_text(json.dumps(index))
+        self.assertFalse(self.scan()['partial'])
+        self.assertNotIn('header_scan', json.loads(index_path.read_text())['files'][str(path)])
+
+    def test_unchanged_file_fingerprints_obey_budget(self):
+        from unittest.mock import patch
+        for i in range(12):
+            self.lines(self.file(f'.claude/projects/{i:02}.jsonl'), [self.claude(str(i))])
+        self.scan()
+        total = sum(p.stat().st_size for p in (self.home / '.claude/projects').glob('*.jsonl'))
+        with patch.object(c, '_USAGE_LIMIT', 1):
+            result = self.scan(limit=c._USAGE_LIMIT)
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 120)
+        self.assertGreater(total, 1)
+
+    def test_oversized_claude_assistant_line_with_usage_at_end(self):
+        path = self.file('.claude/projects/a.jsonl')
+        record = self.claude('oversized')
+        record['message']['content'] = 'x' * (c._USAGE_LINE_LIMIT + 100)
+        record['message']['usage'] = record['message'].pop('usage')
+        self.lines(path, [record])
+        self.assertIn(b'"usage"', path.read_bytes()[-65536:])
+        result = self.scan()
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['days'], {})
 
     def test_missing_codex_cursor_replays_before_new_event(self):
         path = self.file('.codex/sessions/a.jsonl')
@@ -288,8 +336,10 @@ class ScannerTest(unittest.TestCase):
     def test_codex_partial_line_resumes_before_first_cursor(self):
         path = self.file('.codex/sessions/a.jsonl')
         self.lines(path, [{'type':'session_meta', 'payload':{'id':'s'}}, {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':100}}}}])
+        self.assertTrue(self.scan(limit=path.stat().st_size + 25)['partial'])
+        self.assertEqual(json.loads((self.cache / 'usage-index.json').read_text())['files'][str(path)]['offset'], 25)
         for _ in range(30):
-            result = self.scan(limit=25)
+            result = self.scan(limit=2 * path.stat().st_size + 25)
             if not result['partial']: break
         self.assertFalse(result['partial'])
         self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 100)
