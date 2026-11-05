@@ -3986,6 +3986,10 @@ def wsl_filesystems(storage, windows):
     return result + [drives[label] for label in sorted(drives)]
 
 
+def usage_scan_enabled():
+    return os.environ.get('MAINFRAME_USAGE_SCAN') != '0'
+
+
 def slow_probes(sample):
     now = time.monotonic()
     for name, interval, enabled, fn in (('storage', 30, True, lambda: storage_probe(sample.get('wsl') is True)), ('windows', 15, sample.get('wsl') is True, windows_probe)):
@@ -3993,7 +3997,7 @@ def slow_probes(sample):
             _probe[name + '_busy'] = True
             _probe[name + '_at'] = now
             threading.Thread(target=_background_probe, args=(name, fn), daemon=True).start()
-    if now - _probe_started >= 20 and not _probe.get('usage_busy', False) and (not _probe.get('usage_at', 0) or now - _probe['usage_at'] >= 600):
+    if usage_scan_enabled() and now - _probe_started >= 20 and not _probe.get('usage_busy', False) and (not _probe.get('usage_at', 0) or now - _probe['usage_at'] >= 600):
         _probe['usage_busy'] = True
         _probe['usage_at'] = now
         threading.Thread(target=_background_probe, args=('usage', usage_probe), daemon=True).start()
