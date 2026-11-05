@@ -118,6 +118,8 @@ with the window (parent-death signal plus end-of-input), so nothing is left runn
 
 ## Development
 
+The smoke idle CPU gates disable the usage scan and gate the scan separately.
+
 ```bash
 node --test mainframe/tests/        # unit tests for the metrics logic
 scripts/mainframe-smoke.sh                    # headless load, layout, CPU and cleanup checks

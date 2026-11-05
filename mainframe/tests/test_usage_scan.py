@@ -492,6 +492,25 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         self.assertTrue(c._probe['usage']['stale'])
         self.assertEqual(c._probe['usage']['scanned_at'], '2026-01-01T00:00:00Z')
 
+    def test_usage_probe_environment_switch(self):
+        from unittest.mock import patch
+        for value, expected in ((None, True), ('1', True), ('0', False), ('other', True)):
+            with self.subTest(value=value):
+                env = {} if value is None else {'MAINFRAME_USAGE_SCAN': value}
+                probe = {'storage': [], 'storage_at': 100, 'storage_busy': False,
+                         'windows': None, 'windows_at': 100, 'windows_busy': False,
+                         'usage': None, 'usage_at': 0, 'usage_busy': False}
+                with patch.dict(os.environ, env, clear=True), patch.object(c, '_probe', probe), \
+                     patch.object(c, '_probe_started', 0), patch.object(c.time, 'monotonic', return_value=100), \
+                     patch.object(c.threading, 'Thread') as thread:
+                    sample = c.slow_probes({'wsl': False})
+                self.assertIsNone(sample['usage'])
+                self.assertEqual(thread.called, expected)
+                if expected:
+                    self.assertEqual(thread.call_args.kwargs['args'], ('usage', c.usage_probe))
+                    thread.return_value.start.assert_called_once_with()
+                self.assertEqual(probe['usage_busy'], expected)
+
     def test_remote_prefix_and_child_scan(self):
         import ast, queue, subprocess, sys, threading, time
         source = Path(c.__file__).read_text()
