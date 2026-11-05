@@ -3780,7 +3780,8 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                             for field, count in counts.items(): target[field] = target.get(field, 0) + count
                     staged_seen, staged_sessions, staged_hours = {}, Sessions(), {}
                 while stream.tell() < info.st_size:
-                    remaining = min(limit - read_bytes, _USAGE_CHECKPOINT_BYTES - checkpoint_bytes)
+                    remaining = min(limit - read_bytes, _USAGE_CHECKPOINT_BYTES - checkpoint_bytes,
+                                    info.st_size - stream.tell())
                     if remaining <= 0:
                         if read_bytes >= limit:
                             limited = True

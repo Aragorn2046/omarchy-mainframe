@@ -50,6 +50,50 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'],20)
         self.lines(p,[self.claude('three')])
         self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'],30)
+
+    def test_growth_during_scan_stops_at_recorded_size(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl')
+        first = (json.dumps(self.claude('one')) + '\n').encode()
+        second = (json.dumps(self.claude('two')) + '\n').encode()
+        third = (json.dumps(self.claude('three')) + '\n').encode()
+        split = len(second) // 2
+        path.write_bytes(first + second[:split])
+        snapshot_size = path.stat().st_size
+        real_fdopen = os.fdopen
+        read_offsets = []
+        appended = False
+
+        class GrowingStream:
+            def __init__(self, stream): self.stream = stream
+            def __enter__(self): return self
+            def __exit__(self, *args): self.stream.close()
+            def __getattr__(self, name): return getattr(self.stream, name)
+            def readline(self, *args):
+                nonlocal appended
+                read_offsets.append(self.stream.tell())
+                if not appended:
+                    with path.open('ab') as out: out.write(second[split:] + third)
+                    appended = True
+                return self.stream.readline(*args)
+
+        def open_file(fd, *args, **kwargs):
+            stream = real_fdopen(fd, *args, **kwargs)
+            return GrowingStream(stream) if args and args[0] == 'rb' else stream
+
+        with patch.object(c.os, 'fdopen', side_effect=open_file):
+            result = self.scan()
+        cursor = json.loads((self.cache / 'usage-index.json').read_text())['files'][str(path)]
+        self.assertEqual(cursor['size'], snapshot_size)
+        self.assertLessEqual(cursor['offset'], cursor['size'])
+        self.assertEqual(cursor['offset'], snapshot_size)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
+        read_offsets.clear()
+        with patch.object(c.os, 'fdopen', side_effect=open_file):
+            result = self.scan()
+        self.assertEqual(read_offsets[0], snapshot_size)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 30)
+
     def test_old_file_and_partial_resume(self):
         old = self.file('.claude/projects/old.jsonl'); self.lines(old,[self.claude('old')]); os.utime(old,(self.now.timestamp()-32*86400,)*2)
         p = self.file('.claude/projects/new.jsonl'); self.lines(p,[self.claude('new')])
