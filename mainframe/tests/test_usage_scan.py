@@ -148,6 +148,59 @@ class ScannerTest(unittest.TestCase):
         for _ in range(2):
             self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 120)
 
+    def test_parent_and_fork_advance_in_either_order(self):
+        def meta(ident, parent=None): return {'type': 'session_meta', 'payload': {'id': ident, 'forked_from_id': parent}}
+        def count(n): return {'type': 'event_msg', 'timestamp': self.stamp, 'payload': {'type': 'token_count', 'info': {'total_token_usage': {'input_tokens': n}}}}
+        for parent_name, fork_name in (('a', 'b'), ('b', 'a')):
+            with self.subTest(parent_first=parent_name == 'a'), tempfile.TemporaryDirectory() as tmp:
+                home = Path(tmp)
+                root = home / '.codex/sessions'; root.mkdir(parents=True)
+                self.lines(root / (parent_name + '.jsonl'), [meta('parent'), count(100), count(200)])
+                self.lines(root / (fork_name + '.jsonl'), [meta('fork', 'parent'), count(100), count(120)])
+                for _ in range(2):
+                    result = c.usage_scan(home, str(home / 'cache'), now=self.now)
+                    self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 220)
+
+    def test_parent_and_fork_continue_after_initial_scan(self):
+        def count(n): return {'type': 'event_msg', 'timestamp': self.stamp, 'payload': {'type': 'token_count', 'info': {'total_token_usage': {'input_tokens': n}}}}
+        parent = self.file('.codex/sessions/a.jsonl')
+        fork = self.file('.codex/sessions/b.jsonl')
+        self.lines(parent, [{'type': 'session_meta', 'payload': {'id': 'parent'}}, count(100)])
+        self.lines(fork, [{'type': 'session_meta', 'payload': {'id': 'fork', 'forked_from_id': 'parent'}}, count(100)])
+        self.scan()
+        self.lines(parent, [count(200)], 'a')
+        self.lines(fork, [count(120)], 'a')
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 220)
+
+    def test_replaced_codex_file_starts_a_new_cursor(self):
+        def count(n): return {'type': 'event_msg', 'timestamp': self.stamp, 'payload': {'type': 'token_count', 'info': {'total_token_usage': {'input_tokens': n}}}}
+        path = self.file('.codex/sessions/a.jsonl')
+        self.lines(path, [{'type': 'session_meta', 'payload': {'id': 'first'}}, count(100)])
+        self.scan()
+        replacement = self.file('.codex/sessions/replacement')
+        self.lines(replacement, [{'type': 'session_meta', 'payload': {'id': 'second'}}, count(30)])
+        os.replace(replacement, path)
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 130)
+
+    def test_long_codex_ids_are_not_retained(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        self.lines(path, [{'type': 'session_meta', 'payload': {'id': 's' * 129, 'forked_from_id': 'p' * 129}}])
+        self.scan()
+        index = (self.cache / 'usage-index.json').read_text()
+        self.assertNotIn('s' * 129, index)
+        self.assertNotIn('p' * 129, index)
+
+    def test_codex_header_cap_marks_partial(self):
+        from unittest.mock import patch
+        for name in ('a', 'b'):
+            self.lines(self.file('.codex/sessions/' + name + '.jsonl'), [{'type': 'session_meta', 'payload': {'id': name}}])
+        with patch.object(c, '_USAGE_HEADER_LIMIT', 1):
+            result = self.scan()
+        self.assertTrue(result['partial'])
+        self.assertEqual(result['reason'], 'too many codex headers')
+        index = json.loads((self.cache / 'usage-index.json').read_text())
+        self.assertEqual(sum('header_scan' in value for value in index['files'].values()), 1)
+
     def test_codex_independent_sessions_with_identical_events(self):
         def meta(ident): return {'type':'session_meta', 'payload':{'id':ident}}
         def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
@@ -172,7 +225,7 @@ class ScannerTest(unittest.TestCase):
         self.lines(path, [{'type':'session_meta', 'payload':{'id':'s'}}, count(100)])
         self.scan()
         index_path = self.cache / 'usage-index.json'
-        index = json.loads(index_path.read_text()); del index['sessions']['s']
+        index = json.loads(index_path.read_text()); del index['sessions'][str(path)]
         index_path.write_text(json.dumps(index))
         self.lines(path, [count(120)], 'a')
         self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 120)
@@ -202,6 +255,16 @@ class ScannerTest(unittest.TestCase):
         os.mkfifo(self.file('.claude/projects/x.jsonl'))
         code = "import importlib.util,sys; s=importlib.util.spec_from_file_location('c',sys.argv[1]); c=importlib.util.module_from_spec(s); s.loader.exec_module(c); c.usage_scan(sys.argv[2],sys.argv[3])"
         subprocess.run([sys.executable, '-c', code, str(Path(c.__file__)), str(self.home), str(self.cache)], check=True, timeout=5)
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'requires POSIX FIFO')
+    def test_fifo_index_does_not_block(self):
+        import subprocess, sys
+        self.cache.mkdir()
+        os.mkfifo(self.cache / 'usage-index.json')
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('one')])
+        code = "import importlib.util,sys; s=importlib.util.spec_from_file_location('c',sys.argv[1]); c=importlib.util.module_from_spec(s); s.loader.exec_module(c); c.usage_scan(sys.argv[2],sys.argv[3])"
+        subprocess.run([sys.executable, '-c', code, str(Path(c.__file__)), str(self.home), str(self.cache)], check=True, timeout=5)
+        self.assertEqual(json.loads((self.cache / 'usage-index.json').read_text())['hours'][self.day]['claude/model-a']['input'], 10)
 
     def test_entry_cap_counts_directories_and_non_jsonl_files(self):
         from unittest.mock import patch
@@ -406,6 +469,23 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         index = json.loads(index_path.read_text())
         self.assertEqual(len(index['seen']), 2)
         self.assertNotIn('expired', index['seen']); self.assertNotIn(original, index['seen'])
+        self.assertIn('dedupe_evicted_at', index)
+        with patch.object(c, '_USAGE_SEEN_LIMIT', 2):
+            self.assertTrue(self.scan()['partial'])
+            later = self.now + datetime.timedelta(days=30)
+            self.assertFalse(c.usage_scan(self.home, str(self.cache), now=later)['partial'])
+
+    def test_old_claude_dedupe_entries_migrate(self):
+        path = self.file('.claude/projects/a.jsonl')
+        self.lines(path, [self.claude('one')]); self.scan()
+        index_path = self.cache / 'usage-index.json'
+        index = json.loads(index_path.read_text())
+        key = next(iter(index['seen']))
+        index['seen'][key] = {'day': self.now.date().isoformat(), 'tokens': {'input': 10}}
+        index_path.write_text(json.dumps(index))
+        self.lines(path, [self.claude('one', {'input_tokens': 12})], 'a')
+        self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 12)
+        self.assertIsInstance(json.loads(index_path.read_text())['seen'][key], list)
 
     def test_same_inode_rewrite_is_recounted(self):
         path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')])
@@ -467,7 +547,7 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         path = self.file('.codex/sessions/a.jsonl')
         self.lines(path, [{'type':'session_meta','payload':{'id':'s'}}, {'type':'event_msg','timestamp':self.stamp,'payload':{'type':'token_count','info':{'total_token_usage':{'input_tokens':10}}}}])
         self.scan(); index_path = self.cache / 'usage-index.json'
-        index = json.loads(index_path.read_text()); index['sessions']['s']['input_tokens'] = -1; index['hours'] = {}
+        index = json.loads(index_path.read_text()); index['sessions'][str(path)]['input_tokens'] = -1; index['hours'] = {}
         index_path.write_text(json.dumps(index))
         self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 10)
 
@@ -492,6 +572,8 @@ c.usage_scan(sys.argv[2], sys.argv[3])
             status = c._usage_write(str(index_path), index)
         self.assertEqual(status, 'evicted')
         saved = json.loads(index_path.read_text()); self.assertTrue(saved['files']); self.assertTrue(saved['hours'])
+        self.assertIn('dedupe_evicted_at', saved)
+        self.assertTrue(self.scan()['partial'])
 
     def test_long_non_usage_and_late_marker_are_not_skipped(self):
         path = self.file('.claude/projects/a.jsonl')

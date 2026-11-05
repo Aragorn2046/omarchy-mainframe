@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import selectors
 import signal
+import stat
 import shutil
 import subprocess
 import sys
@@ -78,7 +79,10 @@ def read_config(kind):
     try:
         if kind == 'prices':
             if path.is_symlink(): raise ValueError('Price file is a symbolic link')
-            with path.open('rb') as source:
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+            with os.fdopen(fd, 'rb') as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    return defaults[kind], None
                 content = source.read(256 * 1024 + 1)
             if len(content) > 256 * 1024: raise ValueError('Price file is too large')
             return validate(kind, json.loads(content)), None
@@ -216,8 +220,12 @@ def main():
         for kind in ('hosts', 'accounts', 'settings', 'prices'):
             result[kind], error = read_config(kind)
             if error: errors[kind] = error
-        with (Path(__file__).parent / 'prices.json').open(encoding='utf-8') as source:
-            prices = validate('prices', json.load(source))
+        try:
+            with (Path(__file__).parent / 'prices.json').open(encoding='utf-8') as source:
+                prices = validate('prices', json.load(source))
+        except (OSError, ValueError, TypeError, RecursionError):
+            prices = {}
+            result['prices'] = {}
         for provider, section in result['prices'].items():
             base = prices.setdefault(provider, {'models': {}})
             base.update({k: v for k, v in section.items() if k != 'models'})
