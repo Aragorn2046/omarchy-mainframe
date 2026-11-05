@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
+import {spawnSync} from 'node:child_process';
 const require = createRequire(import.meta.url);
 const U = require('../lib/usage_value.js');
 const prices = {claude:{models:{'m':{input:1,output:2,cache_read:0.1,cache_write_5m:1,cache_write_1h:2}}},codex:{models:{'c':{input:2,cached_input:0.1,output:10}}}};
@@ -41,30 +42,27 @@ test('stale hosts remain counted and are flagged', () => {
     {scanned_at:'2026-11-03T11:59:00Z', stale:true}
   ]) {
     usage.days = {[hour]:{'claude/m':{input:1000000}}};
-    const value = U.calculate([{host:'local',status:'offline',usage}], prices, now);
+    const value = U.calculate([{host:'local',status:'ready',usage}], prices, now);
     assert.equal(value.stale, true);
     assert.equal(value.totals.today, 1);
   }
   const fresh = U.calculate([{usage:{scanned_at:now.toISOString(),days:{}}}],prices,now);
   assert.equal(fresh.stale,false);
 });
+function calculateInZone(TZ, usage, now) {
+  const script = `const U = require(${JSON.stringify(require.resolve('../lib/usage_value.js'))});
+    console.log(JSON.stringify(U.calculate([{usage:${JSON.stringify(usage)}}], ${JSON.stringify(prices)}, ${JSON.stringify(now)}).totals));`;
+  const child = spawnSync(process.execPath, ['-e', script], {env: {...process.env, TZ}, encoding:'utf8'});
+  assert.ifError(child.error);
+  assert.equal(child.status, 0, child.stderr);
+  return JSON.parse(child.stdout);
+}
 test('UTC hours map to the viewer local day at midnight', () => {
-  const previous = process.env.TZ;
-  process.env.TZ = 'Europe/Amsterdam';
-  try {
-    const usage = {scanned_at:'2026-11-03T00:30:00Z',days:{'2026-11-03T00:00':{'claude/m':{input:1000000}},'2026-11-02T22:00':{'claude/m':{input:2000000}}}};
-    const value = U.calculate([{usage}], prices, '2026-11-03T00:30:00Z');
-    assert.deepEqual(value.totals,{today:1,seven:3,thirty:3});
-  } finally {
-    if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous;
-  }
+  const usage = {scanned_at:'2026-11-03T00:30:00Z',days:{'2026-11-03T00:00':{'claude/m':{input:1000000}},'2026-11-02T22:00':{'claude/m':{input:2000000}}}};
+  assert.deepEqual(calculateInZone('Europe/Amsterdam', usage, '2026-11-03T00:30:00Z'), {today:1,seven:3,thirty:3});
 });
 
 test('quarter-hour UTC buckets map correctly in Nepal', () => {
-  const previous = process.env.TZ; process.env.TZ = 'Asia/Kathmandu';
-  try {
-    const usage = {scanned_at:'2026-11-03T18:30:00Z', days:{'2026-11-03T18:00':{'claude/m':{input:1000000}}, '2026-11-03T18:15':{'claude/m':{input:2000000}}}};
-    const value = U.calculate([{usage}],prices,'2026-11-03T18:30:00Z');
-    assert.equal(value.totals.today,2); assert.equal(value.totals.seven,3);
-  } finally { if (previous === undefined) delete process.env.TZ; else process.env.TZ = previous; }
+  const usage = {scanned_at:'2026-11-03T18:30:00Z', days:{'2026-11-03T18:00':{'claude/m':{input:1000000}}, '2026-11-03T18:15':{'claude/m':{input:2000000}}}};
+  assert.deepEqual(calculateInZone('Asia/Kathmandu', usage, '2026-11-03T18:30:00Z'), {today:2,seven:3,thirty:3});
 });

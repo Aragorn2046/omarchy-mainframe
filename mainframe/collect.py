@@ -3366,8 +3366,6 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lin
         key = None
         if ident:
             key = hashlib.sha1(json.dumps([str(ident), str(data.get('requestId') or '')], separators=(',', ':')).encode()).hexdigest()[:12]
-            if key in seen:
-                return
         usage = message['usage']
         creation = usage.get('cache_creation')
         if isinstance(creation, dict) and ('ephemeral_5m_input_tokens' in creation or 'ephemeral_1h_input_tokens' in creation):
@@ -3378,18 +3376,27 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day, lin
         tokens = {'input': _usage_number(usage.get('input_tokens')), 'output': _usage_number(usage.get('output_tokens')),
                   'cache_read': _usage_number(usage.get('cache_read_input_tokens')), 'cache_write_5m': five, 'cache_write_1h': hour_tokens}
         model = message.get('model') or 'unknown'
+        if key:
+            previous = seen.get(key, {})
+            counted = previous.get('tokens', {}) if isinstance(previous, dict) else {}
+            maximum = {field: max(count, counted.get(field, 0)) for field, count in tokens.items()}
+            tokens = {field: maximum[field] - counted.get(field, 0) for field in tokens}
+            if any(tokens.values()):
+                seen[key] = {'day': counted_day, 'tokens': maximum}
     hour = _usage_hour(data.get('timestamp'))
     if not hour or not any(tokens.values()):
         return
-    if provider == 'claude' and key:
-        seen[key] = counted_day
     target = hours.setdefault(hour, {}).setdefault(provider + '/' + str(model), {})
     for field, count in tokens.items():
         target[field] = target.get(field, 0) + count
 
 
 def _usage_empty():
-    return {'version': 5, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
+    return {'version': 6, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
+
+
+def _usage_seen_day(value):
+    return value.get('day', '') if isinstance(value, dict) else value
 
 
 def _usage_write(path, index):
@@ -3400,7 +3407,7 @@ def _usage_write(path, index):
     if len(encoded) > _USAGE_INDEX_LIMIT:
         # Remove oldest dedupe keys first. File entries were pruned during discovery.
         excess = len(encoded) - _USAGE_INDEX_LIMIT
-        for key, value in sorted(index['seen'].items(), key=lambda item: item[1]):
+        for key, value in sorted(index['seen'].items(), key=lambda item: _usage_seen_day(item[1])):
             excess -= len(json.dumps(key).encode()) + len(json.dumps(value).encode()) + (2 if len(index['seen']) > 1 else 1)
             del index['seen'][key]
             evicted = True
@@ -3454,7 +3461,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             if os.fstat(stream.fileno()).st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
             loaded = json.load(stream)
-        if (not isinstance(loaded, dict) or loaded.get('version') != 5 or
+        if (not isinstance(loaded, dict) or loaded.get('version') != 6 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
                 any(not _usage_valid_cursor(value) for value in loaded['sessions'].values()) or
                 any(not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)', k) or
@@ -3471,10 +3478,10 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         dirty = True
     before = copy.deepcopy(index)
     index['hours'] = {k: v for k, v in index['hours'].items() if k[:10] >= cutoff}
-    index['seen'] = {k: v for k, v in index['seen'].items() if isinstance(v, str) and v >= cutoff}
+    index['seen'] = {k: v for k, v in index['seen'].items() if isinstance(_usage_seen_day(v), str) and _usage_seen_day(v) >= cutoff and (isinstance(v, str) or (isinstance(v, dict) and isinstance(v.get('tokens'), dict) and all(k in _USAGE_FIELDS and _usage_int(n) for k, n in v['tokens'].items())))}
     dedupe_full = len(index['seen']) > _USAGE_SEEN_LIMIT
     if dedupe_full:
-        index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: item[1])[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
+        index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: _usage_seen_day(item[1]))[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
     files = index['files']
     skipped = 0
     roots = [('claude', os.path.join(home, '.claude', 'projects'))]
@@ -3531,26 +3538,6 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
     invalid_sessions = {k for k, v in index['sessions'].items() if not _usage_valid_cursor(v)}
     index['sessions'] = {k: v for k, v in index['sessions'].items() if k not in invalid_sessions and v.get('day', '') >= cutoff}
     dirty |= index != before
-    # Session metadata is the first record in Codex transcripts. Read it before
-    # processing events so multi-generation forks work in any file order.
-    lineage = {state['session']: state.get('forked_from_id', '')
-               for state in files.values() if isinstance(state, dict) and
-               isinstance(state.get('session'), str) and state['session'] and
-               isinstance(state.get('forked_from_id', ''), str)}
-    for provider, file, _ in candidates:
-        if provider != 'codex':
-            continue
-        try:
-            fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
-            with os.fdopen(fd, 'rb') as stream:
-                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
-                    continue
-                record = json.loads(stream.readline(_USAGE_LINE_LIMIT + 1))
-                payload = record.get('payload') if isinstance(record, dict) and record.get('type') == 'session_meta' else None
-                if isinstance(payload, dict) and (payload.get('id') or payload.get('session_id')):
-                    lineage[str(payload.get('id') or payload['session_id'])] = str(payload.get('forked_from_id') or '')
-        except (OSError, ValueError, TypeError, RecursionError):
-            pass
     read_bytes, checkpoint_bytes, limited = 0, 0, False
     checkpoint_at = time.monotonic()
     write_failed, reset_index = False, False
@@ -3567,6 +3554,102 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             write_failed = True
         checkpoint_bytes = 0
         checkpoint_at = time.monotonic()
+
+    # Read session metadata before events so forks work in any file order.
+    # Retain partial headers as well as complete ones across budget-limited scans.
+    lineage = {}
+    for provider, file, _ in candidates:
+        if provider != 'codex':
+            continue
+        try:
+            fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
+            with os.fdopen(fd, 'rb') as stream:
+                info = os.fstat(stream.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    continue
+                entry = files.get(file)
+                if not isinstance(entry, dict):
+                    entry = {}
+                cached = copy.deepcopy(entry.get('header_scan'))
+                valid_header = (isinstance(cached, dict) and cached.get('ino') == info.st_ino and
+                                cached.get('dev') == info.st_dev and _usage_int(cached.get('head_len')) and
+                                cached['head_len'] <= 4096 and cached['head_len'] <= info.st_size and
+                                _usage_int(cached.get('offset')) and cached['offset'] <= info.st_size and
+                                isinstance(cached.get('head'), str) and isinstance(cached.get('pending'), str) and
+                                type(cached.get('done')) is bool and isinstance(cached.get('session'), str) and
+                                isinstance(cached.get('parent'), str) and
+                                (not cached.get('eof') or cached.get('size') == info.st_size))
+                if valid_header:
+                    valid_header = hashlib.sha1(stream.read(cached['head_len'])).hexdigest() == cached['head']
+                if not valid_header:
+                    stream.seek(0)
+                    head_data = stream.read(min(4096, info.st_size))
+                    cached = {'ino': info.st_ino, 'dev': info.st_dev, 'head_len': len(head_data),
+                              'head': hashlib.sha1(head_data).hexdigest(), 'offset': 0, 'pending': '',
+                              'done': False, 'session': '', 'parent': ''}
+                if not cached['done']:
+                    stream.seek(cached['offset'])
+                    remaining = min(limit - read_bytes, _USAGE_LINE_LIMIT + 1 - cached['offset'])
+                    if remaining <= 0:
+                        limited = True
+                    else:
+                        chunk = stream.readline(remaining)
+                        read_bytes += len(chunk)
+                        cached['offset'] += len(chunk)
+                        try:
+                            pending_header = base64.b64decode(cached['pending'], validate=True) + chunk
+                        except (ValueError, TypeError):
+                            pending_header = b''
+                        if chunk.endswith(b'\n') or cached['offset'] >= _USAGE_LINE_LIMIT + 1 or not chunk:
+                            cached['done'] = True
+                            cached['eof'] = not chunk
+                            cached['size'] = info.st_size
+                            try:
+                                record = json.loads(pending_header)
+                                payload = record.get('payload') if isinstance(record, dict) and record.get('type') == 'session_meta' else None
+                                if isinstance(payload, dict) and (payload.get('id') or payload.get('session_id')):
+                                    cached['session'] = str(payload.get('id') or payload['session_id'])
+                                    cached['parent'] = str(payload.get('forked_from_id') or '')
+                            except (ValueError, TypeError, UnicodeError, RecursionError):
+                                pass
+                            cached['pending'] = ''
+                        else:
+                            cached['pending'] = base64.b64encode(pending_header).decode('ascii')
+                            limited = True
+                if cached['session']:
+                    lineage[cached['session']] = cached['parent']
+                if entry.get('header_scan') != cached or file not in files:
+                    entry['header_scan'] = cached
+                    files[file] = entry
+                    dirty = True
+                if limited:
+                    break
+        except (OSError, ValueError, TypeError, RecursionError):
+            pass
+    if limited:
+        write_checkpoint()
+        result = {'days': index['hours'], 'partial': True, 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
+        if too_many_files: result['reason'] = 'too many files'
+        elif dedupe_full: result['reason'] = 'dedupe window full'
+        elif write_failed: result['reason'] = 'index write failed'
+        elif reset_index: result['reason'] = 'index too large'
+        return result
+    for provider, file, _ in candidates:
+        if provider != 'codex':
+            continue
+        entry = files.get(file, {})
+        header = entry.get('header_scan', {}) if isinstance(entry, dict) else {}
+        if not isinstance(header, dict) or not header.get('session'):
+            continue
+        root = header['session']
+        for _ in range(32):
+            parent = lineage.get(root)
+            if not parent or parent == root:
+                break
+            root = parent
+        if header.get('root') != root:
+            header['root'] = root
+            dirty = True
     for provider, file, info in candidates:
         try:
             fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
@@ -3604,9 +3687,12 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                 head = hashlib.sha1(head_data).hexdigest()
                 if (not valid or info.st_size < previous['size'] or info.st_mtime_ns < previous['mtime_ns'] or
                         previous['ino'] != info.st_ino or previous['dev'] != info.st_dev or previous.get('head') != old_head):
+                    header_scan = previous.get('header_scan') if isinstance(previous, dict) else None
                     previous = {'provider': provider, 'path': file, 'offset': 0, 'skip_days': {},
                                 'session': '', 'forked_from_id': '', 'model': '', 'has_usage_cursor': False,
                                 'skip_line': False, 'skip_mark': False}
+                    if header_scan is not None:
+                        previous['header_scan'] = header_scan
                     pending = b''
                     tail = b''
                 state = copy.deepcopy(previous)
@@ -3616,6 +3702,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                 class Seen:
                     def __contains__(self, key): return key in index['seen'] or key in staged_seen
                     def __setitem__(self, key, value): staged_seen[key] = value
+                    def get(self, key, default=None): return staged_seen.get(key, index['seen'].get(key, default))
                 class Sessions(dict):
                     def setdefault(self, key, default):
                         if key not in self: self[key] = copy.deepcopy(index['sessions'].get(key, default))
@@ -3634,7 +3721,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     index['seen'].update(staged_seen)
                     if len(index['seen']) > _USAGE_SEEN_LIMIT:
                         dedupe_full = True
-                        index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: item[1])[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
+                        index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: _usage_seen_day(item[1]))[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
                     index['sessions'].update(staged_sessions)
                     for hour, models in staged_hours.items():
                         if hour[:10] < cutoff: continue

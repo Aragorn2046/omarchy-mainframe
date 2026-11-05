@@ -85,6 +85,52 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 20)
         self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 20)
 
+    def test_claude_repeated_snapshots_keep_largest_values(self):
+        path = self.file('.claude/projects/a.jsonl')
+        self.lines(path, [self.claude('same', {'input_tokens':10, 'output_tokens':1, 'cache_read_input_tokens':20})])
+        self.scan()
+        self.lines(path, [self.claude('same', {'input_tokens':5, 'output_tokens':100, 'cache_read_input_tokens':30}),
+                          self.claude('same', {'input_tokens':15, 'output_tokens':2, 'cache_read_input_tokens':1})], 'a')
+        for _ in range(2):
+            result = self.scan()['days'][self.day]['claude/model-a']
+            self.assertEqual((result['input'], result['output'], result['cache_read']), (15, 100, 30))
+
+    def test_codex_warm_scan_reads_no_header_bytes(self):
+        from unittest.mock import patch
+        self.lines(self.file('.codex/sessions/a.jsonl'), [{'type':'session_meta', 'payload':{'id':'s'}}])
+        self.scan()
+        fdopen = c.os.fdopen
+        header_bytes = []
+        class TrackedStream:
+            def __init__(self, stream): self.stream = stream
+            def __enter__(self): self.stream.__enter__(); return self
+            def __exit__(self, *args): return self.stream.__exit__(*args)
+            def __getattr__(self, name): return getattr(self.stream, name)
+            def readline(self, *args):
+                data = self.stream.readline(*args)
+                header_bytes.append(len(data))
+                return data
+        def tracked(fd, mode, *args, **kwargs):
+            stream = fdopen(fd, mode, *args, **kwargs)
+            return TrackedStream(stream) if mode == 'rb' else stream
+        with patch.object(c.os, 'fdopen', side_effect=tracked):
+            self.scan()
+        self.assertEqual(sum(header_bytes), 0)
+
+    def test_codex_header_reads_obey_budget_and_resume(self):
+        path = self.file('.codex/sessions/a.jsonl')
+        self.lines(path, [{'type':'session_meta', 'payload':{'id':'s', 'padding':'x' * 100}},
+                          {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':10}}}}])
+        result = self.scan(limit=25)
+        index = json.loads((self.cache / 'usage-index.json').read_text())
+        self.assertTrue(result['partial'])
+        self.assertEqual(index['files'][str(path)]['header_scan']['offset'], 25)
+        for _ in range(30):
+            result = self.scan(limit=25)
+            if not result['partial']: break
+        self.assertFalse(result['partial'])
+        self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 10)
+
     def test_codex_copies_share_session_cursor(self):
         meta = {'type':'session_meta', 'payload':{'id':'session-1'}}
         context = {'type':'turn_context', 'payload':{'model':'c'}}
@@ -117,6 +163,8 @@ class ScannerTest(unittest.TestCase):
         self.lines(self.file('.codex/sessions/b.jsonl'), [meta('child', 'parent'), count(100)])
         self.lines(self.file('.codex/sessions/c.jsonl'), [meta('parent'), count(100)])
         self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 100)
+        index = json.loads((self.cache / 'usage-index.json').read_text())
+        self.assertEqual(index['files'][str(self.home / '.codex/sessions/a.jsonl')]['header_scan']['root'], 'parent')
 
     def test_missing_codex_cursor_replays_before_new_event(self):
         path = self.file('.codex/sessions/a.jsonl')
