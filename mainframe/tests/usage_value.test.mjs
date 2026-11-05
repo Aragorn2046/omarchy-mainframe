@@ -34,6 +34,12 @@ test('dated Haiku 4.5 resolves to the published rates', () => {
   assert.deepEqual(U.priceFor(actualPrices,'claude','claude-haiku-4-5-20251001'),
     {input:1,output:5,cache_read:0.1,cache_write_5m:1.25,cache_write_1h:2});
 });
+test('bundled Claude cache read prices', () => {
+  const models = require('../prices.json').claude.models;
+  assert.equal(models['claude-sonnet-5-5'].cache_read,0.1);
+  assert.equal(models['claude-opus-5-5'].cache_read,0.2);
+  assert.equal(models['claude-fable-5-1'].cache_read,0.25);
+});
 test('stale hosts remain counted and are flagged', () => {
   const now = new Date('2026-11-03T12:00:00Z');
   const hour = '2026-11-03T11:00';
