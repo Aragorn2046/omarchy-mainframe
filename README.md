@@ -24,7 +24,7 @@ screen, and it wears your Omarchy theme: switch themes and Mainframe follows wit
 - **Top apps** by live CPU and by memory, grouped by name (`chromium ×42`)
 - **Follows your Omarchy theme live**, dark and light, using your Omarchy font
 - **Other machines as tabs.** Point Mainframe at an SSH host and it gets the same cards. Nothing is installed on that
-  machine, and nothing keeps running there after you close the window. When the connection closes, the remote sampler
+  machine, and nothing keeps running there after you close the window. A small usage index remains in the remote user’s `~/.cache/mainframe`. When the connection closes, the remote sampler
   detects the loss and stops its helper processes before exiting.
 - **Light**: about 2% of one CPU core and ~180 MB RAM while open on a real Wayland session (measured on a 16-thread laptop); nothing runs when it is
   closed. No root, no daemons, no compiled code: plain QML, JavaScript and Python.
@@ -108,11 +108,17 @@ with the window (parent-death signal plus end-of-input), so nothing is left runn
 
 ## Development
 
+The smoke idle CPU gates disable the usage scan and gate the scan separately.
+
 ```bash
 node --test mainframe/tests/        # unit tests for the metrics logic
 scripts/mainframe-smoke.sh                    # headless load, layout, CPU and cleanup checks
 MAINFRAME_SMOKE_LIVE=1 scripts/mainframe-smoke.sh   # also measures CPU on a real window (opens it for ~40 s)
 ```
+
+## Value at API prices
+
+The Agents page estimates the API value of Claude Code and Codex token usage on this machine and configured SSH machines. It includes input, output and cache tokens from recent local transcripts. Public Anthropic and OpenAI API list prices are stored in `mainframe/prices.json`; the date and source appear in that file. You can override individual model rates in `~/.config/mainframe/prices.json` using the same provider and model structure. This is an estimate, and subscription fees are not included. Unknown prices and machines that have not reported make the result partial. The scan checks `~/.claude/projects`, `~/.claude-accounts/*/projects`, `$CLAUDE_CONFIG_DIR/projects` when set, `~/.config/claude/projects`, `~/.codex/sessions`, and `$CODEX_HOME/sessions` when set. Index version 8 rebuilds the previous usage index on the next scan.
 
 ## Monitor your other machines
 

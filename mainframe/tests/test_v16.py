@@ -313,4 +313,49 @@ class V16Tests(unittest.TestCase):
             self.assertTrue(json.loads(result.stdout)['ok'])
             self.assertEqual(json.loads((cache/'fake.json').read_text())['name'],'Fake')
 
-if __name__ == '__main__': unittest.main()
+
+class PriceConfigTests(unittest.TestCase):
+    def test_missing_or_invalid_bundled_prices_keeps_config_available(self):
+        import importlib.util
+        from contextlib import redirect_stdout
+        from io import StringIO
+        from unittest.mock import patch
+        spec = importlib.util.spec_from_file_location('config_for_prices_test', ROOT / 'config_manager.py')
+        manager = importlib.util.module_from_spec(spec); spec.loader.exec_module(manager)
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            (base / 'hosts.json').write_text(json.dumps({'hosts': [{'name': 'Example', 'ssh': 'example'}]}))
+            for bundled in (None, '{bad'):
+                if bundled is not None: (base / 'prices.json').write_text(bundled)
+                output = StringIO()
+                with patch.object(manager, 'CONFIG', base), patch.object(manager, '__file__', str(base / 'config_manager.py')), patch.object(sys, 'argv', ['config_manager.py', 'read']), redirect_stdout(output):
+                    self.assertEqual(manager.read_config('hosts')[0]['hosts'][0]['name'], 'Example')
+                    manager.main()
+                result = json.loads(output.getvalue())
+                self.assertEqual(result['hosts']['hosts'][0]['name'], 'Example')
+                self.assertEqual(result['prices'], {})
+
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'requires POSIX FIFO')
+    def test_fifo_price_override_does_not_block(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'mainframe'; config.mkdir()
+            os.mkfifo(config / 'prices.json')
+            run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=dict(os.environ, XDG_CONFIG_HOME=tmp), capture_output=True, text=True, check=True, timeout=5)
+            self.assertIn('claude', json.loads(run.stdout)['prices'])
+
+    def test_override_merge_and_invalid_price_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'mainframe'; config.mkdir()
+            override = {'claude':{'models':{'claude-opus-5-5':{'input':8},'custom':{'input':1}}}}
+            (config / 'prices.json').write_text(json.dumps(override))
+            env = dict(os.environ, XDG_CONFIG_HOME=tmp)
+            run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=env, capture_output=True, text=True, check=True)
+            result = json.loads(run.stdout)
+            self.assertEqual(result['prices']['claude']['models']['claude-opus-5-5']['input'],8)
+            self.assertEqual(result['prices']['claude']['models']['claude-opus-5-5']['output'],20)
+            (config / 'prices.json').write_text(json.dumps({'claude':{'models':{'custom':{'input':-1}}}}))
+            run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=env, capture_output=True, text=True, check=True)
+            self.assertIn('prices', json.loads(run.stdout)['errors'])
+
+if __name__ == '__main__':
+    unittest.main()

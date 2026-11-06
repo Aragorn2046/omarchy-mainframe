@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Validated settings and sequential, isolated account collectors."""
 import json
+import math
 import fcntl
 import datetime
 import hashlib
@@ -9,6 +10,7 @@ from pathlib import Path
 import re
 import selectors
 import signal
+import stat
 import shutil
 import subprocess
 import sys
@@ -54,6 +56,17 @@ def validate(kind, data):
                 cmd = item.get('command')
                 if not isinstance(cmd, list) or not cmd or any(not isinstance(x, str) or not x or '\x00' in x for x in cmd): raise ValueError('Command must be a JSON argument list')
             else: raise ValueError('Unknown provider')
+    elif kind == 'prices':
+        for provider, section in data.items():
+            if provider not in ('claude', 'codex') or not isinstance(section, dict): raise ValueError('Invalid price provider')
+            if any(k not in ('source', 'as_of', 'models') for k in section): raise ValueError('Invalid price section')
+            if any(k in section and not isinstance(section[k], str) for k in ('source', 'as_of')): raise ValueError('Invalid price metadata')
+            models = section.get('models', {})
+            if not isinstance(models, dict): raise ValueError('Invalid price models')
+            fields = ('input', 'output', 'cache_read', 'cache_write_5m', 'cache_write_1h') if provider == 'claude' else ('input', 'cached_input', 'output')
+            for model, rates in models.items():
+                if not isinstance(model, str) or not model or not isinstance(rates, dict) or not rates or any(k not in fields for k in rates): raise ValueError('Invalid model price')
+                if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in rates.values()): raise ValueError('Invalid price rate')
     elif kind == 'settings':
         if data.get('overviewView', 'systems') not in ('systems', 'storage', 'agents') or not isinstance(data.get('showUnavailable', False), bool): raise ValueError('Invalid display settings')
     else: raise ValueError('Unknown configuration')
@@ -61,9 +74,18 @@ def validate(kind, data):
 
 
 def read_config(kind):
-    defaults = {'hosts': {'hosts': []}, 'accounts': {'accounts': []}, 'settings': {'overviewView': 'systems', 'showUnavailable': False}}
+    defaults = {'hosts': {'hosts': []}, 'accounts': {'accounts': []}, 'settings': {'overviewView': 'systems', 'showUnavailable': False}, 'prices': {}}
     path = CONFIG / (kind + '.json')
     try:
+        if kind == 'prices':
+            if path.is_symlink(): raise ValueError('Price file is a symbolic link')
+            fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
+            with os.fdopen(fd, 'rb') as source:
+                if not stat.S_ISREG(os.fstat(source.fileno()).st_mode):
+                    return defaults[kind], None
+                content = source.read(256 * 1024 + 1)
+            if len(content) > 256 * 1024: raise ValueError('Price file is too large')
+            return validate(kind, json.loads(content)), None
         return validate(kind, json.loads(path.read_text())), None
     except FileNotFoundError as exc:
         if not os.path.lexists(path): return defaults[kind], None
@@ -77,6 +99,7 @@ def read(kind):
 
 
 def write(kind, data, replace_invalid=False):
+    if kind == 'prices': raise ValueError('Price overrides are read-only')
     validate(kind, data)
     target = CONFIG / (kind + '.json')
     if target.is_symlink():
@@ -194,9 +217,21 @@ def main():
         signal.signal(signal.SIGINT, terminate)
     if action == 'read':
         result, errors = {}, {}
-        for kind in ('hosts', 'accounts', 'settings'):
+        for kind in ('hosts', 'accounts', 'settings', 'prices'):
             result[kind], error = read_config(kind)
             if error: errors[kind] = error
+        try:
+            with (Path(__file__).parent / 'prices.json').open(encoding='utf-8') as source:
+                prices = validate('prices', json.load(source))
+        except (OSError, ValueError, TypeError, RecursionError):
+            prices = {}
+            result['prices'] = {}
+        for provider, section in result['prices'].items():
+            base = prices.setdefault(provider, {'models': {}})
+            base.update({k: v for k, v in section.items() if k != 'models'})
+            for model, rates in section.get('models', {}).items():
+                base.setdefault('models', {}).setdefault(model, {}).update(rates)
+        result['prices'] = prices
         result['errors'] = errors
         print(json.dumps(result))
     elif action == 'write':

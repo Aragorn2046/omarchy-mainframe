@@ -1,0 +1,91 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {createRequire} from 'node:module';
+process.env.TZ = 'UTC';
+const require = createRequire(import.meta.url);
+const U = require('../lib/usage_value.js');
+const prices = {claude:{models:{'m':{input:1,output:2,cache_read:0.1,cache_write_5m:1,cache_write_1h:2}}},codex:{models:{'c':{input:2,cached_input:0.1,output:10}}}};
+test('matching suffixes, windows, providers and offline hosts', () => {
+  const now = new Date(2026, 10, 3, 0, 1);
+  const hosts = [{host:'this machine',usage:{days:{'2026-11-03':{'claude/m-20261001[1m]':{input:1000000}},'2026-10-28':{'codex/c':{input:1000000,cached_input:500000}},'2026-10-05':{'claude/m':{input:1000000}},'2026-10-04':{'claude/m':{input:1000000}}}}}, {host:'remote',usage:{days:{'2026-11-03':{'codex/c':{output:1000000}}}}}, {host:'away',status:'offline'}, {host:'pending'}];
+  const v = U.calculate(hosts,prices,now);
+  assert.equal(v.totals.today,11); assert.equal(v.totals.seven,12.05); assert.equal(v.totals.thirty,13.05);
+  assert.equal(v.providers.codex.thirty,11.05); assert.equal(v.hosts[1].totals.today,10);
+  assert.equal(v.excluded,2); assert.equal(v.hosts[2].status,'offline'); assert.equal(v.hosts[3].status,'waiting');
+  assert.equal(U.priceFor(prices,'claude','m-20261001[1m]').input,1);
+});
+test('unknown model is partial and no price is listed', () => {
+  const v = U.calculate([{host:'test',usage:{days:{'2026-11-03':{'claude/unknown':{input:1}}}}}],prices,new Date(2026,10,3));
+  assert.equal(v.partial,true); assert.deepEqual(v.unpriced,['claude/unknown']); assert.equal(v.totals.today,0);
+  assert.equal(U.money(1234.1),'$1,234'); assert.equal(U.money(2.1),'$2.10');
+});
+test('zero-token unknown models do not make usage partial', () => {
+  const now = new Date(2026,10,3);
+  const hosts = [{host:'test',usage:{days:{'2026-11-03':{'claude/<synthetic>':{input:0,output:0,cache_read:0,cache_write_5m:0,cache_write_1h:0},'codex/unknown':{}}}}}];
+  const v = U.calculate(hosts,prices,now);
+  assert.equal(v.partial,false); assert.deepEqual(v.unpriced,[]); assert.deepEqual(v.unpricedTokens,{});
+  hosts[0].usage.days['2026-11-02'] = {'claude/<synthetic>':{cache_read:1}};
+  const withUsage = U.calculate(hosts,prices,now);
+  assert.equal(withUsage.partial,true); assert.deepEqual(withUsage.unpriced,['claude/<synthetic>']);
+  assert.equal(withUsage.unpricedTokens['claude/<synthetic>'],1);
+});
+test('dated Haiku 4.5 resolves to the published rates', () => {
+  const actualPrices = require('../prices.json');
+  assert.deepEqual(U.priceFor(actualPrices,'claude','claude-haiku-4-5-20251001'),
+    {input:1,output:5,cache_read:0.1,cache_write_5m:1.25,cache_write_1h:2});
+});
+test('bundled Claude cache read prices', () => {
+  const models = require('../prices.json').claude.models;
+  assert.equal(models['claude-sonnet-5-5'].cache_read,0.1);
+  assert.equal(models['claude-opus-5-5'].cache_read,0.2);
+  assert.equal(models['claude-fable-5-1'].cache_read,0.25);
+});
+test('stale hosts remain counted and are flagged', () => {
+  const now = new Date('2026-11-03T12:00:00Z');
+  const hour = '2026-11-03T11:00';
+  for (const usage of [
+    {scanned_at:'2026-11-03T11:14:00Z'},
+    {scanned_at:'2026-11-03T11:59:00Z', stale:true}
+  ]) {
+    usage.days = {[hour]:{'claude/m':{input:1000000}}};
+    const value = U.calculate([{host:'local',status:'ready',usage}], prices, now);
+    assert.equal(value.stale, true);
+    assert.equal(value.totals.today, 1);
+  }
+  const fresh = U.calculate([{usage:{scanned_at:now.toISOString(),days:{}}}],prices,now);
+  assert.equal(fresh.stale,false);
+});
+function calculateInZone(TZ, usage, now) {
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = TZ;
+    return U.calculate([{usage}], prices, now).totals;
+  } finally {
+    process.env.TZ = previous;
+  }
+}
+test('UTC hours map to the viewer local day at midnight', () => {
+  const usage = {scanned_at:'2026-11-03T00:30:00Z',days:{'2026-11-03T00:00':{'claude/m':{input:1000000}},'2026-11-02T22:00':{'claude/m':{input:2000000}}}};
+  assert.deepEqual(calculateInZone('Europe/Amsterdam', usage, '2026-11-03T00:30:00Z'), {today:1,seven:3,thirty:3});
+});
+
+test('quarter-hour UTC buckets map correctly in Nepal', () => {
+  const usage = {scanned_at:'2026-11-03T18:30:00Z', days:{'2026-11-03T18:00':{'claude/m':{input:1000000}}, '2026-11-03T18:15':{'claude/m':{input:2000000}}}};
+  assert.deepEqual(calculateInZone('Asia/Kathmandu', usage, '2026-11-03T18:30:00Z'), {today:2,seven:3,thirty:3});
+});
+
+test('failed first scan is shown as a failure', () => {
+  const value = U.calculate([{host:'test', usage:{days:{}, stale:true, error:'failure'}}], prices, new Date('2026-11-03T12:00:00Z'));
+  assert.equal(value.hosts[0].status, 'usage scan failed');
+  assert.equal(value.excluded, 1); assert.equal(value.partial, true);
+});
+test('unpriced models are capped by token count and the remainder is summed', () => {
+  const models = {};
+  for (let i = 1; i <= 15; i++) models['claude/model-' + i] = {input:i};
+  const value = U.calculate([{usage:{days:{'2026-11-03':models}}}], prices, new Date('2026-11-03T12:00:00Z'));
+  assert.equal(value.unpriced.length, 13);
+  assert.equal(value.unpriced[0], 'claude/model-15');
+  assert.equal(value.unpriced[12], 'other');
+  assert.equal(value.unpricedTokens.other, 6);
+  assert.equal(Object.values(value.unpricedTokens).reduce((a, b) => a + b, 0), 120);
+});

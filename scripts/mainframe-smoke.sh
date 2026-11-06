@@ -35,6 +35,79 @@ else
   fail=1
 fi
 
+echo "== usage scan =="
+if python3 - "$ROOT/mainframe/collect.py" <<'PY'
+import datetime
+import json
+import os
+from pathlib import Path
+import resource
+import shutil
+import subprocess
+import sys
+import tempfile
+
+times = [float('nan'), float('nan')]
+try:
+    with tempfile.TemporaryDirectory(prefix='mainframe-usage-smoke-') as tmp:
+        home = Path(tmp) / 'home'
+        cache = Path(tmp) / 'cache'
+        home.mkdir()
+        cache.mkdir()
+        stamp = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for number in range(3):
+            path = home / '.claude' / 'projects' / 'fixture' / ('session-%d.jsonl' % number)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            record = {'type': 'assistant', 'timestamp': stamp,
+                      'message': {'id': 'fixture-%d' % number, 'model': 'fixture-claude',
+                                  'usage': {'input_tokens': 10, 'output_tokens': 2}}}
+            path.write_text(json.dumps(record) + '\n', encoding='utf-8')
+        path = home / '.codex' / 'sessions' / 'fixture.jsonl'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        records = [
+            {'type': 'session_meta', 'payload': {'id': 'fixture-session', 'model': 'fixture-codex'}},
+            {'type': 'event_msg', 'timestamp': stamp, 'payload': {'type': 'token_count',
+             'info': {'total_token_usage': {'input_tokens': 40, 'output_tokens': 5, 'cached_input_tokens': 7}}}},
+        ]
+        path.write_text(''.join(json.dumps(record) + '\n' for record in records), encoding='utf-8')
+        env = dict(os.environ, HOME=str(home), XDG_CACHE_HOME=str(cache))
+        command = ['python3', sys.argv[1], '--usage-scan']
+        if shutil.which('ionice'):
+            command = ['ionice', '-c', '3'] + command
+        results = []
+        index_path = cache / 'mainframe' / 'usage-index.json'
+        for run in range(2):
+            before = resource.getrusage(resource.RUSAGE_CHILDREN)
+            result = subprocess.run(command, env=env, capture_output=True, text=True, check=True, timeout=60)
+            after = resource.getrusage(resource.RUSAGE_CHILDREN)
+            times[run] = (after.ru_utime + after.ru_stime) - (before.ru_utime + before.ru_stime)
+            results.append(json.loads(result.stdout))
+            if run == 0:
+                index = json.loads(index_path.read_text(encoding='utf-8'))
+                index_stat = index_path.stat()
+                if len(index['files']) != 4 or any(row['offset'] != row['size'] for row in index['files'].values()):
+                    raise ValueError('first scan did not index all fixture files')
+        if index_path.stat().st_ino != index_stat.st_ino:
+            raise ValueError('second scan rebuilt the index')
+        first, second = results
+        totals = next(iter(first['days'].values()))
+        if (first['partial'] or second['partial'] or first['days'] != second['days'] or
+                totals['claude/fixture-claude']['input'] != 30 or
+                totals['codex/fixture-codex']['input'] != 40 or times[1] >= 0.5):
+            raise ValueError('scan totals or CPU gate failed')
+    print('usage scan: first=%.3fs second=%.3fs' % tuple(times))
+    print('usage scan gate: PASS')
+except (OSError, ValueError, KeyError, StopIteration, subprocess.SubprocessError) as exc:
+    print('usage scan: first=%.3fs second=%.3fs' % tuple(times))
+    print('usage scan gate: FAIL (%s)' % exc)
+    sys.exit(1)
+PY
+then
+  :
+else
+  fail=1
+fi
+
 echo "== collector --once =="
 collect_log="$(mktemp)"
 if python3 "$ROOT/mainframe/collect.py" --once >"$collect_log" 2>"$collect_log.err"; then
@@ -616,6 +689,8 @@ else:
     argv = list(qs_cmd)
 
 env = launch_env(os.environ, live)
+if measure:
+    env["MAINFRAME_USAGE_SCAN"] = "0"
 env["MAINFRAME_SMOKE"] = "1"
 env["MAINFRAME_SMOKE_W"] = str(width)
 env["MAINFRAME_SMOKE_H"] = str(height)
