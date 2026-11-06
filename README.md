@@ -91,23 +91,25 @@ succeeds. Remove the key binding from `bindings.lua` if you added one.
 
 | Key | Action |
 |---|---|
-| `Left` / `h` | Previous tab; Back in storage detail |
+| `Left` / `h` | Previous tab; close Storage while Storage is open |
 | `Right` / `l` / `Ctrl+Tab` / `Ctrl+PgDown` | Next tab |
 | `Ctrl+Shift+Tab` / `Ctrl+Backtab` / `Ctrl+PgUp` | Previous tab |
-| `1–9` | Select the corresponding tab |
+| `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` / `9` | Select the corresponding tab |
 | `s` / `d` / `a` | Select Systems, Storage, or Agents in Overview |
 | `Tab` / `Shift+Tab` / `Backtab` | Cycle Overview views |
-| `Backspace` / `Alt+Left` | Back from storage detail or a machine tab |
-| `Down` / `j` / `Up` / `k` | Scroll one step or select a storage row |
+| `Backspace` / `Alt+Left` | Close Storage while Storage is open, or go back from a machine tab |
+| `Down` / `j` / `Up` / `k` | Scroll one step; pick a row while Storage is open |
 | `PgDown` / `Space` / `PgUp` / `Shift+Space` | Scroll one page |
 | `Home` / `g` / `End` / `G` | Jump to the top or bottom |
-| `Enter` / `Return` | Open the selected storage row |
+| `Enter` / `Return` | Open the selected row in the folder viewer while Storage is open |
 | `?` / `F1` | Toggle keyboard help |
-| `Esc` | Close help, settings, storage detail, or the window |
-| `q` / `Q` | Close storage detail or the window |
+| `Escape` | Close help, settings, Storage, or the window |
+| `q` / `Q` | Close Storage while Storage is open, or close the window |
 | `t` / `T` | Open the theme picker |
 | `r` / `R` | Refresh Agents or restart the current machine collector |
 | `,` / `Ctrl+,` | Open settings; Ctrl+, also closes settings |
+
+`Right`, `l`, `Ctrl+Shift+Tab`, `Ctrl+Backtab`, `Ctrl+PgUp`, and `Ctrl+PgDown` are inactive while Storage is open. The help overlay scrolls with the scroll keys listed above.
 
 ## How it works
 
