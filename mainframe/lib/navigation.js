@@ -22,8 +22,8 @@ function scrollTarget(contentY, contentHeight, viewHeight, kind) {
 }
 var keyHelp = [
   {group:'Tabs', keys:['Left', 'h'], action:'Previous tab; close Storage while Storage is open'},
-  {group:'Tabs', keys:['Right', 'l', 'Ctrl+Tab', 'Ctrl+PgDown'], action:'Next tab'},
-  {group:'Tabs', keys:['Ctrl+Shift+Tab', 'Ctrl+Backtab', 'Ctrl+PgUp'], action:'Previous tab'},
+  {group:'Tabs', keys:['Right', 'l', 'Ctrl+Tab', 'Ctrl+PgDown'], action:'Next tab; inactive while Storage is open'},
+  {group:'Tabs', keys:['Ctrl+Shift+Tab', 'Ctrl+Backtab', 'Ctrl+PgUp'], action:'Previous tab; inactive while Storage is open'},
   {group:'Tabs', keys:['1', '2', '3', '4', '5', '6', '7', '8', '9'], action:'Select the corresponding tab'},
   {group:'Views', keys:['s', 'd', 'a'], action:'Select Systems, Storage, or Agents in Overview'},
   {group:'Views', keys:['Tab', 'Shift+Tab', 'Backtab'], action:'Cycle Overview views'},

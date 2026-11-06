@@ -92,8 +92,8 @@ succeeds. Remove the key binding from `bindings.lua` if you added one.
 | Key | Action |
 |---|---|
 | `Left` / `h` | Previous tab; close Storage while Storage is open |
-| `Right` / `l` / `Ctrl+Tab` / `Ctrl+PgDown` | Next tab |
-| `Ctrl+Shift+Tab` / `Ctrl+Backtab` / `Ctrl+PgUp` | Previous tab |
+| `Right` / `l` / `Ctrl+Tab` / `Ctrl+PgDown` | Next tab; inactive while Storage is open |
+| `Ctrl+Shift+Tab` / `Ctrl+Backtab` / `Ctrl+PgUp` | Previous tab; inactive while Storage is open |
 | `1` / `2` / `3` / `4` / `5` / `6` / `7` / `8` / `9` | Select the corresponding tab |
 | `s` / `d` / `a` | Select Systems, Storage, or Agents in Overview |
 | `Tab` / `Shift+Tab` / `Backtab` | Cycle Overview views |
@@ -109,7 +109,7 @@ succeeds. Remove the key binding from `bindings.lua` if you added one.
 | `r` / `R` | Refresh Agents or restart the current machine collector |
 | `,` / `Ctrl+,` | Open settings; Ctrl+, also closes settings |
 
-`Right`, `l`, `Ctrl+Shift+Tab`, `Ctrl+Backtab`, `Ctrl+PgUp`, and `Ctrl+PgDown` are inactive while Storage is open. The help overlay scrolls with the scroll keys listed above.
+`Right`, `l`, `Ctrl+Tab`, `Ctrl+Shift+Tab`, `Ctrl+Backtab`, `Ctrl+PgUp`, and `Ctrl+PgDown` are inactive while Storage is open. The help overlay scrolls with the scroll keys listed above.
 
 ## How it works
 

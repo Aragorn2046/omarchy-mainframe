@@ -250,6 +250,7 @@ ShellRoot {
   }
   function closeStorage() {
     storageOpen = false
+    storageView.keyboardSelection = false
     storagePending = false
     stopStorage()
   }
@@ -1543,7 +1544,6 @@ ShellRoot {
       sequences: ["Escape"]
       context: Qt.WindowShortcut
       autoRepeat: false
-      enabled: !shell.textFieldFocused()
       onActivated: if (shell.helpOpen) shell.helpOpen = false; else if (shell.settingsOpen) shell.settingsOpen = false; else if (shell.storageOpen) shell.closeStorage(); else shell.shutdown()
     }
     Shortcut { sequences: ["q", "Q"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) shell.closeStorage(); else shell.shutdown() }
@@ -1555,7 +1555,7 @@ ShellRoot {
       enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused()
       onActivated: { if (!shell.settingsOpen) { if (shell.agentsVisible) shell.refreshAgents(true); else shell.retryCollector() } }
     }
-    Shortcut { sequences: ["Ctrl+,"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.helpOpen && !shell.textFieldFocused(); onActivated: shell.settingsOpen = !shell.settingsOpen }
+    Shortcut { sequences: ["Ctrl+,"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.helpOpen; onActivated: shell.settingsOpen = !shell.settingsOpen }
     Shortcut { sequences: [","]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: shell.settingsOpen = true }
     Shortcut { sequences: ["s"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("systems") }
     Shortcut { sequences: ["d"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("storage") }
@@ -1576,7 +1576,7 @@ ShellRoot {
       autoRepeat: false
       context: Qt.WindowShortcut
       enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused()
-      onActivated: shell.cycleTab(1)
+      onActivated: if (!shell.storageOpen) shell.cycleTab(1)
     }
     Shortcut { sequences: ["Left", "h"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) shell.goBack(); else shell.cycleTab(-1) }
     Shortcut { sequences: ["Right", "l"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.storageOpen) shell.cycleTab(1) }
@@ -1589,7 +1589,7 @@ ShellRoot {
     Shortcut { sequences: ["PgUp", "Shift+Space"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("page-up") }
     Shortcut { sequences: ["Home", "g"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("top") }
     Shortcut { sequences: ["End", "Shift+G"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("bottom") }
-    Shortcut { sequences: ["Enter", "Return"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) storageView.openCurrentRow() }
+    Shortcut { sequences: ["Enter", "Return"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: shell.storageOpen && !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) storageView.openCurrentRow() }
     Shortcut { sequences: ["?", "F1"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.helpOpen = !shell.helpOpen }
 
     Rectangle {
@@ -1603,6 +1603,7 @@ ShellRoot {
       color: Qt.rgba(0, 0, 0, 0.55)
       MouseArea {
         anchors.fill: parent
+        onWheel: (wheel) => wheel.accepted = true
         onClicked: function(mouse) {
           if (mouse.x < helpCard.x || mouse.x >= helpCard.x + helpCard.width || mouse.y < helpCard.y || mouse.y >= helpCard.y + helpCard.height) shell.helpOpen = false
         }

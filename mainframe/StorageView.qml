@@ -32,8 +32,8 @@ Card {
   }
   function moveRow(step) {
     if (!list.visible || rows.length === 0) return
+    currentRow = Math.max(0, Math.min(rows.length - 1, currentRow + (keyboardSelection ? step : 0)))
     keyboardSelection = true
-    currentRow = Math.max(0, Math.min(rows.length - 1, currentRow + step))
     var row = rowRepeater.itemAt(currentRow)
     if (!row) return
     var top = row.mapToItem(list.contentItem, 0, 0).y
@@ -57,7 +57,7 @@ Card {
     }
   }
   function openCurrentRow() {
-    if (list.visible && rows.length > 0) root.openCategory(rows[currentRow].name)
+    if (keyboardSelection && list.visible && rows.length > 0) root.openCategory(rows[currentRow].name)
   }
   function checkStorageLayout() {
     var bad = 0

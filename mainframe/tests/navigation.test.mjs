@@ -83,7 +83,8 @@ test('help keys are bound once and shortcuts respect repeat and focus guards', (
   for (const block of shortcuts) {
     const keys = sequences(block);
     const enabled = block.match(/enabled:\s*([^;\n]+)/)?.[1] || '';
-    assert.match(enabled, /!shell\.textFieldFocused\(\)/, keys.join(', '));
+    if (keys.length === 1 && closeSettings.has(keys[0])) assert.doesNotMatch(block, /textFieldFocused/, keys.join(', '));
+    else assert.match(enabled, /!shell\.textFieldFocused\(\)/, keys.join(', '));
     if (!keys.some(key => closeSettings.has(key))) assert.match(enabled, /!shell\.settingsOpen/, keys.join(', '));
     if (!keys.some(key => scrollKeys.has(key) || helpKeys.has(key))) assert.match(enabled, /!shell\.helpOpen/, keys.join(', '));
     if (!keys.some(key => scrollKeys.has(key))) assert.match(block, /autoRepeat:\s*false/, keys.join(', '));
@@ -117,6 +118,10 @@ test('storage selection tracks the first fully visible row and content coordinat
     with (state) { ${qmlFunction(source, 'moveRow')}\n${qmlFunction(source, 'selectAfterScroll')}
       return {moveRow, selectAfterScroll}; }
   `)(list, rows, rowRepeater, state);
+  run.moveRow(1);
+  assert.equal(state.currentRow, 0);
+  assert.equal(list.contentY, 6);
+  assert.equal(state.keyboardSelection, true);
   run.moveRow(1);
   assert.equal(state.currentRow, 1);
   assert.equal(list.contentY, 43);
@@ -171,6 +176,7 @@ test('Enter opens the current row only while Storage is open', () => {
   const shortcut = shortcutBlocks(read('../shell.qml')).find(block => sequences(block).includes('Enter'));
   assert.ok(shortcut);
   assert.ok(sequences(shortcut).includes('Return'));
+  assert.match(shortcut.match(/enabled:\s*([^;\n]+)/)?.[1] || '', /shell\.storageOpen/);
   const handler = shortcut.match(/onActivated:\s*([^\n]+)/)?.[1];
   assert.ok(handler);
   let opened = 0;
@@ -180,6 +186,48 @@ test('Enter opens the current row only while Storage is open', () => {
   assert.equal(opened, 0);
   run({storageOpen: true}, storageView);
   assert.equal(opened, 1);
+});
+
+test('storage opens only a highlighted row and resets selection on close', () => {
+  const source = read('../StorageView.qml');
+  const openCurrentRow = qmlFunction(source, 'openCurrentRow');
+  assert.match(openCurrentRow, /keyboardSelection/);
+  const state = {keyboardSelection: false, currentRow: 0};
+  const list = {visible: true};
+  const rows = [{name: 'A'}];
+  const opened = [];
+  const run = new Function('state', 'list', 'rows', 'root', `
+    with (state) { ${openCurrentRow} return openCurrentRow; }
+  `)(state, list, rows, {openCategory(name) { opened.push(name); }});
+  run();
+  state.keyboardSelection = true;
+  list.visible = false;
+  run();
+  list.visible = true;
+  rows.pop();
+  run();
+  rows.push({name: 'A'});
+  run();
+  assert.deepEqual(opened, ['A']);
+  assert.match(qmlFunction(read('../shell.qml'), 'closeStorage'), /storageView\.keyboardSelection\s*=\s*false/);
+});
+
+test('Ctrl+Tab does not change tabs while Storage is open', () => {
+  const shortcut = shortcutBlocks(read('../shell.qml')).find(block => sequences(block).includes('Ctrl+Tab'));
+  const handler = shortcut.match(/onActivated:\s*([^\n]+)/)?.[1];
+  assert.match(handler, /!shell\.storageOpen/);
+  const calls = [];
+  const shell = {storageOpen: true, cycleTab(step) { calls.push(step); }};
+  const run = new Function('shell', handler);
+  run(shell);
+  shell.storageOpen = false;
+  run(shell);
+  assert.deepEqual(calls, [1]);
+});
+
+test('help backdrop accepts wheel events', () => {
+  const source = read('../shell.qml');
+  assert.match(source, /id:\s*helpOverlay[\s\S]*?MouseArea\s*\{\s*anchors\.fill:\s*parent\s*onWheel:\s*\(wheel\)\s*=>\s*wheel\.accepted\s*=\s*true/);
 });
 
 test('QML files contain no obsolete detail flick alias', () => {
