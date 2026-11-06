@@ -17,6 +17,48 @@ Card {
   property var progress: ({})
   property double now: Date.now()
   property var rows: Storage.model(data, palette, Metrics.oklabDistance)
+  property alias flick: list
+  property color accent
+  property int currentRow: 0
+  property string selectedCategory: ""
+  property bool keyboardSelection: false
+  onCurrentRowChanged: {
+    if (currentRow >= 0 && currentRow < rows.length) selectedCategory = rows[currentRow].name
+  }
+  onRowsChanged: {
+    var selected = rows.findIndex(function(row) { return row.name === selectedCategory })
+    currentRow = selected >= 0 ? selected : Math.max(0, Math.min(currentRow, rows.length - 1))
+    selectedCategory = rows.length ? rows[currentRow].name : ""
+  }
+  function moveRow(step) {
+    if (!list.visible || rows.length === 0) return
+    currentRow = Math.max(0, Math.min(rows.length - 1, currentRow + (keyboardSelection ? step : 0)))
+    keyboardSelection = true
+    var row = rowRepeater.itemAt(currentRow)
+    if (!row) return
+    var top = row.mapToItem(list.contentItem, 0, 0).y
+    if (top < list.contentY) list.contentY = top
+    else if (top + row.height > list.contentY + list.height) list.contentY = top + row.height - list.height
+    list.contentY = Math.max(0, Math.min(Math.max(0, list.contentHeight - list.height), list.contentY))
+  }
+  function selectAfterScroll(kind) {
+    if (!list.visible || rows.length === 0) return
+    keyboardSelection = true
+    if (kind === "top") { currentRow = 0; return }
+    if (kind === "bottom") { currentRow = rows.length - 1; return }
+    for (var i = 0; i < rows.length; i++) {
+      var row = rowRepeater.itemAt(i)
+      if (!row) continue
+      var top = row.mapToItem(list.contentItem, 0, 0).y
+      if (top >= list.contentY && top + row.height <= list.contentY + list.height) {
+        currentRow = i
+        return
+      }
+    }
+  }
+  function openCurrentRow() {
+    if (keyboardSelection && list.visible && rows.length > 0) root.openCategory(rows[currentRow].name)
+  }
   function checkStorageLayout() {
     var bad = 0
     var width = list.width
@@ -101,11 +143,14 @@ Card {
       Column {
         id: rowsColumn; width: list.width; spacing: 1
         Repeater {
+          id: rowRepeater
           model: root.rows
           Rectangle {
             required property var modelData
+            required property int index
             objectName: "storage-row"
             width: rowsColumn.width; height: 36; radius: 4; color: rowMouse.containsMouse ? root.track : "transparent"
+            Rectangle { anchors.fill: parent; radius: parent.radius; color: root.accent; opacity: root.keyboardSelection && index === root.currentRow ? 0.16 : 0 }
             RowLayout {
               anchors.fill: parent; anchors.leftMargin: 8; anchors.rightMargin: 8; spacing: 10
               Rectangle {
@@ -116,7 +161,7 @@ Card {
               Text { textFormat: Text.PlainText; text: Metrics.formatBytes(modelData.value); color: root.ink; font.family: "monospace"; font.pixelSize: 13; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 100 }
               Text { textFormat: Text.PlainText; text: modelData.percent + "%"; color: root.mutedInk; font.family: "monospace"; font.pixelSize: 13; horizontalAlignment: Text.AlignRight; Layout.preferredWidth: 48 }
             }
-            MouseArea { id: rowMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: root.openCategory(modelData.name) }
+            MouseArea { id: rowMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.currentRow = index; root.selectedCategory = modelData.name; root.openCategory(modelData.name) } }
           }
         }
       }

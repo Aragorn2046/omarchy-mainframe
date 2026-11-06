@@ -57,6 +57,19 @@ ShellRoot {
   property string page: "overview"
   property string overviewView: "systems"
   property bool settingsOpen: false
+  property bool helpOpen: false
+  property var focusBeforeHelp: null
+  onHelpOpenChanged: {
+    if (helpOpen) {
+      var actualWindow = windowProbe.Window.window
+      focusBeforeHelp = actualWindow ? actualWindow.activeFocusItem : null
+      Qt.callLater(function() { if (shell.helpOpen) helpOverlay.forceActiveFocus() })
+    } else {
+      if (focusBeforeHelp && focusBeforeHelp.visible && focusBeforeHelp.enabled) focusBeforeHelp.forceActiveFocus()
+      else windowContent.forceActiveFocus()
+      focusBeforeHelp = null
+    }
+  }
   property var settingsData: ({hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{overviewView:"systems",showUnavailable:false}})
   property bool settingsLoaded: false
   property var configSnapshots: ({})
@@ -84,6 +97,25 @@ ShellRoot {
     if (agentsVisible) { loadAgents(); refreshAgents(false) }
   }
   function cycleOverview(step) { setOverviewView(Navigation.cycle(overviewView, step)) }
+  function textFieldFocused() {
+    var actualWindow = windowProbe.Window.window
+    var item = actualWindow ? actualWindow.activeFocusItem : null
+    return !!item && (item instanceof TextInput || item instanceof TextEdit)
+  }
+  function scrollActive(kind) {
+    var flick = helpOpen ? helpFlick : storageOpen ? storageView.flick : systemsView.visible ? systemsView.flick : agentsView.visible ? agentsView.flick : null
+    if (!flick || !flick.visible) return
+    flick.contentY = Navigation.scrollTarget(flick.contentY, flick.contentHeight, flick.height, kind)
+    if (!helpOpen && storageOpen && flick === storageView.flick) storageView.selectAfterScroll(kind)
+  }
+  function goBack() {
+    if (storageOpen) closeStorage()
+    else if (page === "machine") selectTab(0)
+  }
+  function moveVertical(step) {
+    if (!helpOpen && storageOpen && storageView.flick.visible) storageView.moveRow(step)
+    else scrollActive(step > 0 ? "line-down" : "line-up")
+  }
   function refreshAgents(force) { if (!agentsVisible || quitting) return; if (agentRefresh.running) { agentRefreshPending = true; return } agentRefresh.command = ["python3", Quickshell.shellDir + "/config_manager.py", "refresh"]; agentRefresh.running = true }
   function configChanged(name, value) {
     var snapshots = configSnapshots
@@ -218,6 +250,7 @@ ShellRoot {
   }
   function closeStorage() {
     storageOpen = false
+    storageView.keyboardSelection = false
     storagePending = false
     stopStorage()
   }
@@ -1510,43 +1543,102 @@ ShellRoot {
     Shortcut {
       sequences: ["Escape"]
       context: Qt.WindowShortcut
-      onActivated: if (shell.settingsOpen) shell.settingsOpen = false; else if (shell.storageOpen) shell.closeStorage(); else shell.shutdown()
+      autoRepeat: false
+      onActivated: if (shell.helpOpen) shell.helpOpen = false; else if (shell.settingsOpen) shell.settingsOpen = false; else if (shell.storageOpen) shell.closeStorage(); else shell.shutdown()
     }
-    Shortcut { sequences: ["q", "Q"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (shell.storageOpen) shell.closeStorage(); else shell.shutdown() }
-    Shortcut { sequences: ["t", "T"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: shell.openThemePicker() }
+    Shortcut { sequences: ["q", "Q"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) shell.closeStorage(); else shell.shutdown() }
+    Shortcut { sequences: ["t", "T"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: shell.openThemePicker() }
     Shortcut {
       sequences: ["r", "R"]
+      autoRepeat: false
       context: Qt.WindowShortcut
-      enabled: !shell.settingsOpen
+      enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused()
       onActivated: { if (!shell.settingsOpen) { if (shell.agentsVisible) shell.refreshAgents(true); else shell.retryCollector() } }
     }
-    Shortcut { sequences: ["Ctrl+,"]; context: Qt.WindowShortcut; onActivated: shell.settingsOpen = !shell.settingsOpen }
-    Shortcut { sequences: [","]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: shell.settingsOpen = true }
-    Shortcut { sequences: ["s"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("systems") }
-    Shortcut { sequences: ["d"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("storage") }
-    Shortcut { sequences: ["a"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("agents") }
-    Shortcut { sequences: ["Tab"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.cycleOverview(1) }
-    Shortcut { sequences: ["Shift+Tab", "Backtab"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.cycleOverview(-1) }
-    Shortcut { sequences: ["1"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(0) }
-    Shortcut { sequences: ["2"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(1) }
-    Shortcut { sequences: ["3"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(2) }
-    Shortcut { sequences: ["4"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(3) }
-    Shortcut { sequences: ["5"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(4) }
-    Shortcut { sequences: ["6"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(5) }
-    Shortcut { sequences: ["7"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(6) }
-    Shortcut { sequences: ["8"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(7) }
-    Shortcut { sequences: ["9"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen; onActivated: if (!shell.settingsOpen) shell.selectTab(8) }
+    Shortcut { sequences: ["Ctrl+,"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.helpOpen; onActivated: shell.settingsOpen = !shell.settingsOpen }
+    Shortcut { sequences: [","]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: shell.settingsOpen = true }
+    Shortcut { sequences: ["s"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("systems") }
+    Shortcut { sequences: ["d"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("storage") }
+    Shortcut { sequences: ["a"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.setOverviewView("agents") }
+    Shortcut { sequences: ["Tab"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.cycleOverview(1) }
+    Shortcut { sequences: ["Shift+Tab", "Backtab"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen && shell.page === "overview") shell.cycleOverview(-1) }
+    Shortcut { sequences: ["1"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(0) }
+    Shortcut { sequences: ["2"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(1) }
+    Shortcut { sequences: ["3"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(2) }
+    Shortcut { sequences: ["4"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(3) }
+    Shortcut { sequences: ["5"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(4) }
+    Shortcut { sequences: ["6"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(5) }
+    Shortcut { sequences: ["7"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(6) }
+    Shortcut { sequences: ["8"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(7) }
+    Shortcut { sequences: ["9"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.settingsOpen) shell.selectTab(8) }
     Shortcut {
       sequences: ["Ctrl+Tab"]
+      autoRepeat: false
       context: Qt.WindowShortcut
-      enabled: !shell.settingsOpen
-      onActivated: shell.cycleTab(1)
+      enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused()
+      onActivated: if (!shell.storageOpen) shell.cycleTab(1)
     }
+    Shortcut { sequences: ["Left", "h"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) shell.goBack(); else shell.cycleTab(-1) }
+    Shortcut { sequences: ["Right", "l"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.storageOpen) shell.cycleTab(1) }
+    Shortcut { sequences: ["Ctrl+Shift+Tab", "Ctrl+Backtab", "Ctrl+PgUp"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.storageOpen) shell.cycleTab(-1) }
+    Shortcut { sequences: ["Ctrl+PgDown"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (!shell.storageOpen) shell.cycleTab(1) }
+    Shortcut { sequences: ["Backspace", "Alt+Left"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: shell.goBack() }
+    Shortcut { sequences: ["Down", "j"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.moveVertical(1) }
+    Shortcut { sequences: ["Up", "k"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.moveVertical(-1) }
+    Shortcut { sequences: ["PgDown", "Space"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("page-down") }
+    Shortcut { sequences: ["PgUp", "Shift+Space"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("page-up") }
+    Shortcut { sequences: ["Home", "g"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("top") }
+    Shortcut { sequences: ["End", "Shift+G"]; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.scrollActive("bottom") }
+    Shortcut { sequences: ["Enter", "Return"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: shell.storageOpen && !shell.settingsOpen && !shell.helpOpen && !shell.textFieldFocused(); onActivated: if (shell.storageOpen) storageView.openCurrentRow() }
+    Shortcut { sequences: ["?", "F1"]; autoRepeat: false; context: Qt.WindowShortcut; enabled: !shell.settingsOpen && !shell.textFieldFocused(); onActivated: shell.helpOpen = !shell.helpOpen }
 
     Rectangle {
       id: windowContent
       anchors.fill: parent
       color: String(Quickshell.env("MAINFRAME_PREVIEW_OUTPUT") || "") ? shell.themeBg : "transparent"
+    Rectangle {
+      id: helpOverlay
+      anchors.fill: parent; z: 200; visible: shell.helpOpen
+      Keys.onPressed: function(event) { event.accepted = true }
+      color: Qt.rgba(0, 0, 0, 0.55)
+      MouseArea {
+        anchors.fill: parent
+        onWheel: (wheel) => wheel.accepted = true
+        onClicked: function(mouse) {
+          if (mouse.x < helpCard.x || mouse.x >= helpCard.x + helpCard.width || mouse.y < helpCard.y || mouse.y >= helpCard.y + helpCard.height) shell.helpOpen = false
+        }
+      }
+      Card {
+        id: helpCard
+        anchors.centerIn: parent
+        width: Math.min(parent.width - 32, 720); height: Math.min(parent.height - 32, 650)
+        title: "KEYBOARD HELP"; color: shell.themeCard; borderColor: shell.themeBorder; labelColor: shell.themeLabel
+        Flickable {
+          id: helpFlick
+          anchors.fill: parent; contentWidth: width; contentHeight: helpColumn.implicitHeight; clip: true
+          boundsBehavior: Flickable.StopAtBounds
+          Column {
+            id: helpColumn; width: parent.width; spacing: 5
+            Repeater {
+              model: Navigation.keyHelp
+              delegate: Column {
+                required property var modelData
+                required property int index
+                width: helpColumn.width; spacing: 3
+                Text {
+                  visible: index === 0 || Navigation.keyHelp[index - 1].group !== modelData.group
+                  textFormat: Text.PlainText; text: modelData.group; color: shell.themeAccent; font.family: "monospace"; font.bold: true; font.pixelSize: shell.pxLabel
+                }
+                Text {
+                  width: parent.width; text: modelData.keys.join(" / ") + " — " + modelData.action
+                  color: shell.themeFg; font.family: "monospace"; font.pixelSize: shell.pxLabel; wrapMode: Text.Wrap; textFormat: Text.PlainText
+                }
+              }
+            }
+          }
+        }
+      }
+    }
     SettingsOverlay {
       id: settingsOverlay; anchors.fill: parent; visible: shell.settingsOpen
       config: shell.settingsData; ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent; cardColor: shell.themeCard; borderColor: shell.themeBorder
@@ -1753,6 +1845,7 @@ ShellRoot {
         palette: shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_STORAGE_MONO") || "") === "1" ? ({ accent: "#777777", muted: "#777777" }) : shell.themeColors
         ink: shell.themeFg
         mutedInk: shell.themeLabel
+        accent: shell.themeAccent
         track: shell.themeTrack
         color: shell.themeCard
         labelColor: shell.themeLabel
