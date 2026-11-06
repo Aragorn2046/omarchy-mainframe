@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-import {spawnSync} from 'node:child_process';
+process.env.TZ = 'UTC';
 const require = createRequire(import.meta.url);
 const U = require('../lib/usage_value.js');
 const prices = {claude:{models:{'m':{input:1,output:2,cache_read:0.1,cache_write_5m:1,cache_write_1h:2}}},codex:{models:{'c':{input:2,cached_input:0.1,output:10}}}};
@@ -56,12 +56,13 @@ test('stale hosts remain counted and are flagged', () => {
   assert.equal(fresh.stale,false);
 });
 function calculateInZone(TZ, usage, now) {
-  const script = `const U = require(${JSON.stringify(require.resolve('../lib/usage_value.js'))});
-    console.log(JSON.stringify(U.calculate([{usage:${JSON.stringify(usage)}}], ${JSON.stringify(prices)}, ${JSON.stringify(now)}).totals));`;
-  const child = spawnSync(process.execPath, ['-e', script], {env: {...process.env, TZ}, encoding:'utf8'});
-  assert.ifError(child.error);
-  assert.equal(child.status, 0, child.stderr);
-  return JSON.parse(child.stdout);
+  const previous = process.env.TZ;
+  try {
+    process.env.TZ = TZ;
+    return U.calculate([{usage}], prices, now).totals;
+  } finally {
+    process.env.TZ = previous;
+  }
 }
 test('UTC hours map to the viewer local day at midnight', () => {
   const usage = {scanned_at:'2026-11-03T00:30:00Z',days:{'2026-11-03T00:00':{'claude/m':{input:1000000}},'2026-11-02T22:00':{'claude/m':{input:2000000}}}};
@@ -71,4 +72,20 @@ test('UTC hours map to the viewer local day at midnight', () => {
 test('quarter-hour UTC buckets map correctly in Nepal', () => {
   const usage = {scanned_at:'2026-11-03T18:30:00Z', days:{'2026-11-03T18:00':{'claude/m':{input:1000000}}, '2026-11-03T18:15':{'claude/m':{input:2000000}}}};
   assert.deepEqual(calculateInZone('Asia/Kathmandu', usage, '2026-11-03T18:30:00Z'), {today:2,seven:3,thirty:3});
+});
+
+test('failed first scan is shown as a failure', () => {
+  const value = U.calculate([{host:'test', usage:{days:{}, stale:true, error:'failure'}}], prices, new Date('2026-11-03T12:00:00Z'));
+  assert.equal(value.hosts[0].status, 'usage scan failed');
+  assert.equal(value.excluded, 1); assert.equal(value.partial, true);
+});
+test('unpriced models are capped by token count and the remainder is summed', () => {
+  const models = {};
+  for (let i = 1; i <= 15; i++) models['claude/model-' + i] = {input:i};
+  const value = U.calculate([{usage:{days:{'2026-11-03':models}}}], prices, new Date('2026-11-03T12:00:00Z'));
+  assert.equal(value.unpriced.length, 13);
+  assert.equal(value.unpriced[0], 'claude/model-15');
+  assert.equal(value.unpriced[12], 'other');
+  assert.equal(value.unpricedTokens.other, 6);
+  assert.equal(Object.values(value.unpricedTokens).reduce((a, b) => a + b, 0), 120);
 });

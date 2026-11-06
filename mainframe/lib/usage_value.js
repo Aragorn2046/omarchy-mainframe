@@ -25,6 +25,9 @@ function calculate(hosts, prices, now) {
   (hosts || []).forEach(function(entry) {
     var row = {host: entry.host || 'this machine', status: entry.status || '', totals:zero()};
     result.hosts.push(row);
+    if (entry.usage && entry.usage.error && (!entry.usage.days || !Object.keys(entry.usage.days).length)) {
+      row.status = 'usage scan failed'; result.excluded++; result.partial = true; result.stale = true; return;
+    }
     if (!entry.usage || !entry.usage.days) {
       row.status = row.status === 'offline' ? 'offline' : 'waiting'; result.excluded++; result.partial = true; return;
     }
@@ -60,7 +63,15 @@ function calculate(hosts, prices, now) {
       });
     });
   });
-  result.unpriced = Object.keys(unknown).sort();
+  result.unpriced = Object.keys(unknown).sort(function(a, b) { return result.unpricedTokens[b] - result.unpricedTokens[a] || a.localeCompare(b); });
+  if (result.unpriced.length > 12) {
+    var rest = result.unpriced.slice(12);
+    var other = rest.reduce(function(sum, key) { return sum + result.unpricedTokens[key]; }, 0);
+    rest.forEach(function(key) { delete result.unpricedTokens[key]; });
+    result.unpriced = result.unpriced.slice(0, 12);
+    result.unpriced.push('other');
+    result.unpricedTokens.other = other;
+  }
   return result;
 }
 if (typeof module !== 'undefined') module.exports = {calculate:calculate, priceFor:priceFor, money:money, localDay:localDay};

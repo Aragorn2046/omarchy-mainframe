@@ -56,7 +56,7 @@ Item {
                 text: (modelData.name || modelData.host) + '  ' + (modelData.status && modelData.status !== 'ready' ? modelData.status : UsageValue.money(modelData.totals.today) + '  /  ' + UsageValue.money(modelData.totals.seven) + '  /  ' + UsageValue.money(modelData.totals.thirty))
               }
             }
-            Text { textFormat: Text.PlainText; visible: root.valueData.excluded > 0; text: root.valueData.excluded + ' machines not included'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+            Text { textFormat: Text.PlainText; visible: root.valueData.excluded > 0; text: root.valueData.excluded + (root.valueData.excluded === 1 ? ' machine not included' : ' machines not included'); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
             Repeater { model: root.valueData.unpriced; delegate: Text { required property var modelData; textFormat: Text.PlainText; text: modelData + ' — no price · ' + Agents.units(root.valueData.unpricedTokens[modelData]) + ' tokens'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight } }
             Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'Estimate at public API list prices; subscription fees not included.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; wrapMode: Text.Wrap }
           }

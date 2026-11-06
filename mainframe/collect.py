@@ -3329,7 +3329,7 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
         cursor = sessions.setdefault(state['path'], {})
         if data.get('type') in ('turn_context', 'session_meta'):
             if isinstance(payload.get('model'), str) and payload['model']:
-                state['model'] = payload['model']
+                state['model'] = payload['model'][:64]
             return
         if data.get('type') != 'event_msg' or payload.get('type') != 'token_count':
             return
@@ -3343,7 +3343,9 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
         sessions[state['path']] = {key: max(current[key], cursor.get(key, 0)) for key in keys}
         sessions[state['path']]['day'] = max(cursor.get('day', ''), _usage_hour(data.get('timestamp'))[:10])
         state['has_usage_cursor'] = True
-        key = hashlib.sha1(json.dumps(['codex', sorted(totals.items())]).encode()).hexdigest()[:12]
+        last = info.get('last_token_usage')
+        last = last if isinstance(last, dict) else {}
+        key = hashlib.sha1(json.dumps(['codex', sorted(totals.items()), sorted(last.items())]).encode()).hexdigest()[:12]
         if key in seen:
             return
         seen[key] = counted_day
@@ -3380,13 +3382,13 @@ def _usage_record(state, provider, data, seen, sessions, hours, counted_day):
     hour = _usage_hour(data.get('timestamp'))
     if not hour or not any(tokens.values()):
         return
-    target = hours.setdefault(hour, {}).setdefault(provider + '/' + str(model), {})
+    target = hours.setdefault(hour, {}).setdefault(provider + '/' + str(model)[:64], {})
     for field, count in tokens.items():
         target[field] = target.get(field, 0) + count
 
 
 def _usage_empty():
-    return {'version': 7, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
+    return {'version': 8, 'files': {}, 'seen': {}, 'sessions': {}, 'hours': {}}
 
 
 def _usage_seen_day(value):
@@ -3464,7 +3466,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             if info.st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
             loaded = json.load(stream)
-        if (not isinstance(loaded, dict) or loaded.get('version') != 7 or
+        if (not isinstance(loaded, dict) or loaded.get('version') != 8 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
                 any(not _usage_valid_cursor(value) for value in loaded['sessions'].values()) or
                 any(not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:(00|15|30|45)', k) or
@@ -3475,7 +3477,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         index = loaded
     except FileNotFoundError:
         pass
-    except (ValueError, TypeError, OSError, RecursionError):
+    except (ValueError, TypeError, OSError, RecursionError, MemoryError, UnicodeError):
         if os.path.islink(path):
             raise ValueError('usage index is a symbolic link')
         dirty = True
@@ -3501,7 +3503,7 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         dirty = True
     evicted_at = index.get('dedupe_evicted_at', '')
     dedupe_full = isinstance(evicted_at, str) and len(evicted_at) >= 10 and evicted_at[:10] >= skip_cutoff
-    if len(index['seen']) > _USAGE_SEEN_LIMIT:
+    if len(index['seen']) * 10 > _USAGE_SEEN_LIMIT * 11:
         index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: _usage_seen_day(item[1]))[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
         index['dedupe_evicted_at'] = utc_now.isoformat()
         dedupe_full = dirty = True
@@ -3513,7 +3515,12 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
     skipped = 0
     roots = [('claude', os.path.join(home, '.claude', 'projects'))]
     roots += [('claude', p) for p in sorted(glob.glob(os.path.join(home, '.claude-accounts', '*', 'projects')))]
+    if os.environ.get('CLAUDE_CONFIG_DIR'):
+        roots.append(('claude', os.path.join(os.environ['CLAUDE_CONFIG_DIR'], 'projects')))
+    roots.append(('claude', os.path.join(home, '.config', 'claude', 'projects')))
     roots.append(('codex', os.path.join(home, '.codex', 'sessions')))
+    if os.environ.get('CODEX_HOME'):
+        roots.append(('codex', os.path.join(os.environ['CODEX_HOME'], 'sessions')))
     root_paths, candidates, present = set(), [], set()
     entry_count, too_many_files = 0, False
     for provider, root in roots:
@@ -3585,7 +3592,37 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
         checkpoint_bytes = 0
         checkpoint_at = time.monotonic()
 
+    def validate_previous(previous, provider, file, info):
+        pending = tail = b''
+        valid = isinstance(previous, dict) and previous.get('provider') == provider
+        valid = valid and all(_usage_int(previous.get(k)) for k in ('offset', 'size', 'mtime_ns', 'ino', 'dev', 'head_len'))
+        valid = valid and previous['head_len'] <= 4096 and previous['offset'] <= info.st_size and previous['offset'] <= previous['size']
+        valid = valid and isinstance(previous.get('pending'), str) and len(previous.get('pending', '')) <= ((_USAGE_LINE_LIMIT + 2) // 3) * 4
+        valid = valid and previous.get('path') == file and isinstance(previous.get('head'), str)
+        valid = valid and previous['head_len'] <= previous['size']
+        valid = valid and isinstance(previous.get('session'), str) and len(previous['session']) <= 128 and file not in invalid_sessions
+        valid = valid and isinstance(previous.get('forked_from_id'), str) and len(previous['forked_from_id']) <= 128
+        valid = valid and type(previous.get('has_usage_cursor')) is bool
+        valid = valid and (provider != 'codex' or not previous['offset'] or not previous.get('has_usage_cursor') or file in index['sessions'])
+        valid = valid and isinstance(previous.get('model'), str) and type(previous.get('skip_line')) is bool
+        valid = valid and type(previous.get('skip_mark')) is bool and isinstance(previous.get('skip_tail'), str) and len(previous.get('skip_tail', '')) <= ((65536 + 2) // 3) * 4
+        skip_days = previous.get('skip_days') if valid else {}
+        valid = valid and isinstance(skip_days, dict) and all(isinstance(k, str) and _usage_int(v) for k, v in skip_days.items())
+        if valid:
+            try:
+                pending = base64.b64decode(previous.get('pending', ''), validate=True)
+                tail = base64.b64decode(previous.get('skip_tail', ''), validate=True)
+                valid = len(pending) <= _USAGE_LINE_LIMIT and len(tail) <= 65536
+            except (ValueError, TypeError):
+                valid = False
+        return valid, pending, tail
+
     for provider, file, info in candidates:
+        previous = files.get(file, {})
+        valid, _, _ = validate_previous(previous, provider, file, info)
+        if (valid and previous['offset'] == info.st_size and previous['size'] == info.st_size and
+                previous['mtime_ns'] == info.st_mtime_ns and previous['ino'] == info.st_ino and previous['dev'] == info.st_dev):
+            continue
         try:
             fd = os.open(file, os.O_RDONLY | os.O_NONBLOCK)
             with os.fdopen(fd, 'rb') as stream:
@@ -3594,46 +3631,34 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     continue
                 info = stat_info
                 previous = files.get(file, {})
-                valid = isinstance(previous, dict) and previous.get('provider') == provider
-                valid = valid and all(_usage_int(previous.get(k)) for k in ('offset', 'size', 'mtime_ns', 'ino', 'dev', 'head_len'))
-                valid = valid and previous['head_len'] <= 4096 and previous['offset'] <= info.st_size and previous['offset'] <= previous['size']
-                valid = valid and isinstance(previous.get('pending'), str) and len(previous.get('pending', '')) <= ((_USAGE_LINE_LIMIT + 2) // 3) * 4
-                valid = valid and previous.get('path') == file and isinstance(previous.get('head'), str)
-                valid = valid and previous['head_len'] <= previous['size']
-                valid = valid and isinstance(previous.get('session'), str) and len(previous['session']) <= 128 and file not in invalid_sessions
-                valid = valid and isinstance(previous.get('forked_from_id'), str) and len(previous['forked_from_id']) <= 128
-                valid = valid and type(previous.get('has_usage_cursor')) is bool
-                valid = valid and (provider != 'codex' or not previous['offset'] or not previous.get('has_usage_cursor') or file in index['sessions'])
-                valid = valid and isinstance(previous.get('model'), str) and type(previous.get('skip_line')) is bool
-                valid = valid and type(previous.get('skip_mark')) is bool and isinstance(previous.get('skip_tail'), str) and len(previous.get('skip_tail', '')) <= ((65536 + 2) // 3) * 4
-                skip_days = previous.get('skip_days') if valid else {}
-                valid = valid and isinstance(skip_days, dict) and all(isinstance(k, str) and _usage_int(v) for k, v in skip_days.items())
-                if valid:
-                    try:
-                        pending = base64.b64decode(previous.get('pending', ''), validate=True)
-                        tail = base64.b64decode(previous.get('skip_tail', ''), validate=True)
-                        valid = len(pending) <= _USAGE_LINE_LIMIT and len(tail) <= 65536
-                    except (ValueError, TypeError):
-                        valid = False
-                stream.seek(0)
-                if valid:
+                valid, pending, tail = validate_previous(previous, provider, file, info)
+                unchanged = (valid and previous['size'] == info.st_size and previous['mtime_ns'] == info.st_mtime_ns and
+                             previous['ino'] == info.st_ino and previous['dev'] == info.st_dev)
+                if unchanged:
+                    head = previous['head']
+                    head_len = previous['head_len']
+                    reset_cursor = False
+                else:
+                    stream.seek(0)
+                    if valid:
+                        if read_bytes >= limit:
+                            limited = True
+                            break
+                        old_head_data = stream.read(previous['head_len'])
+                        read_bytes += len(old_head_data)
+                    else:
+                        old_head_data = b''
+                    old_head = hashlib.sha1(old_head_data).hexdigest()
+                    stream.seek(0)
                     if read_bytes >= limit:
                         limited = True
                         break
-                    old_head_data = stream.read(previous['head_len'])
-                    read_bytes += len(old_head_data)
-                else:
-                    old_head_data = b''
-                old_head = hashlib.sha1(old_head_data).hexdigest()
-                stream.seek(0)
-                if read_bytes >= limit:
-                    limited = True
-                    break
-                head_data = stream.read(4096)
-                read_bytes += len(head_data)
-                head = hashlib.sha1(head_data).hexdigest()
-                reset_cursor = (not valid or info.st_size < previous['size'] or info.st_mtime_ns < previous['mtime_ns'] or
-                                previous['ino'] != info.st_ino or previous['dev'] != info.st_dev or previous.get('head') != old_head)
+                    head_data = stream.read(4096)
+                    read_bytes += len(head_data)
+                    head = hashlib.sha1(head_data).hexdigest()
+                    reset_cursor = (not valid or info.st_size < previous['size'] or info.st_mtime_ns < previous['mtime_ns'] or
+                                    previous['ino'] != info.st_ino or previous['dev'] != info.st_dev or previous.get('head') != old_head)
+                    head_len = len(head_data)
                 if reset_cursor:
                     previous = {'provider': provider, 'path': file, 'offset': 0, 'skip_days': {},
                                 'session': '', 'forked_from_id': '', 'model': '', 'has_usage_cursor': False,
@@ -3659,12 +3684,12 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                     state['pending'] = base64.b64encode(pending).decode('ascii')
                     state['skip_tail'] = base64.b64encode(tail).decode('ascii')
                     state.update(size=info.st_size, mtime_ns=info.st_mtime_ns, ino=info.st_ino, dev=info.st_dev,
-                                 head=head, head_len=len(head_data))
+                                 head=head, head_len=head_len)
                     if files.get(file) != state or staged_seen or staged_sessions or staged_hours:
                         dirty = True
                     files[file] = copy.deepcopy(state)
                     index['seen'].update(staged_seen)
-                    if len(index['seen']) > _USAGE_SEEN_LIMIT:
+                    if len(index['seen']) * 10 > _USAGE_SEEN_LIMIT * 11:
                         dedupe_full = True
                         index['dedupe_evicted_at'] = utc_now.isoformat()
                         index['seen'] = dict(sorted(index['seen'].items(), key=lambda item: _usage_seen_day(item[1]))[-_USAGE_SEEN_LIMIT:]) if _USAGE_SEEN_LIMIT else {}
@@ -3740,7 +3765,19 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
             break
     skipped += sum(sum(v for k, v in state.get('skip_days', {}).items() if k >= skip_cutoff) for state in files.values() if isinstance(state, dict) and isinstance(state.get('skip_days', {}), dict) and all(isinstance(k, str) and _usage_int(v) for k, v in state.get('skip_days', {}).items()))
     write_checkpoint()
-    result = {'days': index['hours'], 'partial': bool(skipped or limited or write_failed or reset_index or dedupe_full or too_many_files), 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
+    model_names, bounded_hours = set(), {}
+    for hour, models in index['hours'].items():
+        for key, counts in models.items():
+            provider, _, model = key.partition('/')
+            if model != 'other' and model not in model_names:
+                if len(model_names) < 24:
+                    model_names.add(model)
+                else:
+                    model = 'other'
+            target = bounded_hours.setdefault(hour, {}).setdefault(provider + '/' + model, {})
+            for field, count in counts.items():
+                target[field] = target.get(field, 0) + count
+    result = {'days': bounded_hours, 'partial': bool(skipped or limited or write_failed or reset_index or dedupe_full or too_many_files), 'skipped': skipped, 'scanned_at': utc_now.isoformat()}
     if too_many_files: result['reason'] = 'too many files'
     elif dedupe_full: result['reason'] = 'dedupe window full'
     elif write_failed: result['reason'] = 'index write failed'
@@ -3763,7 +3800,8 @@ def usage_probe():
 
 # Slow host probes run independently of the one-second sampling clock.
 _probe = {"windows": None, "storage": [], "windows_at": 0.0, "storage_at": 0.0,
-          "windows_busy": False, "storage_busy": False, "usage": None, "usage_at": 0.0, "usage_busy": False}
+          "windows_busy": False, "storage_busy": False, "usage": None, "usage_at": 0.0, "usage_busy": False,
+          "usage_snapshot": (None, 0), "usage_generation": 0}
 _probe_started = time.monotonic()
 _PS_QUERY = r"""$o=Get-CimInstance Win32_OperatingSystem; $p=Get-CimInstance Win32_Processor; $d=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'; @{total=$o.TotalVisibleMemorySize;free=$o.FreePhysicalMemory;cpu=@($p | ForEach-Object {$_.LoadPercentage});disks=@($d | ForEach-Object {@{name=$_.DeviceID;size=$_.Size;free=$_.FreeSpace}})} | ConvertTo-Json -Compress -Depth 4"""
 
@@ -3961,12 +3999,17 @@ def storage_probe(wsl=False):
 def _background_probe(name, function):
     try:
         _probe[name] = function()
-    except Exception:
-        if name == 'usage' and isinstance(_probe.get(name), dict):
-            _probe[name] = dict(_probe[name], stale=True)
-        elif name != 'usage':
+    except Exception as exc:
+        if name == 'usage':
+            previous = _probe.get(name)
+            _probe[name] = dict(previous, stale=True) if isinstance(previous, dict) else {'days': {}, 'error': _error_text(exc, 'usage scan failed'), 'stale': True}
+        else:
             _probe[name] = None if name == 'windows' else []
     finally:
+        if name == 'usage':
+            generation = _probe.get('usage_generation', 0) + 1
+            _probe['usage_generation'] = generation
+            _probe['usage_snapshot'] = (_probe[name], generation)
         _probe[name + '_busy'] = False
 
 
@@ -4001,7 +4044,9 @@ def slow_probes(sample):
         _probe['usage_busy'] = True
         _probe['usage_at'] = now
         threading.Thread(target=_background_probe, args=('usage', usage_probe), daemon=True).start()
-    sample['usage'] = _probe.get('usage')
+    usage, generation = _probe.get('usage_snapshot', (_probe.get('usage'), _probe.get('usage_generation', 0)))
+    sample['usage'] = usage
+    sample['_usage_generation'] = generation
     sample['windows'] = _probe['windows'] if sample.get('wsl') else None
     sample['filesystems'] = list(_probe['storage'] or [])
     if sample.get('wsl') is True:
@@ -4020,17 +4065,18 @@ def collect_sample(include_procs):
 
 class _UsageEmitter:
     def __init__(self):
-        self.last = None
+        self.last = object()
 
     def filter(self, sample):
         if not isinstance(sample, dict):
             return sample
         sample = dict(sample)
         usage = sample.get('usage')
-        if usage is None or usage == self.last:
+        generation = sample.pop('_usage_generation', None)
+        if usage is None or generation == self.last:
             sample.pop('usage', None)
         else:
-            self.last = copy.deepcopy(usage)
+            self.last = generation
         return sample
 
 
@@ -4699,6 +4745,14 @@ def _serve():
 
 def _main():
     if '--usage-scan' in sys.argv:
+        try:
+            import resource
+            soft, hard = resource.getrlimit(resource.RLIMIT_AS)
+            cap = 2 * 1024 * 1024 * 1024
+            if soft == resource.RLIM_INFINITY or soft > cap:
+                resource.setrlimit(resource.RLIMIT_AS, (cap, hard))
+        except Exception:
+            pass
         arm_parent_death()
         try:
             os.nice(19)

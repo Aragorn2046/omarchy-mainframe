@@ -12,6 +12,10 @@ spec.loader.exec_module(c)
 
 class ScannerTest(unittest.TestCase):
     def setUp(self):
+        from unittest.mock import patch
+        env = {k: v for k, v in os.environ.items() if k != 'MAINFRAME_USAGE_SCAN' and not k.startswith('XDG_') and k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME')}
+        env_patch = patch.dict(os.environ, env, clear=True)
+        env_patch.start(); self.addCleanup(env_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.home = Path(self.tmp.name)
@@ -30,6 +34,94 @@ class ScannerTest(unittest.TestCase):
     def lines(self, path, records, mode='w'):
         with path.open(mode) as out:
             for record in records: out.write(json.dumps(record) + '\n')
+    def test_codex_same_totals_different_last_turn(self):
+        def record(delta):
+            return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':100}, 'last_token_usage':{'input_tokens':delta}}}}
+        for name, delta in [('one', 10), ('two', 20)]:
+            self.lines(self.file('.codex/sessions/' + name + '.jsonl'), [record(delta)])
+        self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 200)
+
+    def test_model_name_and_count_bounds(self):
+        records = []
+        for i in range(27):
+            record = self.claude('id-' + str(i), {'input_tokens':i + 1})
+            record['message']['model'] = 'model-%02d-' % i + 'x' * 80
+            records.append(record)
+        self.lines(self.file('.claude/projects/a.jsonl'), records)
+        models = self.scan()['days'][self.day]
+        self.assertEqual(len(models), 25)
+        self.assertTrue(all(len(name.split('/', 1)[1]) <= 64 for name in models))
+        self.assertEqual(models['claude/other']['input'], 25 + 26 + 27)
+        self.assertEqual(sum(v['input'] for v in models.values()), sum(range(1, 28)))
+
+    def test_index_memory_error_rebuilds(self):
+        from unittest.mock import patch
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('one')]); self.scan()
+        with patch.object(c.json, 'load', side_effect=MemoryError):
+            result = self.scan()
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
+        self.assertEqual(json.loads((self.cache / 'usage-index.json').read_text())['version'], 8)
+
+    def test_unchanged_file_not_opened_but_mtime_change_is_fingerprinted(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl'); self.lines(path, [self.claude('one')]); self.scan()
+        real_open = os.open
+        opened = []
+        def track(name, *args, **kwargs):
+            if str(name) == str(path): opened.append(name)
+            return real_open(name, *args, **kwargs)
+        with patch.object(c.os, 'open', side_effect=track):
+            self.assertFalse(self.scan(limit=1)['partial'])
+        self.assertEqual(opened, [])
+        st = path.stat(); os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1000000000))
+        with patch.object(c.os, 'open', side_effect=track), patch.object(c.hashlib, 'sha1', wraps=c.hashlib.sha1) as digest:
+            self.scan()
+        self.assertEqual(len(opened), 1)
+        self.assertGreaterEqual(digest.call_count, 2)
+
+    def test_unchanged_partial_file_resumes_without_fingerprint(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl')
+        path.write_bytes(b'x' * 1000 + b'\n')
+        self.assertTrue(self.scan(limit=20)['partial'])
+        with patch.object(c.hashlib, 'sha1', wraps=c.hashlib.sha1) as digest:
+            self.scan(limit=20)
+        digest.assert_not_called()
+
+    def test_additional_roots_and_realpath_deduplication(self):
+        from unittest.mock import patch
+        paths = ['.claude/projects/a.jsonl', '.config/claude/projects/b.jsonl', 'custom-claude/projects/c.jsonl', '.codex/sessions/d.jsonl', 'custom-codex/sessions/e.jsonl']
+        for i, path in enumerate(paths):
+            if i < 3: self.lines(self.file(path), [self.claude('id-' + str(i))])
+            else: self.lines(self.file(path), [{'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':i}, 'last_token_usage':{'input_tokens':i}}}}])
+        with patch.dict(os.environ, {'HOME':str(self.home), 'CLAUDE_CONFIG_DIR':str(self.home / 'custom-claude'), 'CODEX_HOME':str(self.home / 'custom-codex')}):
+            result = self.scan()
+            self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 30)
+            self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 7)
+            with patch.dict(os.environ, {'CLAUDE_CONFIG_DIR':str(self.home / '.claude')}):
+                self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 30)
+
+    def test_seen_trim_threshold(self):
+        from unittest.mock import patch
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('one')]); self.scan()
+        path = self.cache / 'usage-index.json'; index = json.loads(path.read_text())
+        day = self.now.date().isoformat()
+        index['seen'] = {str(i):day for i in range(11)}; path.write_text(json.dumps(index))
+        with patch.object(c, '_USAGE_SEEN_LIMIT', 10):
+            self.assertFalse(self.scan()['partial'])
+            index = json.loads(path.read_text()); self.assertEqual(len(index['seen']), 11)
+            index['seen']['extra'] = day; path.write_text(json.dumps(index))
+            self.assertTrue(self.scan()['partial'])
+        self.assertEqual(len(json.loads(path.read_text())['seen']), 10)
+
+    def test_first_failed_probe_is_visible(self):
+        from unittest.mock import patch
+        probe = {'usage':None}
+        def fail(): raise RuntimeError('failed to scan')
+        with patch.object(c, '_probe', probe): c._background_probe('usage', fail)
+        self.assertEqual(probe['usage'], {'days':{}, 'error':'failed to scan', 'stale':True})
+        self.assertEqual(probe['usage_snapshot'][1], 1)
+
     def test_claude_dedupe_cache_and_directory_links(self):
         p = self.file('.claude/projects/a/x.jsonl')
         usage = {'input_tokens':10, 'cache_creation_input_tokens':80, 'cache_creation':{'ephemeral_5m_input_tokens':20,'ephemeral_1h_input_tokens':60}}
@@ -265,17 +357,17 @@ class ScannerTest(unittest.TestCase):
         result = self.scan()
         self.assertEqual(sum(counts.get('input', 0) for models in result['days'].values() for counts in models.values()), 100)
 
-    def test_version_six_index_is_rebuilt(self):
+    def test_old_index_versions_are_rebuilt(self):
         path = self.file('.codex/sessions/a.jsonl')
         def count(n): return {'type':'event_msg', 'timestamp':self.stamp, 'payload':{'type':'token_count', 'info':{'total_token_usage':{'input_tokens':n}}}}
         self.lines(path, [count(100), count(200)])
         self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 200)
         index_path = self.cache / 'usage-index.json'
-        index = json.loads(index_path.read_text()); index['version'] = 6
-        index_path.write_text(json.dumps(index))
-        for _ in range(2):
+        for version in (6, 7):
+            index = json.loads(index_path.read_text()); index['version'] = version
+            index_path.write_text(json.dumps(index))
             self.assertEqual(self.scan()['days'][self.day]['codex/unknown']['input'], 200)
-        self.assertEqual(json.loads(index_path.read_text())['version'], 7)
+            self.assertEqual(json.loads(index_path.read_text())['version'], 8)
 
     def test_legacy_header_scan_is_removed(self):
         path = self.file('.codex/sessions/a.jsonl')
@@ -295,7 +387,7 @@ class ScannerTest(unittest.TestCase):
         total = sum(p.stat().st_size for p in (self.home / '.claude/projects').glob('*.jsonl'))
         with patch.object(c, '_USAGE_LIMIT', 1):
             result = self.scan(limit=c._USAGE_LIMIT)
-        self.assertTrue(result['partial'])
+        self.assertFalse(result['partial'])
         self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 120)
         self.assertGreater(total, 1)
 
@@ -344,6 +436,7 @@ class ScannerTest(unittest.TestCase):
         self.assertFalse(result['partial'])
         self.assertEqual(result['days'][self.day]['codex/unknown']['input'], 100)
 
+    @unittest.skipUnless(hasattr(os, 'mkfifo'), 'requires POSIX FIFO')
     def test_fifo_jsonl_is_skipped_without_blocking(self):
         import subprocess, sys
         os.mkfifo(self.file('.claude/projects/x.jsonl'))
@@ -416,7 +509,7 @@ c._usage_write=stop
 c._USAGE_CHECKPOINT_BYTES=os.path.getsize(os.path.join(sys.argv[2], '.claude/projects/a.jsonl'))
 c.usage_scan(sys.argv[2], sys.argv[3])
 """
-        run = subprocess.run([sys.executable, '-c', code, str(Path(c.__file__)), str(self.home), str(self.cache)])
+        run = subprocess.run([sys.executable, '-c', code, str(Path(c.__file__)), str(self.home), str(self.cache)], timeout=60)
         self.assertEqual(run.returncode, 17)
         saved = json.loads((self.cache / 'usage-index.json').read_text())
         self.assertEqual(len(saved['files']), 1)
@@ -706,11 +799,10 @@ c.usage_scan(sys.argv[2], sys.argv[3])
 
     def test_usage_emitted_only_when_changed_and_on_reconnect(self):
         sender = c._UsageEmitter(); usage = {'days': {'x': {}}}
-        self.assertEqual(sender.filter({'usage': usage})['usage'], usage)
-        self.assertNotIn('usage', sender.filter({'usage': usage}))
-        usage['days']['x']['model'] = 1
-        self.assertEqual(sender.filter({'usage': usage})['usage'], usage)
-        self.assertIn('usage', c._UsageEmitter().filter({'usage': usage}))
+        self.assertEqual(sender.filter({'usage': usage, '_usage_generation': 1})['usage'], usage)
+        self.assertNotIn('usage', sender.filter({'usage': {'different': True}, '_usage_generation': 1}))
+        self.assertEqual(sender.filter({'usage': usage, '_usage_generation': 2})['usage'], usage)
+        self.assertIn('usage', c._UsageEmitter().filter({'usage': usage, '_usage_generation': 2}))
 
     def test_zero_usage_does_not_block_later_counted_message(self):
         empty = self.claude('same', {'input_tokens':0})
