@@ -343,7 +343,8 @@ class StorageTests(unittest.TestCase):
         cache = self.home / 'cache' / 'mainframe'
         cache.mkdir(parents=True)
         (cache / 'storage.json').write_text(json.dumps({'timestamp': time.time(), 'categories': {}, 'total': 100, 'free': 50}))
-        env = dict(os.environ, XDG_CACHE_HOME=str(self.home / 'cache'))
+        env = {k: v for k, v in os.environ.items() if k != 'MAINFRAME_USAGE_SCAN' and not k.startswith('XDG_')}
+        env['XDG_CACHE_HOME'] = str(self.home / 'cache')
         result = subprocess.run([sys.executable, str(ROOT / 'collect.py'), '--storage'], env=env, capture_output=True, text=True, check=True)
         self.assertTrue(json.loads(result.stdout)['cached'])
 

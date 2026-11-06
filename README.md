@@ -130,7 +130,7 @@ MAINFRAME_SMOKE_LIVE=1 scripts/mainframe-smoke.sh   # also measures CPU on a rea
 
 ## Value at API prices
 
-The Agents page estimates the API value of Claude Code and Codex token usage on this machine and configured SSH machines. It includes input, output and cache tokens from recent local transcripts. Public Anthropic and OpenAI API list prices are stored in `mainframe/prices.json`; the date and source appear in that file. You can override individual model rates in `~/.config/mainframe/prices.json` using the same provider and model structure. This is an estimate, and subscription fees are not included. Unknown prices and machines that have not reported make the result partial.
+The Agents page estimates the API value of Claude Code and Codex token usage on this machine and configured SSH machines. It includes input, output and cache tokens from recent local transcripts. Public Anthropic and OpenAI API list prices are stored in `mainframe/prices.json`; the date and source appear in that file. You can override individual model rates in `~/.config/mainframe/prices.json` using the same provider and model structure. This is an estimate, and subscription fees are not included. Unknown prices and machines that have not reported make the result partial. The scan checks `~/.claude/projects`, `~/.claude-accounts/*/projects`, `$CLAUDE_CONFIG_DIR/projects` when set, `~/.config/claude/projects`, `~/.codex/sessions`, and `$CODEX_HOME/sessions` when set. Index version 8 rebuilds the previous usage index on the next scan.
 
 ## Monitor your other machines
 
