@@ -77,6 +77,9 @@ ShellRoot {
   property string configInput: ""
   property string configAction: ""
   property var pendingSettings: null
+  property var initialSettingsEdits: null
+  property int settingsRevision: 0
+  property int readingSettingsRevision: 0
   property bool hostsInitialized: false
   property string hostsSnapshot: ""
   property var remoteSlots: []
@@ -93,7 +96,7 @@ ShellRoot {
     if (["systems", "storage", "agents"].indexOf(value) < 0) return
     overviewView = value
     if (!settingsLoaded) return
-    saveConfig("settings", {overviewView:value, showUnavailable:settingsData.settings.showUnavailable === true})
+    saveConfig("settings", Object.assign({overviewView:value}, settingsData.settings, {overviewView:value}))
     if (agentsVisible) { loadAgents(); refreshAgents(false) }
   }
   function cycleOverview(step) { setOverviewView(Navigation.cycle(overviewView, step)) }
@@ -125,6 +128,15 @@ ShellRoot {
     if (initialized) { configReloadTimer.restart(); if (settingsLoaded && name === "settings") refreshThemes("") }
   }
   function saveConfig(kind, value) {
+    if (kind === "settings") {
+      if (!settingsLoaded) {
+        initialSettingsEdits = Object.assign({}, initialSettingsEdits || {}, value)
+        return
+      }
+      value = Object.assign({}, settingsData.settings || {}, value)
+      settingsData = Object.assign({}, settingsData, {settings:value})
+      settingsRevision++
+    }
     if (configWriter.running) { if (kind === "settings") pendingSettings = value; else settingsOverlay.message = "Please wait for the current operation"; return }
     configAction = "write"; configInput = JSON.stringify({kind:kind, data:value})
     configWriter.command = ["python3", Quickshell.shellDir + "/config_manager.py", "write"]; configWriter.stdinEnabled = true; configWriter.running = true
@@ -1348,10 +1360,12 @@ ShellRoot {
   Process {
     id: configReader
     command: ["python3", Quickshell.shellDir + "/config_manager.py", "read"]
+    onStarted: shell.readingSettingsRevision = shell.settingsRevision
     stdout: StdioCollector { onStreamFinished: { try {
-      var data = JSON.parse(text); var changed = shell.settingsData.settings.showUnavailable !== data.settings.showUnavailable; var accountsChanged = JSON.stringify(shell.settingsData.accounts) !== JSON.stringify(data.accounts); shell.settingsData = data; if (changed && shell.agentsVisible) shell.loadAgents(); if (shell.settingsLoaded && accountsChanged && shell.agentsVisible) shell.refreshAgents(false)
+      var data = JSON.parse(text); if (shell.readingSettingsRevision !== shell.settingsRevision || shell.pendingSettings || configWriter.running) data.settings = shell.settingsData.settings; var changed = shell.settingsData.settings.showUnavailable !== data.settings.showUnavailable; var accountsChanged = JSON.stringify(shell.settingsData.accounts) !== JSON.stringify(data.accounts); shell.settingsData = data; if (changed && shell.agentsVisible) shell.loadAgents(); if (shell.settingsLoaded && accountsChanged && shell.agentsVisible) shell.refreshAgents(false)
       if (data.errors && Object.keys(data.errors).length) settingsOverlay.message = Object.keys(data.errors).map(function(kind) { return data.errors[kind] }).join("\n")
       if (!shell.settingsLoaded) { shell.settingsLoaded = true; if (!shell.smokeMode || !String(Quickshell.env("MAINFRAME_SMOKE_PAGE") || "")) shell.overviewView = ["systems", "storage", "agents"].indexOf(data.settings.overviewView) >= 0 ? data.settings.overviewView : "systems"; if (shell.agentsVisible) { shell.loadAgents(); if (shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_PAGE") || "") === "agents") shell.refreshAgents(false) } }
+      if (shell.initialSettingsEdits) { var edits = shell.initialSettingsEdits; shell.initialSettingsEdits = null; Qt.callLater(function() { shell.saveConfig("settings", edits) }) }
     } catch (e) { settingsOverlay.message = "Cannot read settings" } } }
   }
   Process {
@@ -1359,9 +1373,9 @@ ShellRoot {
     onStarted: { if (stdinEnabled) { write(shell.configInput); stdinEnabled = false } }
     stdout: StdioCollector { onStreamFinished: { try { var result = JSON.parse(text); settingsOverlay.message = result.error ? Agents.safeHelp(result.error) : (result.status || (result.ok ? (shell.configAction === "test" ? "OK" : "Saved") : "Error")) } catch(e) { settingsOverlay.message = "Error" } } }
     onExited: function(code, status) {
-      if (!configReader.running) configReader.running = true
       if (shell.agentsVisible) shell.loadAgents()
       if (shell.pendingSettings) { var pending = shell.pendingSettings; shell.pendingSettings = null; Qt.callLater(function() { shell.saveConfig("settings", pending) }) }
+      else if (!configReader.running) configReader.running = true
     }
   }
   // FileView watches existing files; periodic reload also discovers newly created files.
@@ -1643,7 +1657,7 @@ ShellRoot {
       id: settingsOverlay; anchors.fill: parent; visible: shell.settingsOpen
       config: shell.settingsData; ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent; cardColor: shell.themeCard; borderColor: shell.themeBorder
       onClose: shell.settingsOpen = false
-      onSave: function(kind, value) { shell.saveConfig(kind, value); if (kind === "settings") shell.overviewView = value.overviewView }
+      onSave: function(kind, value) { shell.saveConfig(kind, value); if (kind === "settings" && value.overviewView) shell.overviewView = value.overviewView }
       onTestHost: function(alias) { shell.testConfig("host", alias) }
       onTestAccount: function(account) { shell.testConfig("account", account) }
     }

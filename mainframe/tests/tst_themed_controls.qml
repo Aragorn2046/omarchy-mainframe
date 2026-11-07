@@ -31,6 +31,21 @@ TestCase {
     overlay.destroy()
   }
 
+  function test_settings_save_emits_only_the_changed_key() {
+    var overlay = overlayComponent.createObject(test, {
+      config: {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{
+        overviewView:"systems", showUnavailable:false, theme:"example",
+        style:"cyberpunk", cyber:{hudFrames:false}, futureSetting:42
+      }}
+    })
+    var saved = null
+    overlay.save.connect(function(kind, value) { if (kind === "settings") saved = value })
+    overlay.saveSetting("overviewView", "agents")
+    compare(saved.overviewView, "agents")
+    compare(Object.keys(saved).length, 1)
+    overlay.destroy()
+  }
+
   function test_controls() {
     compare(button.height, 30)
     compare(field.height, 30)

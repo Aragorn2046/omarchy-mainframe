@@ -11,6 +11,11 @@ Rectangle {
   signal testHost(string alias)
   signal testAccount(var account)
   signal close()
+  function saveSetting(key, value) {
+    var settings = {}
+    settings[key] = value
+    save('settings', settings)
+  }
   color: '#b0000000'; z: 100
   function account() {
     var provider = providerBox.currentText, item = {id: accountId.text, provider:provider, name:accountName.text}
@@ -77,10 +82,10 @@ Rectangle {
           ThemedButton { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; text: 'Add'; onClicked: { var a = root.config.accounts.accounts.slice(); a.push(root.account()); root.save('accounts', {accounts:a}) } }
         }
         Text { textFormat: Text.PlainText; text: 'DISPLAY'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 15; font.bold: true }
-        ThemedCheckBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; text: 'Show unavailable providers'; checked: root.config.settings.showUnavailable === true; onClicked: root.save('settings', {showUnavailable:checked, overviewView:root.config.settings.overviewView || 'systems'}) }
+        ThemedCheckBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; text: 'Show unavailable providers'; checked: root.config.settings.showUnavailable === true; onClicked: root.saveSetting('showUnavailable', checked) }
         RowLayout {
           Text { textFormat: Text.PlainText; text: 'Default overview'; color: root.ink; font.family: 'monospace'; font.pixelSize: 15 }
-          ThemedComboBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; model: ['systems','storage','agents']; currentIndex: Math.max(0, model.indexOf(root.config.settings.overviewView)); onActivated: root.save('settings', {showUnavailable:root.config.settings.showUnavailable === true, overviewView:currentText}) }
+          ThemedComboBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; model: ['systems','storage','agents']; currentIndex: Math.max(0, model.indexOf(root.config.settings.overviewView)); onActivated: root.saveSetting('overviewView', currentText) }
         }
       }
     }
