@@ -35,6 +35,7 @@ Item {
           readonly property var modelData: root.rows[index] || ({})
           readonly property var v: modelData.view || null
           readonly property var cpu: v && v.cpu ? v.cpu : null
+          readonly property var cores: (cpu && cpu.cores) || []
           readonly property var mem: v && v.mem ? v.mem : null
           readonly property real minimumHeight: 134
           Layout.fillWidth: true
@@ -46,7 +47,7 @@ Item {
               Layout.fillWidth: true
               Rectangle { width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk }
               Text { text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-              Text { textFormat: Text.PlainText; text: card.modelData.badge; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+              Text { textFormat: Text.PlainText; text: card.modelData.badge || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
               Text { textFormat: Text.PlainText; text: card.modelData.status || 'idle'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
             }
             RowLayout {
@@ -59,11 +60,11 @@ Item {
                   Layout.fillWidth: true; spacing: 2; clip: true
                   Repeater {
                     objectName: "overview-cores-repeater"
-                    model: card.cpu ? card.cpu.cores.length : 0
+                    model: card.cores.length
                     delegate: Rectangle {
                       required property int index
-                      readonly property var modelData: card.cpu && card.cpu.cores[index] ? card.cpu.cores[index] : ({})
-                      width: Math.max(1, Math.min(10, (parent.width - Math.max(0, (card.cpu ? card.cpu.cores.length : 0) - 1) * 2) / Math.max(1, card.cpu ? card.cpu.cores.length : 1)))
+                      readonly property var modelData: card.cores[index] || ({percent: 0})
+                      width: Math.max(1, Math.min(10, (parent.width - Math.max(0, card.cores.length - 1) * 2) / Math.max(1, card.cores.length)))
                       height: 7; color: root.accent; opacity: Math.max(0.15, Math.min(1, (Number(modelData.percent) || 0) / 100))
                     }
                   }

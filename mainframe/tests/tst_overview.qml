@@ -50,6 +50,11 @@ TestCase {
     compare(value.text, "CPU  75%")
     compare(bar.opacity, 0.75)
   }
+  function test_missing_cores() {
+    overview.rows = [{name:'Machine', badge:'', view:{cpu:{percentText:'—', history:[]}}}]
+    var card = findChild(overview, 'overview-repeater').itemAt(0)
+    compare(findChild(card, 'overview-cores-repeater').count, 0)
+  }
   function test_card_opens_machine() {
     var card = findChild(overview, "overview-machine-card")
     verify(card !== null)

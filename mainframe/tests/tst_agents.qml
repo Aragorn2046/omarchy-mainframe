@@ -30,4 +30,34 @@ TestCase {
     compare(repeater.count, 2)
     verify(repeater.itemAt(0) !== null)
   }
+  function test_missing_arrays_and_removing_delegates() {
+    var value = valueData(1, [])
+    value.unpriced = ['unknown']
+    value.unpricedTokens = {unknown: 12}
+    view.valueData = value
+    var unpriced = findChild(view, 'agents-unpriced-repeater')
+    compare(unpriced.count, 1)
+    value = valueData(1, [])
+    delete value.unpriced
+    delete value.unpricedTokens
+    view.valueData = value
+    compare(unpriced.count, 0)
+
+    view.rows = [{name:'Agent', category:'other', age:'', limits:[{label:'Limit', percent:50, reset:''}], models:[{name:'Model', total:1}], activity:[{date:'today', count:2}]}]
+    var cards = findChild(view, 'agents-cards-repeater')
+    compare(cards.count, 1)
+    var card = cards.itemAt(0)
+    var limits = findChild(card, 'agents-limits-repeater')
+    var models = findChild(card, 'agents-models-repeater')
+    compare(limits.count, 1)
+    compare(models.count, 1)
+    view.rows = [{name:'Agent', category:'other', age:''}]
+    compare(limits.count, 0)
+    compare(models.count, 0)
+    view.sectionData[0].cards = undefined
+    cards.parent.parent.modelDataChanged()
+    compare(cards.count, 0)
+    view.rows = []
+    compare(findChild(view, 'agents-sections-repeater').count, 0)
+  }
 }

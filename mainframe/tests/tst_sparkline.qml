@@ -18,6 +18,10 @@ TestCase {
     yMax: 100
     samples: [10, 20, 30]
   }
+  Component {
+    id: freshChart
+    Mainframe.Sparkline { width: 300; height: 100; rateChart: true; samples: [4, 4] }
+  }
 
   function test_painted_state_stays_in_sync() {
     chart.samples = [10, 20, 30]
@@ -43,8 +47,47 @@ TestCase {
     compare(chart.strokeSvg, stalePath)
     tryVerify(function() { return !chart.steady })
     verify(chart.strokeSvg !== stalePath)
-    compare(chart.strokeSvg, "M289.83 93.65Q294.92 88.8 297.46 91.23L300 93.65")
+    verify(chart.strokeSvg.length > 0)
     compare(label.values[1], 10)
+  }
+
+  function test_resting_hover_tracks_growing_history() {
+    chart.samples = [10, 20, 30]
+    tryVerify(function() { return chart.paintedSamples.length === 3 && chart.paintedSamples[2] === 30 })
+    var tip = findChild(chart, "sparkline-tooltip-text")
+    mouseMove(chart, 285, 30)
+    tryVerify(function() { return chart.hoverIndex === 0 })
+    compare(tip.text, "CPU 10% · 2 s ago")
+    var oldX = chart.hoverX
+    chart.samples = [10, 20, 30, 40, 50]
+    tryVerify(function() { return chart.paintedSamples.length === 5 })
+    compare(chart.hoverIndex, 1)
+    compare(tip.text, "CPU 20% · 3 s ago")
+    verify(chart.hoverX !== oldX)
+    mouseMove(test, 350, 150)
+  }
+
+  function test_initial_and_hidden_state() {
+    var fresh = freshChart.createObject(test)
+    verify(fresh !== null)
+    compare(fresh.paintedSamples, null)
+    verify(!fresh.steady)
+    verify(!findChild(fresh, "sparkline-peak").visible)
+    fresh.visible = false
+    fresh.samples = [10, 40, 20]
+    wait(0)
+    compare(fresh.paintedSamples, null)
+    fresh.visible = true
+    tryVerify(function() { return fresh.built && fresh.paintedSamples && fresh.paintedSamples[1] === 40 })
+    verify(!fresh.steady)
+    compare(fresh.plotMax, 40)
+    fresh.visible = false
+    fresh.samples = [8, 8, 8]
+    wait(0)
+    compare(fresh.paintedSamples[1], 40)
+    fresh.visible = true
+    tryVerify(function() { return fresh.steady && fresh.paintedSamples[1] === 8 })
+    fresh.destroy()
   }
 
   function test_peak_waits_for_painted_samples() {

@@ -19,7 +19,7 @@ Shape {
   property string labelA: ""
   property string labelB: ""
   property bool rateChart: false
-  readonly property bool steady: Metrics.seriesFlat(paintedSamples) && (!(paintedSamplesB && paintedSamplesB.length) || Metrics.seriesFlat(paintedSamplesB))
+  readonly property bool steady: seriesPairSteady(paintedSamples, paintedSamplesB)
   property real plotMax: 1
   property real hoverX: -1
   property int hoverIndex: -1
@@ -32,6 +32,14 @@ Shape {
     if (!count) return -1
     var slot = Math.round(Math.max(0, Math.min(width, x)) / Math.max(1, width) * 59)
     return Math.max(0, Math.min(count - 1, slot - (60 - count))) + Math.max(0, paintedSamples.length - 60)
+  }
+  function seriesPairSteady(a, b) {
+    return Metrics.seriesFlat(a) && (!(b && b.length) || Metrics.seriesFlat(b))
+  }
+  function updateHover() {
+    if (!hover.containsMouse) return
+    hoverIndex = hit(hover.mouseX)
+    hoverX = hoverIndex < 0 ? -1 : width * (59 - (paintedSamples.length - 1 - hoverIndex)) / 59
   }
   // A flat series is a rectangle from the line to the baseline. Skip that
   // fill when the caller asks, so a full battery does not read as a solid bar.
@@ -78,7 +86,7 @@ Shape {
     if (!visible) return
     if (width < 2 || height < 2) return
     // A steady chart draws only its label. Its hidden paths need no geometry.
-    if (Metrics.seriesFlat(samples) && (!(samplesB && samplesB.length) || Metrics.seriesFlat(samplesB))) {
+    if (seriesPairSteady(samples, samplesB)) {
       paintedSamples = samples
       paintedSamplesB = samplesB
       built = false
@@ -146,9 +154,10 @@ Shape {
   onSamplesBChanged: scheduleRebuild()
   onYMaxChanged: scheduleRebuild()
   onYMinChanged: scheduleRebuild()
-  onWidthChanged: scheduleRebuild()
+  onWidthChanged: { updateHover(); scheduleRebuild() }
   onHeightChanged: scheduleRebuild()
   onVisibleChanged: scheduleRebuild()
+  onPaintedSamplesChanged: updateHover()
   Component.onCompleted: scheduleRebuild()
 
   ShapePath {
@@ -191,7 +200,7 @@ Shape {
   Text {
     textFormat: Text.PlainText
     objectName: "sparkline-peak"
-    visible: canvas.rateChart && !canvas.steady
+    visible: canvas.paintedSamples !== null && canvas.rateChart && !canvas.steady
     anchors.left: parent.left
     anchors.top: parent.top
     text: "peak " + Metrics.formatRate(canvas.plotMax)
@@ -202,7 +211,7 @@ Shape {
   }
   Text {
     textFormat: Text.PlainText
-    visible: !canvas.steady
+    visible: canvas.paintedSamples !== null && !canvas.steady
     anchors.left: parent.left
     anchors.bottom: parent.bottom
     text: "60 s"
@@ -293,10 +302,7 @@ Shape {
     anchors.fill: parent
     hoverEnabled: true
     acceptedButtons: Qt.NoButton
-    onPositionChanged: function(mouse) {
-      canvas.hoverIndex = canvas.hit(mouse.x)
-      if (canvas.hoverIndex >= 0) canvas.hoverX = canvas.width * (59 - (canvas.paintedSamples.length - 1 - canvas.hoverIndex)) / 59
-    }
-    onExited: canvas.hoverIndex = -1
+    onPositionChanged: canvas.updateHover()
+    onExited: { canvas.hoverIndex = -1; canvas.hoverX = -1 }
   }
 }
