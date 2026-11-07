@@ -26,11 +26,13 @@ Item {
       spacing: 10
       Repeater {
         id: repeater
-        model: root.rows
+        objectName: "overview-repeater"
+        model: root.rows.length
         delegate: Rectangle {
           id: card
           objectName: "overview-machine-card"
-          required property var modelData
+          required property int index
+          readonly property var modelData: root.rows[index] || ({})
           readonly property var v: modelData.view || null
           readonly property var cpu: v && v.cpu ? v.cpu : null
           readonly property var mem: v && v.mem ? v.mem : null
@@ -51,14 +53,16 @@ Item {
               Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 4
-                Text { textFormat: Text.PlainText; text: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: 'monospace'; font.pixelSize: 14 }
+                Text { objectName: "overview-cpu-value"; textFormat: Text.PlainText; text: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: 'monospace'; font.pixelSize: 14 }
                 Sparkline { objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
                 Row {
                   Layout.fillWidth: true; spacing: 2; clip: true
                   Repeater {
-                    model: card.cpu ? card.cpu.cores : []
+                    objectName: "overview-cores-repeater"
+                    model: card.cpu ? card.cpu.cores.length : 0
                     delegate: Rectangle {
-                      required property var modelData
+                      required property int index
+                      readonly property var modelData: card.cpu && card.cpu.cores[index] ? card.cpu.cores[index] : ({})
                       width: Math.max(1, Math.min(10, (parent.width - Math.max(0, (card.cpu ? card.cpu.cores.length : 0) - 1) * 2) / Math.max(1, card.cpu ? card.cpu.cores.length : 1)))
                       height: 7; color: root.accent; opacity: Math.max(0.15, Math.min(1, (Number(modelData.percent) || 0) / 100))
                     }

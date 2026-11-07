@@ -19,7 +19,7 @@ Shape {
   property string labelA: ""
   property string labelB: ""
   property bool rateChart: false
-  readonly property bool steady: Metrics.seriesFlat(samples) && (!(samplesB && samplesB.length) || Metrics.seriesFlat(samplesB))
+  readonly property bool steady: Metrics.seriesFlat(paintedSamples) && (!(paintedSamplesB && paintedSamplesB.length) || Metrics.seriesFlat(paintedSamplesB))
   property real plotMax: 1
   property real hoverX: -1
   property int hoverIndex: -1
@@ -28,10 +28,10 @@ Shape {
   }
   function displayValue(value) { return rateChart ? Metrics.formatRate(value) : Math.round(Number(value) * 10) / 10 + "%" }
   function hit(x) {
-    var count = Math.min(60, samples ? samples.length : 0)
+    var count = Math.min(60, paintedSamples ? paintedSamples.length : 0)
     if (!count) return -1
     var slot = Math.round(Math.max(0, Math.min(width, x)) / Math.max(1, width) * 59)
-    return Math.max(0, Math.min(count - 1, slot - (60 - count))) + Math.max(0, samples.length - 60)
+    return Math.max(0, Math.min(count - 1, slot - (60 - count))) + Math.max(0, paintedSamples.length - 60)
   }
   // A flat series is a rectangle from the line to the baseline. Skip that
   // fill when the caller asks, so a full battery does not read as a solid bar.
@@ -78,7 +78,9 @@ Shape {
     if (!visible) return
     if (width < 2 || height < 2) return
     // A steady chart draws only its label. Its hidden paths need no geometry.
-    if (steady) {
+    if (Metrics.seriesFlat(samples) && (!(samplesB && samplesB.length) || Metrics.seriesFlat(samplesB))) {
+      paintedSamples = samples
+      paintedSamplesB = samplesB
       built = false
       return
     }
@@ -87,8 +89,6 @@ Shape {
         && canvas.lastYMin === yMin && canvas.lastYMax === yMax
     // Repaint only when a new point, or the box, would change the path.
     if (built && sameSeries && sameBox) return
-    paintedSamples = samples
-    paintedSamplesB = samplesB
     canvas.lastW = width
     canvas.lastH = height
     canvas.lastYMin = yMin
@@ -111,6 +111,8 @@ Shape {
     if (fillSvg !== fillPath) fillSvg = fillPath
     if (strokeSvg !== strokePath) strokeSvg = strokePath
     if (strokeSvgB !== strokePathB) strokeSvgB = strokePathB
+    paintedSamples = samples
+    paintedSamplesB = samplesB
   }
 
   function seriesFlat(list) {
@@ -150,7 +152,7 @@ Shape {
   Component.onCompleted: scheduleRebuild()
 
   ShapePath {
-    fillColor: (canvas.steady || (canvas.strokeOnlyWhenFlat && canvas.seriesFlat(canvas.samples)))
+    fillColor: (canvas.steady || (canvas.strokeOnlyWhenFlat && canvas.seriesFlat(canvas.paintedSamples)))
       ? "transparent"
       : Qt.rgba(canvas.strokeColor.r, canvas.strokeColor.g, canvas.strokeColor.b, canvas.fillOpacity)
     strokeColor: "transparent"
@@ -188,6 +190,7 @@ Shape {
   }
   Text {
     textFormat: Text.PlainText
+    objectName: "sparkline-peak"
     visible: canvas.rateChart && !canvas.steady
     anchors.left: parent.left
     anchors.top: parent.top
@@ -211,17 +214,18 @@ Shape {
     model: 2
     delegate: Text {
       textFormat: Text.PlainText
+      objectName: "sparkline-end-label-" + index
       required property int index
-      readonly property var values: index === 0 ? canvas.samples : canvas.samplesB
+      readonly property var values: index === 0 ? canvas.paintedSamples : canvas.paintedSamplesB
       readonly property string label: index === 0 ? canvas.labelA : canvas.labelB
       visible: !canvas.steady && label !== "" && values && values.length > 0
       x: Math.max(0, canvas.width - width - 2)
       y: {
         if (!values || !values.length) return 0
         var target = canvas.pointY(values[values.length - 1]) + (index === 0 ? -height : 1)
-        if (index === 1 && canvas.samples && canvas.samples.length) {
+        if (index === 1 && canvas.paintedSamples && canvas.paintedSamples.length) {
           var first = Math.max(0, Math.min(canvas.height - height,
-            canvas.pointY(canvas.samples[canvas.samples.length - 1]) - height))
+            canvas.pointY(canvas.paintedSamples[canvas.paintedSamples.length - 1]) - height))
           var second = Math.max(0, Math.min(canvas.height - height, target))
           if (Math.abs(second - first) < height) target = first + height <= canvas.height - height ? first + height : first - height
         }
@@ -271,13 +275,13 @@ Shape {
       text: {
         if (!hover.containsMouse || canvas.hoverIndex < 0) return ""
         var i = canvas.hoverIndex
-        if (i < 0 || !canvas.samples || i >= canvas.samples.length) return ""
-        var result = (canvas.labelA ? canvas.labelA + " " : "") + canvas.displayValue(canvas.samples[i])
-        if (canvas.samplesB && canvas.samplesB.length) {
-          var j = i - (canvas.samples.length - canvas.samplesB.length)
-          if (j >= 0 && j < canvas.samplesB.length) result += "  " + canvas.labelB + " " + canvas.displayValue(canvas.samplesB[j])
+        if (i < 0 || !canvas.paintedSamples || i >= canvas.paintedSamples.length) return ""
+        var result = (canvas.labelA ? canvas.labelA + " " : "") + canvas.displayValue(canvas.paintedSamples[i])
+        if (canvas.paintedSamplesB && canvas.paintedSamplesB.length) {
+          var j = i - (canvas.paintedSamples.length - canvas.paintedSamplesB.length)
+          if (j >= 0 && j < canvas.paintedSamplesB.length) result += "  " + canvas.labelB + " " + canvas.displayValue(canvas.paintedSamplesB[j])
         }
-        return result + " · " + (canvas.samples.length - 1 - i) + " s ago"
+        return result + " · " + (canvas.paintedSamples.length - 1 - i) + " s ago"
       }
       color: canvas.ink
       font.family: "monospace"
@@ -291,7 +295,7 @@ Shape {
     acceptedButtons: Qt.NoButton
     onPositionChanged: function(mouse) {
       canvas.hoverIndex = canvas.hit(mouse.x)
-      if (canvas.hoverIndex >= 0) canvas.hoverX = canvas.width * (59 - (canvas.samples.length - 1 - canvas.hoverIndex)) / 59
+      if (canvas.hoverIndex >= 0) canvas.hoverX = canvas.width * (59 - (canvas.paintedSamples.length - 1 - canvas.hoverIndex)) / 59
     }
     onExited: canvas.hoverIndex = -1
   }

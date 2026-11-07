@@ -7,6 +7,9 @@ Item {
   id: root
   property alias flick: scrollView
   property var rows: []
+  readonly property var sectionData: Agents.sections(rows)
+  readonly property var valueTotals: [{label:'TODAY', value:valueData.totals.today}, {label:'LAST 7 DAYS', value:valueData.totals.seven}, {label:'LAST 30 DAYS', value:valueData.totals.thirty}]
+  readonly property var valueRows: [{name:'Claude', totals:valueData.providers.claude}, {name:'Codex', totals:valueData.providers.codex}].concat(valueData.hosts)
   property var valueData: ({totals:{today:0,seven:0,thirty:0},providers:{claude:{},codex:{}},hosts:[],unpriced:[],partial:true,excluded:0})
   property color ink; property color mutedInk; property color accent; property color warning; property color critical
   property color cardColor; property color borderColor; property color track
@@ -41,9 +44,10 @@ Item {
             RowLayout {
               Layout.fillWidth: true
               Repeater {
-                model: [{label:'TODAY', value:root.valueData.totals.today}, {label:'LAST 7 DAYS', value:root.valueData.totals.seven}, {label:'LAST 30 DAYS', value:root.valueData.totals.thirty}]
+                model: root.valueTotals.length
                 delegate: ColumnLayout {
-                  required property var modelData
+                  required property int index
+                  readonly property var modelData: root.valueTotals[index] || ({})
                   Layout.fillWidth: true
                   Text { textFormat: Text.PlainText; text: modelData.label; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                   Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : '') + (root.valueData.stale ? ' · includes stale data' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 16; font.bold: true }
@@ -51,23 +55,26 @@ Item {
               }
             }
             Repeater {
-              model: [{name:'Claude', totals:root.valueData.providers.claude}, {name:'Codex', totals:root.valueData.providers.codex}].concat(root.valueData.hosts)
+              objectName: "agents-value-repeater"
+              model: root.valueRows.length
               delegate: Text {
-                required property var modelData
+                required property int index
+                readonly property var modelData: root.valueRows[index] || ({totals:{}})
                 Layout.fillWidth: true; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight
                 text: (modelData.name || modelData.host) + '  ' + (modelData.status && modelData.status !== 'ready' ? modelData.status : UsageValue.money(modelData.totals.today) + '  /  ' + UsageValue.money(modelData.totals.seven) + '  /  ' + UsageValue.money(modelData.totals.thirty))
               }
             }
             Text { textFormat: Text.PlainText; visible: root.valueData.excluded > 0; text: root.valueData.excluded + (root.valueData.excluded === 1 ? ' machine not included' : ' machines not included'); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
-            Repeater { model: root.valueData.unpriced; delegate: Text { required property var modelData; textFormat: Text.PlainText; text: modelData + ' — no price · ' + Agents.units(root.valueData.unpricedTokens[modelData]) + ' tokens'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight } }
+            Repeater { model: root.valueData.unpriced.length; delegate: Text { required property int index; readonly property var modelData: root.valueData.unpriced[index] || ""; textFormat: Text.PlainText; text: modelData + ' — no price · ' + Agents.units(root.valueData.unpricedTokens[modelData]) + ' tokens'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight } }
             Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'Estimate at public API list prices; subscription fees not included.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; wrapMode: Text.Wrap }
           }
         }
         Repeater {
-          id: sectionRepeater; model: Agents.sections(root.rows)
+          id: sectionRepeater; model: root.sectionData.length
           delegate: ColumnLayout {
             id: section
-            required property var modelData
+            required property int index
+            readonly property var modelData: root.sectionData[index] || ({cards:[]})
             Layout.fillWidth: true; spacing: 10
             function checkLayout() {
               var failures = 0
@@ -78,10 +85,11 @@ Item {
             GridLayout {
               id: grid; Layout.fillWidth: true; columns: width >= 1300 ? 3 : 2; columnSpacing: 10; rowSpacing: 10
               Repeater {
-                id: repeater; model: section.modelData.cards
+                id: repeater; model: section.modelData.cards.length
                 delegate: Rectangle {
                   id: card
-                  required property var modelData
+                  required property int index
+                  readonly property var modelData: section.modelData.cards[index] || ({limits:[], activity:[], models:[]})
                   readonly property real contentHeight: content.implicitHeight + 24
                   Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: contentHeight; Layout.alignment: Qt.AlignTop
                   radius: 10; color: root.cardColor; border.color: root.borderColor; opacity: modelData.stale ? 0.55 : 1; clip: true
@@ -97,9 +105,10 @@ Item {
                     Text { visible: !!card.modelData.status; Layout.fillWidth: true; text: card.modelData.status || ''; textFormat: Text.PlainText; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
                     Text { visible: !!card.modelData.help; Layout.fillWidth: true; text: card.modelData.help || ''; textFormat: Text.PlainText; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
                     Repeater {
-                      model: card.modelData.limits
+                      model: card.modelData.limits.length
                       delegate: ColumnLayout {
-                        required property var modelData
+                        required property int index
+                        readonly property var modelData: card.modelData.limits[index] || ({})
                         Layout.fillWidth: true; spacing: 3
                         RowLayout {
                           Layout.fillWidth: true
@@ -117,9 +126,10 @@ Item {
                       visible: !card.modelData.broken && !card.modelData.sharedStatsWith && card.modelData.showLocalStats; Layout.fillWidth: true; Layout.preferredHeight: 25; spacing: 3
                       property real peak: Math.max(1, ...card.modelData.activity.map(function(day) { return day.count }))
                       Repeater {
-                        model: card.modelData.activity
+                        model: card.modelData.activity.length
                         delegate: Item {
-                          required property var modelData
+                          required property int index
+                          readonly property var modelData: card.modelData.activity[index] || ({})
                           width: Math.max(3, (parent.width - 39) / 14); height: 25
                           Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: Math.max(2, parent.height * modelData.count / parent.parent.peak); color: root.accent; opacity: modelData.count ? 0.8 : 0.2; radius: 1 }
                           MouseArea { id: hover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
@@ -129,9 +139,10 @@ Item {
                       }
                     }
                     Repeater {
-                      model: card.modelData.sharedStatsWith ? [] : card.modelData.models
+                      model: card.modelData.sharedStatsWith ? 0 : card.modelData.models.length
                       delegate: Text {
-                        required property var modelData
+                        required property int index
+                        readonly property var modelData: card.modelData.models[index] || ({})
                         Layout.fillWidth: true
                         text: modelData.name + '  ' + (modelData.total !== undefined ? Agents.units(modelData.total) + ' total' : 'in ' + Agents.units(modelData.input) + ' · out ' + Agents.units(modelData.output) + ' · cache ' + Agents.units(modelData.cache))
                         textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 10; elide: Text.ElideRight
