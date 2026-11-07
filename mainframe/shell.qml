@@ -3,6 +3,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Window
+import "cyber" as Cyber
 import Quickshell
 import Quickshell.Io
 import "lib/metrics.js" as Metrics
@@ -1610,6 +1611,13 @@ ShellRoot {
       id: windowContent
       anchors.fill: parent
       color: String(Quickshell.env("MAINFRAME_PREVIEW_OUTPUT") || "") ? shell.themeBg : "transparent"
+    Cyber.CyberStyle { id: cyberAppearance; settings: shell.settingsData.settings }
+    Loader {
+      objectName: "cyber-grid-loader"
+      anchors.fill: parent
+      active: cyberAppearance.gridBackdrop
+      sourceComponent: Cyber.GridBackdrop { accent: shell.themeAccent }
+    }
     Rectangle {
       id: helpOverlay
       anchors.fill: parent; z: 200; visible: shell.helpOpen
@@ -1879,7 +1887,7 @@ ShellRoot {
 
       RowLayout {
         visible: shell.page === "overview"; Layout.fillWidth: true
-        Text { textFormat: Text.PlainText; text: "OVERVIEW"; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true }
+        Text { textFormat: Text.PlainText; text: "OVERVIEW"; color: shell.themeLabel; font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true }
         Repeater { model: ["systems", "storage", "agents"]; delegate: Text {
           textFormat: Text.PlainText
           required property var modelData; text: (modelData === "systems" ? "" : " · ") + modelData.charAt(0).toUpperCase() + modelData.slice(1)
@@ -1888,6 +1896,7 @@ ShellRoot {
         } }
       }
       OverviewView {
+        cyberStyle: cyberAppearance
         id: systemsView
         Layout.fillWidth: true
         Layout.fillHeight: true
@@ -1898,6 +1907,7 @@ ShellRoot {
         onOpenMachine: function(index) { shell.selectTab(index + 1) }
       }
       FleetStorage {
+        cyberStyle: cyberAppearance
         id: fleetStorage
         Layout.fillWidth: true; Layout.fillHeight: true
         visible: shell.page === "overview" && shell.overviewView === "storage"
@@ -1906,6 +1916,7 @@ ShellRoot {
         cardColor: shell.themeCard; borderColor: shell.themeBorder; track: shell.themeTrack
       }
       AgentsView {
+        cyberStyle: cyberAppearance
         id: agentsView
         Layout.fillWidth: true
         Layout.fillHeight: true
@@ -1932,6 +1943,7 @@ ShellRoot {
         columns: shell.columns
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-cpu"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -1959,7 +1971,7 @@ ShellRoot {
                 textFormat: Text.PlainText
                 text: shell.cpuView ? shell.cpuView.percentText : "—"
                 color: shell.themeFg
-                font.family: "monospace"
+                font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                 font.pixelSize: shell.pxHero
                 font.weight: Font.Medium
               }
@@ -1982,6 +1994,7 @@ ShellRoot {
 
             Text { textFormat: Text.PlainText; visible: shell.cpuView && !!shell.cpuView.windowsText; text: shell.cpuView ? (shell.cpuView.windowsText || "") : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel }
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2153,6 +2166,7 @@ ShellRoot {
                   }
 
                   Meter {
+                    cyberStyle: cyberAppearance
                     objectName: "core-meter"
                     vertical: true
                     // anchors.bottom made a short cell negative. Height is clamped,
@@ -2187,6 +2201,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-mem"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2211,7 +2226,7 @@ ShellRoot {
               textFormat: Text.PlainText
               text: shell.memView ? (shell.memView.headerText || shell.memView.usedText) : "—"
               color: shell.themeFg
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.pxFigure
               font.weight: Font.Medium
               elide: Text.ElideRight
@@ -2220,6 +2235,7 @@ ShellRoot {
 
             Text { textFormat: Text.PlainText; visible: shell.memView && !!shell.memView.wslText; text: shell.memView ? (shell.memView.windowsUnavailable ? "Windows totals unavailable" : (shell.memView.wslText || "")) : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true; elide: Text.ElideRight }
             Meter {
+              cyberStyle: cyberAppearance
               Layout.fillWidth: true
               Layout.preferredHeight: 12
               fraction: shell.memView ? shell.memView.fraction : 0
@@ -2245,6 +2261,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2296,6 +2313,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-gpu"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2321,7 +2339,7 @@ ShellRoot {
               readonly property bool gpuLive: shell.gpuView != null && shell.gpuView.unsupported !== true && shell.gpuView.na !== true
               text: shell.gpuView == null ? "not available" : shell.gpuView.percentText
               color: gpuLive ? shell.themeFg : shell.themeLabel
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: gpuLive ? shell.pxHero : shell.pxLabel
               font.weight: Font.Medium
             }
@@ -2337,6 +2355,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2354,6 +2373,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           id: diskCard
           objectName: "card-disk"
           clickable: true
@@ -2391,7 +2411,7 @@ ShellRoot {
                     textFormat: Text.PlainText
                     text: shell.diskView ? shell.diskView.readText : "unavailable"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2421,7 +2441,7 @@ ShellRoot {
                     textFormat: Text.PlainText
                     text: shell.diskView ? shell.diskView.writeText : "unavailable"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2454,6 +2474,7 @@ ShellRoot {
             }
 
             Meter {
+              cyberStyle: cyberAppearance
               Layout.fillWidth: true
               Layout.preferredHeight: 12
               fraction: shell.diskView ? shell.diskView.fraction : 0
@@ -2463,6 +2484,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2510,6 +2532,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-net"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2562,7 +2585,7 @@ ShellRoot {
                     textFormat: Text.PlainText
                     text: shell.netView ? shell.netView.downText : "—"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2592,7 +2615,7 @@ ShellRoot {
                     textFormat: Text.PlainText
                     text: shell.netView ? shell.netView.upText : "—"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2639,6 +2662,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2660,6 +2684,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-bat"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2684,7 +2709,7 @@ ShellRoot {
               textFormat: Text.PlainText
               text: shell.batView != null ? shell.batView.percentText : "no battery"
               color: shell.batView != null ? shell.themeFg : shell.themeLabel
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.batView != null ? shell.pxHero : shell.pxLabel
               font.weight: Font.Medium
             }
@@ -2704,11 +2729,12 @@ ShellRoot {
               visible: shell.batView != null
               text: shell.batView != null ? shell.batView.powerText : ""
               color: shell.themeFg
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.pxFigure
             }
 
             Meter {
+              cyberStyle: cyberAppearance
               visible: shell.batView != null
               Layout.fillWidth: true
               Layout.preferredHeight: shell.batView != null ? 12 : 0
@@ -2720,6 +2746,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2740,6 +2767,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-proc"
           Layout.fillWidth: true
           Layout.fillHeight: true

@@ -1,6 +1,7 @@
 pragma ComponentBehavior: Bound
 import QtQuick
 import QtQuick.Shapes
+import "cyber" as Cyber
 import "lib/metrics.js" as Metrics
 
 // The curve is a scene-graph path, not a Canvas image. A full-card Canvas
@@ -8,6 +9,7 @@ import "lib/metrics.js" as Metrics
 // every sample. The geometry is the same quadratic stroke and fill.
 Shape {
   id: canvas
+  property var cyberStyle: null
   property var samples: []
   property var samplesB: []
   property color strokeColor: "#8a8f98"
@@ -185,6 +187,21 @@ Shape {
     capStyle: ShapePath.RoundCap
     joinStyle: ShapePath.RoundJoin
     PathSvg { path: canvas.strokeSvgB }
+  }
+
+  Loader {
+    objectName: "cyber-chart-glow-loader"
+    anchors.fill: parent
+    z: -1
+    active: canvas.cyberStyle && canvas.cyberStyle.neonGlow
+    sourceComponent: Cyber.GlowStroke { stroke: canvas.strokeColor; path: canvas.steady ? "" : canvas.strokeSvg }
+  }
+  Loader {
+    objectName: "cyber-chart-glow-b-loader"
+    anchors.fill: parent
+    z: -1
+    active: canvas.cyberStyle && canvas.cyberStyle.neonGlow && canvas.samplesB && canvas.samplesB.length > 0
+    sourceComponent: Cyber.GlowStroke { stroke: canvas.strokeColorB; path: canvas.steady ? "" : canvas.strokeSvgB }
   }
 
   Text {

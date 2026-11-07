@@ -1,7 +1,9 @@
 import QtQuick
+import "cyber" as Cyber
 
 Rectangle {
   id: root
+  property var cyberStyle: null
   property real fraction: 0
   property bool vertical: false
   property bool critical: fraction >= 0.9
@@ -25,6 +27,7 @@ Rectangle {
 
   Rectangle {
     id: bar
+    visible: !(root.cyberStyle && root.cyberStyle.segmentedMeters)
     radius: parent.radius
     color: root.fill
     x: 0
@@ -42,9 +45,25 @@ Rectangle {
   }
   Rectangle {
     anchors.fill: parent
+    z: 1
     color: "transparent"
     radius: parent.radius
     border.width: root.critical ? 2 : 0
     border.color: root.warningInk
+  }
+  Loader {
+    objectName: "cyber-segments-loader"
+    anchors.fill: parent
+    active: root.cyberStyle && root.cyberStyle.segmentedMeters
+    sourceComponent: Cyber.Segments { fraction: root.shown; vertical: root.vertical; fill: root.fill; track: root.track }
+  }
+  Loader {
+    objectName: "cyber-meter-glow-loader"
+    anchors.fill: parent
+    active: root.cyberStyle && root.cyberStyle.neonGlow
+    sourceComponent: Cyber.GlowStroke {
+      stroke: root.fill
+      path: root.vertical ? "M0 " + (root.height * (1 - root.shown)) + " L" + root.width + " " + (root.height * (1 - root.shown)) : "M" + (root.width * root.shown) + " 0 L" + (root.width * root.shown) + " " + root.height
+    }
   }
 }

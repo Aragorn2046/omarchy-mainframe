@@ -64,6 +64,21 @@ The choice is saved in `$XDG_CONFIG_HOME/mainframe/settings.json` (normally `~/.
 
 Text uses foreground ink. Graphs use theme colours, with a dashed line for outgoing traffic. Hover over a graph for a sample. Rate graphs show their peak and the history window. Flat histories show `steady`. Meters use warning colours above 70% and a visible outline at 90%; battery warnings use low charge instead. The font is the `monospace` fontconfig alias.
 
+## Styles
+
+Settings offers Classic (the default) and Cyberpunk. Cyberpunk uses the active theme colours. Its switches are independent and default to on.
+
+- **HUD frames:** corner brackets and uppercase card headings.
+- **Neon glow:** a soft stroke under chart lines and at meter edges.
+- **Grid backdrop:** a static grid and scanline texture.
+- **Display font:** Orbitron for headings and large figures, with a monospace fallback.
+- **Segmented meters:** LED-style meter bars.
+- **Data animations:** animate changing values and chart segments (planned for phase 3).
+- **Title glitch:** occasional title glitch (planned for phase 3).
+- **Scanline sweep:** occasional moving scanline (planned for phase 3).
+- **Pulsing status dots:** pulse status indicators (planned for phase 3).
+- **Boot sequence:** short, skippable opening sequence (planned for phase 3).
+
 ## Checks
 
 ```sh

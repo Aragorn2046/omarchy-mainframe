@@ -46,6 +46,24 @@ TestCase {
     overlay.destroy()
   }
 
+  function test_cyber_settings_controls() {
+    var overlay = overlayComponent.createObject(test, {config:{hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"classic", cyber:{hudFrames:false, future:true}}}})
+    var saved = null
+    overlay.save.connect(function(kind, value) { if (kind === "settings") saved = value })
+    compare(findChild(overlay, "cyber-switch-hudFrames"), null)
+    overlay.config = {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"cyberpunk", cyber:{hudFrames:false, future:true}}}
+    var hud = findChild(overlay, "cyber-switch-hudFrames")
+    verify(hud !== null && !hud.checked)
+    verify(findChild(overlay, "cyber-switch-bootSequence").checked)
+    overlay.saveCyber("neonGlow", false)
+    compare(saved.cyber.hudFrames, false)
+    compare(saved.cyber.neonGlow, false)
+    compare(saved.cyber.future, true)
+    overlay.config = {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"classic"}}
+    compare(findChild(overlay, "cyber-switch-hudFrames"), null)
+    overlay.destroy()
+  }
+
   function test_controls() {
     compare(button.height, 30)
     compare(field.height, 30)

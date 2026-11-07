@@ -16,6 +16,11 @@ Rectangle {
     settings[key] = value
     save('settings', settings)
   }
+  function saveCyber(key, value) {
+    var switches = Object.assign({}, root.config.settings.cyber || {})
+    switches[key] = value
+    saveSetting('cyber', switches)
+  }
   color: '#b0000000'; z: 100
   function account() {
     var provider = providerBox.currentText, item = {id: accountId.text, provider:provider, name:accountName.text}
@@ -86,6 +91,34 @@ Rectangle {
         RowLayout {
           Text { textFormat: Text.PlainText; text: 'Default overview'; color: root.ink; font.family: 'monospace'; font.pixelSize: 15 }
           ThemedComboBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; model: ['systems','storage','agents']; currentIndex: Math.max(0, model.indexOf(root.config.settings.overviewView)); onActivated: root.saveSetting('overviewView', currentText) }
+        }
+        Text { textFormat: Text.PlainText; text: 'STYLE'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 15; font.bold: true }
+        RowLayout {
+          Text { textFormat: Text.PlainText; text: 'Style'; color: root.ink; font.family: 'monospace'; font.pixelSize: 15 }
+          ThemedComboBox {
+            objectName: 'style-combo'
+            ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor
+            model: ['classic', 'cyberpunk']
+            currentIndex: root.config.settings.style === 'cyberpunk' ? 1 : 0
+            onActivated: root.saveSetting('style', currentText)
+          }
+        }
+        Repeater {
+          model: root.config.settings.style === 'cyberpunk' ? [
+            {key:'hudFrames', label:'HUD frames'}, {key:'neonGlow', label:'Neon glow'},
+            {key:'gridBackdrop', label:'Grid backdrop'}, {key:'displayFont', label:'Display font'},
+            {key:'segmentedMeters', label:'Segmented meters'}, {key:'dataAnimations', label:'Data animations'},
+            {key:'titleGlitch', label:'Title glitch'}, {key:'scanlineSweep', label:'Scanline sweep'},
+            {key:'pulsingStatusDots', label:'Pulsing status dots'}, {key:'bootSequence', label:'Boot sequence'}
+          ] : []
+          delegate: ThemedCheckBox {
+            required property var modelData
+            objectName: 'cyber-switch-' + modelData.key
+            ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor
+            text: modelData.label
+            checked: !root.config.settings.cyber || root.config.settings.cyber[modelData.key] !== false
+            onClicked: root.saveCyber(modelData.key, checked)
+          }
         }
       }
     }

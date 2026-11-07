@@ -1,10 +1,12 @@
 import QtQuick
 import QtQuick.Layouts
+import "cyber" as Cyber
 import "lib/agents.js" as Agents
 import "lib/usage_value.js" as UsageValue
 
 Item {
   id: root
+  property var cyberStyle: null
   property alias flick: scrollView
   property var rows: []
   readonly property var sectionData: Agents.sections(rows)
@@ -25,7 +27,7 @@ Item {
     anchors.fill: parent; spacing: 10
     RowLayout {
       Layout.fillWidth: true
-      Text { textFormat: Text.PlainText; text: 'AGENT USAGE'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12; Layout.fillWidth: true }
+      Text { textFormat: Text.PlainText; text: 'AGENT USAGE'; color: root.mutedInk; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 12; Layout.fillWidth: true }
       Text { textFormat: Text.PlainText; text: root.status; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
 
     }
@@ -38,7 +40,7 @@ Item {
         id: sections; width: parent.width; spacing: 10
         Card {
           Layout.fillWidth: true; Layout.preferredHeight: valueContent.implicitHeight + 54
-          title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
+          cyberStyle: root.cyberStyle; accent: root.accent; title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
           ColumnLayout {
             id: valueContent; width: parent.width; spacing: 6
             RowLayout {
@@ -50,7 +52,7 @@ Item {
                   readonly property var modelData: root.valueTotals[index] || ({label:'', value:0})
                   Layout.fillWidth: true
                   Text { textFormat: Text.PlainText; text: modelData.label; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
-                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : '') + (root.valueData.stale ? ' · includes stale data' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 16; font.bold: true }
+                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : '') + (root.valueData.stale ? ' · includes stale data' : ''); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 16; font.bold: true }
                 }
               }
             }
@@ -82,7 +84,7 @@ Item {
               for (var i = 0; i < repeater.count; i++) { var c = repeater.itemAt(i); var first = repeater.itemAt(Math.floor(i / grid.columns) * grid.columns); if (c && (c.width > grid.width + 1 || c.height + 1 < c.contentHeight || (first && Math.abs(c.y - first.y) > 1))) failures++ }
               return failures
             }
-            Text { text: section.modelData.heading || ''; textFormat: Text.PlainText; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+            Text { text: root.cyberStyle && root.cyberStyle.hudFrames ? (section.modelData.heading || '').toUpperCase() : (section.modelData.heading || ''); textFormat: Text.PlainText; color: root.mutedInk; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 12 }
             GridLayout {
               id: grid; Layout.fillWidth: true; columns: width >= 1300 ? 3 : 2; columnSpacing: 10; rowSpacing: 10
               Repeater {
@@ -96,12 +98,13 @@ Item {
                   readonly property var models: modelData.models || []
                   readonly property real contentHeight: content.implicitHeight + 24
                   Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: contentHeight; Layout.alignment: Qt.AlignTop
-                  radius: 10; color: root.cardColor; border.color: root.borderColor; opacity: modelData.stale ? 0.55 : 1; clip: true
+                  radius: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 10; color: root.cardColor; border.width: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 1; border.color: root.borderColor; opacity: modelData.stale ? 0.55 : 1; clip: true
+                  Loader { objectName: "cyber-hud-loader"; anchors.fill: parent; active: root.cyberStyle && root.cyberStyle.hudFrames; sourceComponent: Cyber.HudFrame { accent: root.accent } }
                   ColumnLayout {
                     id: content; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12; spacing: 7
                     RowLayout {
                       Layout.fillWidth: true
-                      Text { text: card.modelData.name || ''; color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+                      Text { text: card.modelData.name || ''; color: root.ink; textFormat: Text.PlainText; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
                       Text { text: card.modelData.tier || ''; color: root.mutedInk; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight; Layout.maximumWidth: 130 }
                     }
                     Text { textFormat: Text.PlainText; visible: !!card.modelData.broken; text: "Can't read this report"; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
@@ -119,7 +122,7 @@ Item {
                           Text { Layout.fillWidth: true; text: modelData.label || ''; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
                           Text { objectName: 'agents-limit-percent'; textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent == null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
                         }
-                        Meter { Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
+                        Meter { cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
                         Text { textFormat: Text.PlainText; visible: !!modelData.reset; text: modelData.reset || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                       }
                     }
