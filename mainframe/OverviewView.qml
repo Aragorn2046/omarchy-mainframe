@@ -48,7 +48,11 @@ Item {
             anchors.fill: parent; anchors.margins: 12; spacing: 7
             RowLayout {
               Layout.fillWidth: true
-              Rectangle { width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk }
+              Rectangle {
+                width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk
+                opacity: pulse.item ? pulse.item.opacity : 1
+                Loader { id: pulse; objectName: "cyber-dot-loader"; active: root.visible && root.cyberStyle && root.cyberStyle.windowActive && root.cyberStyle.pulsingStatusDots; sourceComponent: Cyber.Pulse { sampleTick: root.cyberStyle.sampleTick } }
+              }
               Text { objectName: 'overview-title'; text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
               Text { objectName: 'overview-badge'; textFormat: Text.PlainText; text: card.modelData.badge || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
               Text { textFormat: Text.PlainText; text: card.modelData.status || 'idle'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
@@ -57,7 +61,7 @@ Item {
               Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 4
-                Text { objectName: "overview-cpu-value"; textFormat: Text.PlainText; text: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                Cyber.DataText { cyberStyle: root.cyberStyle; objectName: "overview-cpu-value"; textFormat: Text.PlainText; sourceText: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
                 Sparkline { cyberStyle: root.cyberStyle; objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
                 Row {
                   Layout.fillWidth: true; spacing: 2; clip: true

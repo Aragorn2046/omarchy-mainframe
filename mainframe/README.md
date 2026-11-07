@@ -66,18 +66,18 @@ Text uses foreground ink. Graphs use theme colours, with a dashed line for outgo
 
 ## Styles
 
-Settings offers Classic (the default) and Cyberpunk. Cyberpunk uses the active theme colours. Its switches are independent and default to on.
+Settings offers Classic (the default) and Cyberpunk. Cyberpunk uses the active theme colours. Each switch defaults to on and can be turned off independently.
 
 - **HUD frames:** corner brackets and uppercase card headings.
 - **Neon glow:** a soft stroke under chart lines and at meter edges.
 - **Grid backdrop:** a static grid and scanline texture.
 - **Display font:** Orbitron for headings and large figures, with a monospace fallback.
 - **Segmented meters:** LED-style meter bars.
-- **Data animations:** animate changing values and chart segments (planned for phase 3).
-- **Title glitch:** occasional title glitch (planned for phase 3).
-- **Scanline sweep:** occasional moving scanline (planned for phase 3).
-- **Pulsing status dots:** pulse status indicators (planned for phase 3).
-- **Boot sequence:** short, skippable opening sequence (planned for phase 3).
+- **Data animations:** animate changing values and chart segments.
+- **Title glitch:** occasional title glitch.
+- **Scanline sweep:** occasional moving scanline.
+- **Pulsing status dots:** pulse status indicators.
+- **Boot sequence:** short, skippable opening sequence.
 
 ## Checks
 

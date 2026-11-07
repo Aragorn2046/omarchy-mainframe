@@ -12,6 +12,16 @@ Shape {
   property var cyberStyle: null
   property var samples: []
   property var samplesB: []
+  readonly property var displaySamples: chartMotion.item ? chartMotion.item.shown : samples
+  readonly property var displaySamplesB: chartMotion.item ? chartMotion.item.shownB : samplesB
+  Loader {
+    id: chartMotion
+    objectName: "cyber-chart-motion-loader"
+    active: canvas.visible && canvas.cyberStyle && canvas.cyberStyle.windowActive && canvas.cyberStyle.dataAnimations
+    sourceComponent: Cyber.ChartMotion { clock: canvas.cyberStyle; samples: canvas.samples; samplesB: canvas.samplesB }
+  }
+  onDisplaySamplesChanged: scheduleRebuild()
+  onDisplaySamplesBChanged: scheduleRebuild()
   property color strokeColor: "#8a8f98"
   property color strokeColorB: "#6e8b8a"
   property real fillOpacity: 0.16
@@ -88,13 +98,13 @@ Shape {
     if (!visible) return
     if (width < 2 || height < 2) return
     // A steady chart draws only its label. Its hidden paths need no geometry.
-    if (seriesPairSteady(samples, samplesB)) {
-      paintedSamples = samples ? samples.slice() : samples
-      paintedSamplesB = samplesB ? samplesB.slice() : samplesB
+    if (seriesPairSteady(displaySamples, displaySamplesB)) {
+      paintedSamples = displaySamples ? displaySamples.slice() : displaySamples
+      paintedSamplesB = displaySamplesB ? displaySamplesB.slice() : displaySamplesB
       built = false
       return
     }
-    var sameSeries = Metrics.seriesSame(samples, paintedSamples) && Metrics.seriesSame(samplesB, paintedSamplesB)
+    var sameSeries = Metrics.seriesSame(displaySamples, paintedSamples) && Metrics.seriesSame(displaySamplesB, paintedSamplesB)
     var sameBox = canvas.lastW === width && canvas.lastH === height
         && canvas.lastYMin === yMin && canvas.lastYMax === yMax
     // Repaint only when a new point, or the box, would change the path.
@@ -108,21 +118,21 @@ Shape {
     var minv = yMin
     var maxv = yMax
     if (!(maxv > minv)) {
-      maxv = seriesMax(samples, minv)
-      maxv = seriesMax(samplesB, maxv)
+      maxv = seriesMax(displaySamples, minv)
+      maxv = seriesMax(displaySamplesB, maxv)
       if (!(maxv > minv)) maxv = minv + 1
     }
     plotMax = maxv
-    var primary = Metrics.buildSparkline(samples, width, height, minv, maxv, 60)
-    var secondary = Metrics.buildSparkline(samplesB, width, height, minv, maxv, 60)
+    var primary = Metrics.buildSparkline(displaySamples, width, height, minv, maxv, 60)
+    var secondary = Metrics.buildSparkline(displaySamplesB, width, height, minv, maxv, 60)
     var fillPath = cmdsToSvg(primary.fill)
     var strokePath = cmdsToSvg(primary.stroke)
     var strokePathB = cmdsToSvg(secondary.stroke)
     if (fillSvg !== fillPath) fillSvg = fillPath
     if (strokeSvg !== strokePath) strokeSvg = strokePath
     if (strokeSvgB !== strokePathB) strokeSvgB = strokePathB
-    paintedSamples = samples ? samples.slice() : samples
-    paintedSamplesB = samplesB ? samplesB.slice() : samplesB
+    paintedSamples = displaySamples ? displaySamples.slice() : displaySamples
+    paintedSamplesB = displaySamplesB ? displaySamplesB.slice() : displaySamplesB
   }
 
   function seriesFlat(list) {
@@ -152,8 +162,6 @@ Shape {
   // Both series and dimensions can change in one sample. Coalesce them into
   // a single rebuild after the current batch of bindings has settled.
   function scheduleRebuild() { Qt.callLater(rebuild) }
-  onSamplesChanged: scheduleRebuild()
-  onSamplesBChanged: scheduleRebuild()
   onYMaxChanged: scheduleRebuild()
   onYMinChanged: scheduleRebuild()
   onWidthChanged: { updateHover(); scheduleRebuild() }

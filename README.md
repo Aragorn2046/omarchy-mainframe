@@ -29,6 +29,21 @@ screen, and it wears your Omarchy theme: switch themes and Mainframe follows wit
 - **Light**: about 2% of one CPU core and ~180 MB RAM while open on a real Wayland session (measured on a 16-thread laptop); nothing runs when it is
   closed. No root, no daemons, no compiled code: plain QML, JavaScript and Python.
 
+## Styles
+
+Choose Classic (the default) or Cyberpunk in settings. Cyberpunk follows the active theme. Each switch defaults to on and can be turned off independently.
+
+- **HUD frames:** corner brackets and uppercase headings.
+- **Neon glow:** soft highlights under chart lines and on meter edges.
+- **Grid backdrop:** a static grid and scanline texture.
+- **Display font:** Orbitron headings and large figures, with a monospace fallback.
+- **Segmented meters:** LED-style bars.
+- **Data animations:** step changing figures, meters and new chart points.
+- **Title glitch:** briefly shifts card headings at intervals.
+- **Scanline sweep:** occasionally moves a thin line across the window.
+- **Pulsing status dots:** changes indicator opacity with each sample.
+- **Boot sequence:** shows a short opening screen. Press any key or click to skip it.
+
 ## Requirements
 
 - Omarchy (Arch Linux + Hyprland), which already includes Quickshell (`qs`) and Python 3

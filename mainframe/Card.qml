@@ -47,7 +47,7 @@ Rectangle {
     anchors.left: parent.left
     anchors.right: parent.right
     anchors.top: parent.top
-    anchors.leftMargin: 12
+    anchors.leftMargin: 12 + (root.cyberStyle ? root.cyberStyle.glitchOffset : 0)
     anchors.rightMargin: hintText.visible ? (hintText.implicitWidth + 8) : 12
     anchors.topMargin: 10
     text: root.cyberStyle && root.cyberStyle.hudFrames ? root.title.toUpperCase() : root.title

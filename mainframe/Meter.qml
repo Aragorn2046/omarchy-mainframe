@@ -18,11 +18,19 @@ Rectangle {
 
   // Snap to the sample. An 80 ms ease scheduled extra software frames and
   // pushed the offscreen dashboard over the CPU budget.
-  property real shown: {
+  readonly property real targetShown: {
     var f = fraction
     if (!isFinite(f) || f < 0) f = 0
     if (f > 1) f = 1
-    return Math.round(f * 100) / 100
+    return cyberStyle && cyberStyle.dataAnimations ? f : Math.round(f * 100) / 100
+  }
+
+  readonly property real shown: dataMotion.item ? dataMotion.item.value : targetShown
+  Loader {
+    id: dataMotion
+    objectName: "cyber-meter-motion-loader"
+    active: root.visible && root.cyberStyle && root.cyberStyle.windowActive && root.cyberStyle.dataAnimations
+    sourceComponent: Cyber.StepValue { clock: root.cyberStyle; target: root.targetShown }
   }
 
   Rectangle {

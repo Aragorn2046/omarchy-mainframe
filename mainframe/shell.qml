@@ -1611,7 +1611,48 @@ ShellRoot {
       id: windowContent
       anchors.fill: parent
       color: String(Quickshell.env("MAINFRAME_PREVIEW_OUTPUT") || "") ? shell.themeBg : "transparent"
-    Cyber.CyberStyle { id: cyberAppearance; settings: shell.settingsData.settings }
+    Cyber.CyberStyle {
+      id: cyberAppearance
+      settings: shell.settingsData.settings
+      windowActive: windowProbe.Window.window && windowProbe.Window.window.visible && windowProbe.Window.window.visibility !== Window.Minimized && !shell.quitting
+      sampleTick: shell.samples
+      glitchOffset: ambient.item ? ambient.item.glitchOffset : 0
+    }
+    Loader {
+      id: ambient
+      objectName: "cyber-ambient-loader"
+      anchors.fill: parent; z: 190
+      active: cyberAppearance.windowActive && (cyberAppearance.titleGlitch || cyberAppearance.scanlineSweep)
+      sourceComponent: Cyber.Ambient {
+        accent: shell.themeAccent
+        glitchEnabled: cyberAppearance.titleGlitch
+        sweepEnabled: cyberAppearance.scanlineSweep
+      }
+    }
+    Loader {
+      id: boot
+      objectName: "cyber-boot-loader"
+      property bool pending: !(shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_SKIP_BOOT") || "") === "1")
+      property bool started: false
+      onActiveChanged: { if (active) started = true; else if (started) pending = false }
+      anchors.fill: parent; z: 300
+      active: pending && shell.settingsLoaded && cyberAppearance.windowActive && cyberAppearance.bootSequence
+      sourceComponent: Cyber.Boot { ink: shell.themeFg; accent: shell.themeAccent; color: shell.themeBg; onFinished: boot.pending = false }
+      Connections {
+        target: shell
+        function onSettingsLoadedChanged() {
+          if (shell.settingsLoaded && !cyberAppearance.bootSequence) boot.pending = false
+          if (shell.settingsLoaded && String(Quickshell.env("MAINFRAME_SMOKE_STYLE_EXPECTED") || "")) {
+            console.log("CYBER static=" + [cyberAppearance.hudFrames, cyberAppearance.neonGlow, cyberAppearance.gridBackdrop, cyberAppearance.displayFont, cyberAppearance.segmentedMeters].every(function(v) { return v })
+              + " motion=" + [cyberAppearance.dataAnimations, cyberAppearance.titleGlitch, cyberAppearance.scanlineSweep, cyberAppearance.pulsingStatusDots, cyberAppearance.bootSequence].filter(function(v) { return v }).length)
+          }
+        }
+      }
+      Connections {
+        target: cyberAppearance
+        function onWindowActiveChanged() { if (!cyberAppearance.windowActive && shell.settingsLoaded) boot.pending = false }
+      }
+    }
     Loader {
       objectName: "cyber-grid-loader"
       anchors.fill: parent
@@ -1707,6 +1748,8 @@ ShellRoot {
                 Layout.preferredWidth: 7
                 Layout.preferredHeight: 7
                 radius: 3.5
+                opacity: dotPulse.item ? dotPulse.item.opacity : 1
+                Loader { id: dotPulse; objectName: "cyber-dot-loader"; active: cyberAppearance.windowActive && cyberAppearance.pulsingStatusDots && parent.visible; sourceComponent: Cyber.Pulse { sampleTick: cyberAppearance.sampleTick } }
                 color: {
                   if (modelData.status === "connected") return shell.themeAccent
                   if (modelData.status.indexOf("connecting") === 0) return Metrics.qtColor(shell.themeColors && shell.themeColors.yellow ? shell.themeColors.yellow : "#e0c36a")
@@ -1887,7 +1930,7 @@ ShellRoot {
 
       RowLayout {
         visible: shell.page === "overview"; Layout.fillWidth: true
-        Text { textFormat: Text.PlainText; text: "OVERVIEW"; color: shell.themeLabel; font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true }
+        Text { transform: Translate { x: cyberAppearance.glitchOffset } textFormat: Text.PlainText; text: "OVERVIEW"; color: shell.themeLabel; font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true }
         Repeater { model: ["systems", "storage", "agents"]; delegate: Text {
           textFormat: Text.PlainText
           required property var modelData; text: (modelData === "systems" ? "" : " · ") + modelData.charAt(0).toUpperCase() + modelData.slice(1)
@@ -1967,9 +2010,10 @@ ShellRoot {
 
             RowLayout {
               Layout.fillWidth: true
-              Text {
+              Cyber.DataText {
+                cyberStyle: cyberAppearance
                 textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.percentText : "—"
+                sourceText: shell.cpuView ? shell.cpuView.percentText : "—"
                 color: shell.themeFg
                 font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                 font.pixelSize: shell.pxHero
@@ -2222,9 +2266,11 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            Text {
+            Cyber.DataText {
+
+              cyberStyle: cyberAppearance
               textFormat: Text.PlainText
-              text: shell.memView ? (shell.memView.headerText || shell.memView.usedText) : "—"
+              sourceText: shell.memView ? (shell.memView.headerText || shell.memView.usedText) : "—"
               color: shell.themeFg
               font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.pxFigure
@@ -2334,10 +2380,12 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            Text {
+            Cyber.DataText {
+
+              cyberStyle: cyberAppearance
               textFormat: Text.PlainText
               readonly property bool gpuLive: shell.gpuView != null && shell.gpuView.unsupported !== true && shell.gpuView.na !== true
-              text: shell.gpuView == null ? "not available" : shell.gpuView.percentText
+              sourceText: shell.gpuView == null ? "not available" : shell.gpuView.percentText
               color: gpuLive ? shell.themeFg : shell.themeLabel
               font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: gpuLive ? shell.pxHero : shell.pxLabel
@@ -2407,9 +2455,10 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeAccent }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.diskView ? shell.diskView.readText : "unavailable"
+                    sourceText: shell.diskView ? shell.diskView.readText : "unavailable"
                     color: shell.themeFg
                     font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
@@ -2437,9 +2486,10 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeCyan }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.diskView ? shell.diskView.writeText : "unavailable"
+                    sourceText: shell.diskView ? shell.diskView.writeText : "unavailable"
                     color: shell.themeFg
                     font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
@@ -2581,9 +2631,10 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeAccent }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.netView ? shell.netView.downText : "—"
+                    sourceText: shell.netView ? shell.netView.downText : "—"
                     color: shell.themeFg
                     font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
@@ -2611,9 +2662,10 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeCyan }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.netView ? shell.netView.upText : "—"
+                    sourceText: shell.netView ? shell.netView.upText : "—"
                     color: shell.themeFg
                     font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
@@ -2705,9 +2757,11 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            Text {
+            Cyber.DataText {
+
+              cyberStyle: cyberAppearance
               textFormat: Text.PlainText
-              text: shell.batView != null ? shell.batView.percentText : "no battery"
+              sourceText: shell.batView != null ? shell.batView.percentText : "no battery"
               color: shell.batView != null ? shell.themeFg : shell.themeLabel
               font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.batView != null ? shell.pxHero : shell.pxLabel

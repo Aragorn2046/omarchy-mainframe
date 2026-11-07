@@ -29,7 +29,17 @@ TestCase {
     ink: "white"; mutedInk: "gray"; accent: "cyan"; warning: "yellow"; critical: "red"; cardColor: "black"; borderColor: "gray"; track: "gray"
     rows: [{name:"Example",category:"other",limits:[{label:"Usage",percent:25,level:"",reset:""}],activity:[],models:[],age:"",status:"",help:""}]
   }
-  function init() { style.fontSource = Qt.resolvedUrl("../fonts/Orbitron-VariableFont_wght.ttf"); style.settings = ({}) }
+  Cyber.DataText { id: figure; cyberStyle: style; sourceText: "20.0%" }
+  Loader {
+    id: ambient; active: style.windowActive && (style.titleGlitch || style.scanlineSweep)
+    sourceComponent: Cyber.Ambient { glitchEnabled: style.titleGlitch; sweepEnabled: style.scanlineSweep }
+  }
+  Loader {
+    id: boot; property bool pending: false
+    active: pending && style.windowActive && style.bootSequence
+    sourceComponent: Cyber.Boot { width: 100; height: 100; onFinished: boot.pending = false }
+  }
+  function init() { style.windowActive = true; boot.pending = false; figure.sourceText = "20.0%"; meter.fraction = 0.5; chart.samples = [10, 40, 20]; style.fontSource = Qt.resolvedUrl("../fonts/Orbitron-VariableFont_wght.ttf"); style.settings = ({}) }
   function loader(item, name) { var result = findChild(item, name); verify(result !== null); return result }
   function test_classic_has_no_cyber_items() {
     compare(style.cyberOn, false)
@@ -95,4 +105,73 @@ TestCase {
     tryCompare(loader(style, "cyber-font-loader").item, "status", FontLoader.Error)
     compare(style.fontFamily, "monospace")
   }
+  function test_motion_loaders_and_visibility() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var clockLoader = loader(style, "cyber-data-clock-loader")
+    verify(clockLoader.active && !clockLoader.item.running)
+    var valueLoader = loader(figure, "cyber-data-text-loader")
+    var meterLoader = loader(meter, "cyber-meter-motion-loader")
+    var chartLoader = loader(chart, "cyber-chart-motion-loader")
+    var dotLoader = loader(overview, "cyber-dot-loader")
+    verify(valueLoader.active && meterLoader.active && chartLoader.active && dotLoader.active)
+    verify(loader(ambient.item, "cyber-glitch-loader").active)
+    verify(loader(ambient.item, "cyber-sweep-loader").active)
+    boot.pending = true
+    verify(boot.active)
+    style.windowActive = false
+    verify(!clockLoader.active && !clockLoader.item)
+    verify(!valueLoader.active && !meterLoader.active && !chartLoader.active && !dotLoader.active && !ambient.active && !boot.active)
+    compare(valueLoader.item, null); compare(meterLoader.item, null); compare(chartLoader.item, null)
+    style.windowActive = true
+    style.settings = {style:"cyberpunk", cyber:{dataAnimations:false, titleGlitch:false, scanlineSweep:false, pulsingStatusDots:false, bootSequence:false}}
+    verify(!clockLoader.active && !clockLoader.item)
+    verify(!valueLoader.active && !meterLoader.active && !chartLoader.active && !dotLoader.active && !ambient.active && !boot.active)
+    compare(valueLoader.item, null); compare(meterLoader.item, null); compare(chartLoader.item, null)
+    style.settings = {style:"cyberpunk", cyber:{titleGlitch:false, scanlineSweep:true}}
+    verify(!loader(ambient.item, "cyber-glitch-loader").active)
+    verify(loader(ambient.item, "cyber-sweep-loader").active)
+    style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:false}}
+    verify(loader(ambient.item, "cyber-glitch-loader").active)
+    verify(!loader(ambient.item, "cyber-sweep-loader").active)
+  }
+  function test_data_motion_exact_and_unchanged() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var val = loader(figure, "cyber-data-text-loader").item
+    var bar = loader(meter, "cyber-meter-motion-loader").item
+    var plot = loader(chart, "cyber-chart-motion-loader").item
+    verify(!val.running && !bar.running && !plot.running)
+    figure.sourceText = "87.3%"; meter.fraction = 0.7234; chart.samples = [10, 40, 85]
+    tryCompare(plot, "running", true, 100)
+    verify(val.running && bar.running && plot.running)
+    tryCompare(val, "running", false, 500); tryCompare(bar, "running", false, 500); tryCompare(plot, "running", false, 500)
+    compare(figure.text, "87.3%")
+    compare(meter.shown, 0.7234)
+    compare(plot.shown[2], 85)
+    figure.sourceText = "87.3%"; meter.fraction = 0.7234; chart.samples = [10, 40, 85]
+    wait(20)
+    verify(!val.running && !bar.running && !plot.running)
+    chart.samples = [20, 40, 85]
+    wait(20)
+    verify(!plot.running)
+    compare(plot.shown[0], 20)
+  }
+  function test_boot_finishes_and_skips() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    boot.pending = true; verify(boot.active)
+    tryCompare(boot, "active", false, 1500)
+    boot.pending = true; verify(boot.active)
+    mouseClick(boot.item, 10, 10)
+    verify(!boot.active)
+    boot.pending = true; verify(boot.active)
+    boot.item.forceActiveFocus(); keyClick(Qt.Key_A)
+    verify(!boot.active)
+  }
+  function test_dot_uses_sample_tick() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var pulse = loader(overview, "cyber-dot-loader").item
+    style.sampleTick = 0; compare(pulse.opacity, 1)
+    style.sampleTick = 1; compare(pulse.opacity, 0.5)
+    style.sampleTick = 2; compare(pulse.opacity, 1)
+  }
+
 }
