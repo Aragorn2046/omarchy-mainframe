@@ -18,11 +18,41 @@ Item {
   property bool busy: false
   property string status: ''
   signal refresh()
+  property var packed: Agents.pack([], 0)
+  function schedulePacking() { Qt.callLater(updatePacking) }
+  function updatePacking() {
+    var blocks = []
+    for (var i = 0; i < sectionRepeater.count; i++) {
+      var section = sectionRepeater.itemAt(i)
+      if (!section) continue
+      var heights = []
+      for (var j = 0; j < section.cardRepeater.count; j++) {
+        var card = section.cardRepeater.itemAt(j)
+        heights.push(card ? card.contentHeight : 0)
+      }
+      blocks.push({key:section.modelData.key, headingHeight:section.headingItem.implicitHeight, cardHeights:heights})
+    }
+    packed = Agents.pack(blocks, scrollView.width)
+  }
+  onSectionDataChanged: schedulePacking()
   function checkLayout() {
-    var failures = 0
-    for (var i = 0; i < sectionRepeater.count; i++) { var section = sectionRepeater.itemAt(i); if (section) failures += section.checkLayout() }
-    var lastSection = sectionRepeater.count > 0 ? sectionRepeater.itemAt(sectionRepeater.count - 1) : null
-    if (lastSection && (lastSection.height > 0 || valueCard.height > 0) && valueCard.y <= lastSection.y + lastSection.height) failures++
+    var failures = 0, cards = [], headings = []
+    for (var i = 0; i < sectionRepeater.count; i++) {
+      var section = sectionRepeater.itemAt(i)
+      if (!section) continue
+      headings.push({x:section.x + section.headingItem.x, y:section.y + section.headingItem.y, width:section.headingItem.width, height:section.headingItem.height})
+      for (var j = 0; j < section.cardRepeater.count; j++) {
+        var card = section.cardRepeater.itemAt(j)
+        if (card) cards.push({item:card, x:section.x + card.x, y:section.y + card.y, width:card.width, height:card.height})
+      }
+    }
+    function overlaps(a, b) { return a.x < b.x + b.width - 0.01 && a.x + a.width > b.x + 0.01 && a.y < b.y + b.height - 0.01 && a.y + a.height > b.y + 0.01 }
+    for (i = 0; i < cards.length; i++) {
+      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight
+      for (j = 0; j < cards.length; j++) if (i !== j && overlaps(c, cards[j])) failed = true
+      for (j = 0; j < headings.length; j++) if (overlaps(c, headings[j])) failed = true
+      if (failed) failures++
+    }
     return failures
   }
   ColumnLayout {
@@ -37,27 +67,29 @@ Item {
     Flickable {
       id: scrollView
       Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-      contentWidth: width; contentHeight: sections.implicitHeight
-      ColumnLayout {
-        id: sections; width: parent.width; spacing: 10
+      contentWidth: width; contentHeight: valueCard.y + valueCard.height
+      onWidthChanged: root.schedulePacking()
+      Item {
+        id: sections; width: scrollView.width; height: scrollView.contentHeight
         Repeater {
           id: sectionRepeater; objectName: 'agents-sections-repeater'; model: root.sectionData.length
-          delegate: ColumnLayout {
+          onItemAdded: root.schedulePacking()
+          onItemRemoved: root.schedulePacking()
+          delegate: Item {
             id: section
             required property int index
             readonly property var modelData: root.sectionData[index] || ({heading:'', cards:[]})
             readonly property var cards: modelData.cards || []
-            Layout.fillWidth: true; spacing: 10
-            function checkLayout() {
-              var failures = 0
-              for (var i = 0; i < repeater.count; i++) { var c = repeater.itemAt(i); var first = repeater.itemAt(Math.floor(i / grid.columns) * grid.columns); if (c && (c.width > grid.width + 1 || c.height + 1 < c.contentHeight || (first && Math.abs(c.y - first.y) > 1))) failures++ }
-              return failures
-            }
-            Text { text: root.cyberStyle && root.cyberStyle.hudFrames ? (section.modelData.heading || '').toUpperCase() : (section.modelData.heading || ''); textFormat: Text.PlainText; color: root.mutedInk; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 12 }
-            GridLayout {
-              id: grid; Layout.fillWidth: true; columns: width >= 1300 ? 3 : 2; columnSpacing: 10; rowSpacing: 10
-              Repeater {
+            readonly property var placement: root.packed.blocks[index] || ({x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]})
+            property alias cardRepeater: repeater
+            property alias headingItem: heading
+            x: placement.x; y: placement.y; width: placement.width
+            height: { var h = heading.height; for (var i = 0; i < placement.cards.length; i++) h = Math.max(h, placement.cards[i].y - y + placement.cards[i].height); return h }
+            Text { id: heading; x: section.placement.heading.x - section.x; y: section.placement.heading.y - section.y; width: section.placement.heading.width; text: root.cyberStyle && root.cyberStyle.hudFrames ? (section.modelData.heading || '').toUpperCase() : (section.modelData.heading || ''); textFormat: Text.PlainText; color: root.mutedInk; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 12; onImplicitHeightChanged: root.schedulePacking() }
+            Repeater {
                 id: repeater; objectName: 'agents-cards-repeater'; model: section.cards.length
+                onItemAdded: root.schedulePacking()
+                onItemRemoved: root.schedulePacking()
                 delegate: Rectangle {
                   id: card
                   required property int index
@@ -66,7 +98,9 @@ Item {
                   readonly property var activity: modelData.activity || []
                   readonly property var models: modelData.models || []
                   readonly property real contentHeight: content.implicitHeight + 24
-                  Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.preferredHeight: contentHeight; Layout.alignment: Qt.AlignTop
+                  readonly property var placement: section.placement.cards[index] || ({x:0, y:0, width:root.packed.columnWidth, height:0})
+                  x: placement.x - section.x; y: placement.y - section.y; width: placement.width; height: placement.height
+                  onContentHeightChanged: root.schedulePacking()
                   radius: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 10; color: root.cardColor; border.width: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 1; border.color: root.borderColor; opacity: modelData.stale ? 0.55 : 1; clip: true
                   Loader { objectName: "cyber-hud-loader"; anchors.fill: parent; active: root.cyberStyle && root.cyberStyle.hudFrames; sourceComponent: Cyber.HudFrame { accent: root.accent } }
                   ColumnLayout {
@@ -108,7 +142,7 @@ Item {
                           readonly property var modelData: card.activity[index] || ({date:'', count:0})
                           width: Math.max(3, (parent.width - 39) / 14); height: 25
                           Rectangle { objectName: 'agents-activity-bar'; anchors.bottom: parent.bottom; width: parent.width; height: Math.max(2, parent.height * (Number(modelData.count) || 0) / parent.parent.peak); color: root.accent; opacity: modelData.count ? 0.8 : 0.2; radius: 1 }
-                          MouseArea { id: hover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
+                          MouseArea { id: hover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton; onEntered: { card.z = 10; section.z = 10 } onExited: { card.z = 0; section.z = 0 } }
                           Rectangle { visible: hover.containsMouse; z: 10; y: -20; width: tip.implicitWidth + 8; height: 20; color: root.cardColor; border.color: root.borderColor
                             Text { textFormat: Text.PlainText; id: tip; anchors.centerIn: parent; text: (modelData.date || '') + ': ' + (modelData.count || 0); color: root.ink; font.pixelSize: 10 } }
                         }
@@ -127,12 +161,11 @@ Item {
                   }
                 }
               }
-            }
           }
         }
         Card {
           id: valueCard; objectName: 'agents-value-card'
-          Layout.fillWidth: true; Layout.preferredHeight: valueContent.implicitHeight + 54
+          x: 0; y: root.packed.height + (root.sectionData.length ? 10 : 0); width: sections.width; height: valueContent.implicitHeight + 54
           cyberStyle: root.cyberStyle; accent: root.accent; title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
           ColumnLayout {
             id: valueContent; width: parent.width; spacing: 6
