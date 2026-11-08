@@ -13,6 +13,28 @@ TestCase {
   function valueData(amount, hosts) {
     return {totals:{today:amount,seven:0,thirty:0}, providers:{claude:{today:amount,seven:0,thirty:0},codex:{today:0,seven:0,thirty:0}}, hosts:hosts, unpriced:[], unpricedTokens:{}, partial:false, excluded:0}
   }
+  function test_value_card_follows_agent_sections() {
+    var rows = []
+    var categories = ['llm', 'video', 'image', 'voice', 'other']
+    for (var i = 0; i < categories.length; i++)
+      for (var j = 0; j < 3; j++) rows.push({name:categories[i] + j, category:categories[i]})
+    view.rows = rows
+    var sections = findChild(view, 'agents-sections-repeater')
+    var valueCard = findChild(view, 'agents-value-card')
+    compare(sections.count, 5)
+    tryVerify(function() {
+      var last = sections.itemAt(sections.count - 1)
+      return last && last.height > 0 && valueCard.y > last.y + last.height
+    })
+    var last = sections.itemAt(sections.count - 1)
+    compare(valueCard.y - (last.y + last.height), 10)
+    compare(view.checkLayout(), 0)
+    verify(view.flick.contentHeight > view.flick.height)
+    view.flick.contentY = view.flick.contentHeight - view.flick.height
+    verify(valueCard.y + valueCard.height <= view.flick.contentY + view.flick.height + 1)
+    view.rows = []
+    view.flick.contentY = 0
+  }
   function test_refresh_preserves_value_rows() {
     view.valueData = valueData(1, [])
     var repeater = findChild(view, "agents-value-repeater")
