@@ -12,6 +12,33 @@ from unittest.mock import patch
 SCRIPT = Path(__file__).resolve().parents[1] / 'agents_usage.py'
 
 class UsageFilesTest(unittest.TestCase):
+    def test_depth_limit_precedes_json_parser_and_ignores_string_brackets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage = root / 'state/omarchy/agents/usage'
+            cache = root / 'cache/mainframe/agents'
+            usage.mkdir(parents=True); cache.mkdir(parents=True)
+            deep = '[' * 129 + '0' + ']' * 129
+            (usage / 'deep.json').write_text(deep)
+            (cache / 'deep-cache.json').write_text(deep)
+            normal = json.dumps({'id': 'valid', 'text': '\\"' + '[' * 200 + '}' * 200})
+            (usage / 'normal.json').write_text(normal)
+            at_limit = '[' * 128 + '0' + ']' * 128
+            (usage / 'limit.json').write_text(at_limit)
+            env = dict(os.environ, XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            loads = json.loads
+            def parse(raw, *args, **kwargs):
+                self.assertNotEqual(raw, deep, 'deep record reached the JSON parser')
+                return loads(raw, *args, **kwargs)
+            with patch.dict(os.environ, env, clear=True), patch('json.loads', side_effect=parse), \
+                 patch('sys.stdout', new_callable=io.StringIO) as output:
+                runpy.run_path(str(SCRIPT), run_name='__main__')
+            files = {item['file']: item['raw'] for item in json.loads(output.getvalue())}
+            self.assertEqual(files['deep.json'], '')
+            self.assertEqual(files['deep-cache.json'], '')
+            self.assertEqual(files['normal.json'], normal)
+            self.assertEqual(files['limit.json'], at_limit)
+
     def test_nested_and_oversized_records_do_not_stop_other_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)

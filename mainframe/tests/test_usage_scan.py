@@ -486,6 +486,31 @@ class ScannerTest(unittest.TestCase):
             path.write_text(json.dumps(index))
             self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 10)
 
+    def test_nested_usage_record_is_skipped_before_parsing(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl')
+        deep = ('{"usage":' + '[' * 128 + '0' + ']' * 128 + '}').encode()
+        normal = self.claude('valid')
+        normal['text'] = '\\"' + '[' * 200 + '}' * 200
+        path.write_bytes(deep + b'\n' + json.dumps(normal).encode() + b'\n')
+        loads = json.loads
+        def parse(raw, *args, **kwargs):
+            self.assertNotEqual(raw, deep, 'deep record reached the JSON parser')
+            return loads(raw, *args, **kwargs)
+        with patch.object(c.json, 'loads', side_effect=parse):
+            result = self.scan()
+        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
+
+    def test_nested_usage_index_is_rebuilt_before_parsing(self):
+        from unittest.mock import patch
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('valid')])
+        self.cache.mkdir()
+        (self.cache / 'usage-index.json').write_text('[' * 129 + '0' + ']' * 129)
+        with patch.object(c.json, 'load', side_effect=AssertionError('deep index reached the JSON parser')):
+            result = self.scan()
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
+
     def test_oversized_tail_and_malformed_usage_lines_are_skipped(self):
         path = self.file('.claude/projects/a.jsonl')
         path.write_bytes(b'x' * (c._USAGE_LINE_LIMIT + 100) + b'"usage"}\n' + b'{"usage": invalid}\n')

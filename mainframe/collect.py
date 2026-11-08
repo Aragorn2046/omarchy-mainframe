@@ -3295,10 +3295,33 @@ def collect_linux(include_procs):
 _USAGE_FIELDS = ('input', 'output', 'cache_read', 'cache_write_5m', 'cache_write_1h', 'cached_input')
 _USAGE_LIMIT = 1024 * 1024 * 1024
 _USAGE_LINE_LIMIT = 2 * 1024 * 1024
+_USAGE_JSON_DEPTH_LIMIT = 128
 _USAGE_CHECKPOINT_BYTES = 64 * 1024 * 1024
 _USAGE_SEEN_LIMIT = 200000
 _USAGE_INDEX_LIMIT = 64 * 1024 * 1024
 _USAGE_FILE_LIMIT = 200000
+
+
+def _usage_json_depth_ok(text):
+    depth = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in '[{':
+            depth += 1
+            if depth > _USAGE_JSON_DEPTH_LIMIT:
+                return False
+        elif char in ']}':
+            depth = max(0, depth - 1)
+    return True
 
 
 def _usage_hour(timestamp):
@@ -3465,6 +3488,9 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                 raise ValueError('index is not a regular file')
             if info.st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
+            if not _usage_json_depth_ok(stream.read()):
+                raise ValueError('index nesting too deep')
+            stream.seek(0)
             loaded = json.load(stream)
         if (not isinstance(loaded, dict) or loaded.get('version') != 8 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
@@ -3745,6 +3771,8 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                             if (b'"usage"' in pending or b'token_count' in pending or
                                     (provider == 'codex' and any(x in pending for x in (b'turn_context', b'session_meta')))):
                                 try:
+                                    if not _usage_json_depth_ok(pending.decode('utf-8-sig')):
+                                        raise ValueError('usage nesting too deep')
                                     data = json.loads(pending)
                                     if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat())
                                 except (ValueError, UnicodeError, TypeError, RecursionError):

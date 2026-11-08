@@ -25,20 +25,26 @@ jobs:
           # nodejs and python run the tests; procps-ng provides process tools.
           # git checks out the repository; ttf-dejavu supplies offscreen fonts.
           pacman -Syu --noconfirm --needed quickshell qt6-declarative nodejs python procps-ng git ttf-dejavu
+          useradd -m mainframe-ci
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+      - name: Give test user ownership of checkout
+        run: chown -R mainframe-ci:mainframe-ci "$GITHUB_WORKSPACE"
       - name: JavaScript tests
-        run: node --test mainframe/tests/
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci node --test mainframe/tests/
       - name: Python tests
-        run: python3 -m unittest discover -s mainframe/tests -p 'test_*.py'
+        run: |
+          # Match GitHub's unlimited stack to exercise the explicit JSON depth limit.
+          ulimit -s unlimited
+          runuser -u mainframe-ci -- env HOME=/home/mainframe-ci python3 -m unittest discover -s mainframe/tests -p 'test_*.py'
       - name: Collector self-test
-        run: python3 mainframe/collect.py --selftest
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci python3 mainframe/collect.py --selftest
       - name: QML tests
-        run: QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic /usr/lib/qt6/bin/qmltestrunner -input mainframe/tests
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic /usr/lib/qt6/bin/qmltestrunner -input mainframe/tests
       - name: Headless smoke tests
         # Skip the real SSH failure check and remote connections: CI has no hosts.
         # The live window is not enabled: CI has no Wayland session. No user bus is needed.
         # Shared runners are noisy, so report CPU and frame measurements without blocking merges.
-        run: MAINFRAME_SMOKE_GATES=report MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic scripts/mainframe-smoke.sh
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci MAINFRAME_SMOKE_GATES=report MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic scripts/mainframe-smoke.sh
