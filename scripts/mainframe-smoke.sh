@@ -363,6 +363,10 @@ def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3):
     return "PASS" if frame_count / elapsed <= limit else "FAIL"
 
 
+def power_gate_verdict(verdict, mode):
+    return "REPORT" if mode == "report" else verdict
+
+
 def sample_cadence_min(window_s):
     """1 Hz samples. The floor is 90% of the window: 18 in 20 s, 27 in 30 s."""
     try:
@@ -434,6 +438,11 @@ def gate_selftest():
     check(frame_gate_verdict(161, 20, True, True, 8) == 'FAIL', 'over 8 fps fails')
     check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
     check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
+    for verdict in (cpu_gate_verdict(4.0, 3.0), frame_gate_verdict(61, 20, True, True)):
+        check(power_gate_verdict(verdict, '') == 'FAIL', 'default mode fails over limit')
+        check(power_gate_verdict(verdict, 'report') == 'REPORT', 'report mode does not fail over limit')
+    for verdict in ('PASS', 'FAIL'):
+        check(power_gate_verdict(verdict, 'report') == 'REPORT', 'report mode reports every verdict')
     pct = cpu_core_percent(0, 1000000, 10.0, "cgroup", 100)
     check(pct is not None and abs(pct - 10.0) < 1e-9, "cgroup 10%")
     pct = cpu_core_percent(50, 150, 10.0, "proc", 100)
@@ -980,7 +989,7 @@ if measure:
         else:
             pct = cpu_core_percent(before, after, elapsed, cpu_mode, clk)
             limit = cpu_gate_limit(live)
-            verdict = cpu_gate_verdict(pct, limit)
+            verdict = power_gate_verdict(cpu_gate_verdict(pct, limit), os.environ.get('MAINFRAME_SMOKE_GATES', ''))
             kind = "live" if live else "offscreen"
             if pct is None:
                 print("cpu qs+collector: no reading (%s)" % kind)
@@ -1000,7 +1009,7 @@ if measure:
             else:
                 print("local collector count: 1 throughout sampled window")
             print("cpu gate: %s (< %.1f%% of one core, %s)" % (verdict, limit, kind))
-            if verdict != "PASS":
+            if verdict == "FAIL":
                 fail = True
             if not live:
                 for name in ('qs', 'collector'):
@@ -1022,9 +1031,14 @@ if measure:
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
                 frame_limit = 8 if mode == 'cyber-all' else 3
-                if frame_gate_verdict(len(frames), elapsed, connected, saw_frame, frame_limit) != 'PASS':
+                frame_verdict = power_gate_verdict(
+                    frame_gate_verdict(len(frames), elapsed, connected, saw_frame, frame_limit),
+                    os.environ.get('MAINFRAME_SMOKE_GATES', ''))
+                if frame_verdict == 'FAIL':
                     print('frame gate: FAIL (expected <= %d fps and a working probe)' % frame_limit)
                     fail = True
+                elif frame_verdict == 'REPORT':
+                    print('frame gate: REPORT (expected <= %d fps and a working probe)' % frame_limit)
                 else:
                     print('frame gate: PASS (<= %d fps)' % frame_limit)
         samples = 0

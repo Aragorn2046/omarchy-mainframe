@@ -43,6 +43,7 @@ MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 
 ```
 
 The same checks run automatically on every pull request. The smoke test skips real SSH and the live Wayland window.
+CI reports power numbers without failing on them, while `scripts/mainframe-smoke.sh` enforces the limits locally.
 
 ## Pull requests
 
