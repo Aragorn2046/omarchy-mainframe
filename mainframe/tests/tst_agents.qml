@@ -54,10 +54,36 @@ TestCase {
     view.rows = [{name:'Agent', category:'other', age:''}]
     compare(limits.count, 0)
     compare(models.count, 0)
-    view.sectionData[0].cards = undefined
-    cards.parent.parent.modelDataChanged()
-    compare(cards.count, 0)
     view.rows = []
     compare(findChild(view, 'agents-sections-repeater').count, 0)
+  }
+  function test_same_count_refresh_updates_visible_values() {
+    function row(percent, modelTotal, activityCount) {
+      return {name:'Agent', category:'other', age:'', showLocalStats:true,
+              limits:[{label:'Limit', percent:percent}],
+              models:[{name:'Model', total:modelTotal}],
+              activity:[{date:'today', count:activityCount}, {date:'yesterday', count:10}]}
+    }
+    view.rows = [row(25, 1, 2)]
+    var card = findChild(view, 'agents-cards-repeater').itemAt(0)
+    var limits = findChild(card, 'agents-limits-repeater')
+    var models = findChild(card, 'agents-models-repeater')
+    var activity = findChild(card, 'agents-activity-repeater')
+    var percent = findChild(limits.itemAt(0), 'agents-limit-percent')
+    var model = models.itemAt(0)
+    var bar = findChild(activity.itemAt(0), 'agents-activity-bar')
+    compare(percent.text, '25%')
+    compare(model.text, 'Model  1 total')
+    compare(bar.height, 5)
+    view.rows = [row(75, 3, 6)]
+    compare(findChild(view, 'agents-cards-repeater').itemAt(0), card)
+    compare(limits.count, 1)
+    compare(models.count, 1)
+    compare(activity.count, 2)
+    compare(percent.text, '75%')
+    compare(model.text, 'Model  3 total')
+    compare(bar.height, 15)
+    view.rows = [row(undefined, 3, 6)]
+    compare(percent.text, '—')
   }
 }

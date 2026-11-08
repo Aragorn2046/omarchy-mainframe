@@ -46,8 +46,8 @@ Item {
             RowLayout {
               Layout.fillWidth: true
               Rectangle { width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk }
-              Text { text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-              Text { textFormat: Text.PlainText; text: card.modelData.badge || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+              Text { objectName: 'overview-title'; text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+              Text { objectName: 'overview-badge'; textFormat: Text.PlainText; text: card.modelData.badge || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
               Text { textFormat: Text.PlainText; text: card.modelData.status || 'idle'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
             }
             RowLayout {

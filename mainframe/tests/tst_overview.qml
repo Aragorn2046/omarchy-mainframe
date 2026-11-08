@@ -21,11 +21,17 @@ TestCase {
     var repeater = findChild(overview, "overview-repeater")
     compare(repeater.count, 1)
     var card = repeater.itemAt(0)
-    overview.rows = [{name:"Updated", status:"connected", badge:"WSL", index:4, view:null}]
+    var title = findChild(card, 'overview-title')
+    var badge = findChild(card, 'overview-badge')
+    overview.rows = [{name:"Updated", status:"connected", badge:"Linux", index:4, view:null}]
     compare(repeater.itemAt(0), card)
-    compare(card.modelData.name, "Updated")
+    compare(title.text, "Updated")
+    compare(badge.text, "Linux")
     overview.rows = [overview.rows[0], {name:"Second", badge:"", status:"idle", index:5, view:null}]
     compare(repeater.count, 2)
+    var first = repeater.itemAt(0)
+    compare(findChild(first, 'overview-title').text, "Updated")
+    compare(findChild(first, 'overview-badge').text, "Linux")
     verify(repeater.itemAt(1) !== null)
     overview.rows = [overview.rows[0]]
     compare(repeater.count, 1)

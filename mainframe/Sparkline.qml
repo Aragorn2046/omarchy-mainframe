@@ -87,8 +87,8 @@ Shape {
     if (width < 2 || height < 2) return
     // A steady chart draws only its label. Its hidden paths need no geometry.
     if (seriesPairSteady(samples, samplesB)) {
-      paintedSamples = samples
-      paintedSamplesB = samplesB
+      paintedSamples = samples ? samples.slice() : samples
+      paintedSamplesB = samplesB ? samplesB.slice() : samplesB
       built = false
       return
     }
@@ -119,8 +119,8 @@ Shape {
     if (fillSvg !== fillPath) fillSvg = fillPath
     if (strokeSvg !== strokePath) strokeSvg = strokePath
     if (strokeSvgB !== strokePathB) strokeSvgB = strokePathB
-    paintedSamples = samples
-    paintedSamplesB = samplesB
+    paintedSamples = samples ? samples.slice() : samples
+    paintedSamplesB = samplesB ? samplesB.slice() : samplesB
   }
 
   function seriesFlat(list) {

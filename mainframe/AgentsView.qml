@@ -117,7 +117,7 @@ Item {
                         RowLayout {
                           Layout.fillWidth: true
                           Text { Layout.fillWidth: true; text: modelData.label || ''; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
-                          Text { textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent === null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
+                          Text { objectName: 'agents-limit-percent'; textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent == null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
                         }
                         Meter { Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
                         Text { textFormat: Text.PlainText; visible: !!modelData.reset; text: modelData.reset || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
@@ -130,12 +130,12 @@ Item {
                       visible: !card.modelData.broken && !card.modelData.sharedStatsWith && !!card.modelData.showLocalStats; Layout.fillWidth: true; Layout.preferredHeight: 25; spacing: 3
                       property real peak: Math.max(1, ...card.activity.map(function(day) { return day && Number(day.count) || 0 }))
                       Repeater {
-                        model: card.activity.length
+                        objectName: 'agents-activity-repeater'; model: card.activity.length
                         delegate: Item {
                           required property int index
                           readonly property var modelData: card.activity[index] || ({date:'', count:0})
                           width: Math.max(3, (parent.width - 39) / 14); height: 25
-                          Rectangle { anchors.bottom: parent.bottom; width: parent.width; height: Math.max(2, parent.height * (Number(modelData.count) || 0) / parent.parent.peak); color: root.accent; opacity: modelData.count ? 0.8 : 0.2; radius: 1 }
+                          Rectangle { objectName: 'agents-activity-bar'; anchors.bottom: parent.bottom; width: parent.width; height: Math.max(2, parent.height * (Number(modelData.count) || 0) / parent.parent.peak); color: root.accent; opacity: modelData.count ? 0.8 : 0.2; radius: 1 }
                           MouseArea { id: hover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
                           Rectangle { visible: hover.containsMouse; z: 10; y: -20; width: tip.implicitWidth + 8; height: 20; color: root.cardColor; border.color: root.borderColor
                             Text { textFormat: Text.PlainText; id: tip; anchors.centerIn: parent; text: (modelData.date || '') + ': ' + (modelData.count || 0); color: root.ink; font.pixelSize: 10 } }
