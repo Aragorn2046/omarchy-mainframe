@@ -30,6 +30,9 @@ TestCase {
     rows: [{name:"Example",category:"other",limits:[{label:"Usage",percent:25,level:"",reset:""}],activity:[],models:[],age:"",status:"",help:""}]
   }
   Item { id: focusTarget; property int presses: 0; Keys.onPressed: function(event) { presses++; event.accepted = true } }
+  Component { id: temporaryFocus; Item { } }
+  QtObject { id: manualClock; signal dataStep(); function requestDataStep() {} }
+  Component { id: chartMotionComponent; Cyber.ChartMotion { clock: manualClock; samples: [0]; samplesB: [0] } }
   Cyber.DataText { id: figure; cyberStyle: style; sourceText: "20.0%" }
   Loader {
     id: ambient; active: style.windowActive && (style.titleGlitch || style.scanlineSweep)
@@ -135,11 +138,63 @@ TestCase {
     verify(loader(ambient.item, "cyber-glitch-loader").active)
     verify(!loader(ambient.item, "cyber-sweep-loader").active)
   }
+  function test_motion_switches_independently() {
+    var keys = ["dataAnimations", "titleGlitch", "scanlineSweep", "pulsingStatusDots", "bootSequence"]
+    for (var i = 0; i < keys.length; ++i) {
+      boot.pending = false
+      style.settings = {style:"cyberpunk", cyber:{}}
+      boot.pending = true
+      figure.sourceText = i % 2 ? "20.0%" : "80.0%"
+      var clockLoader = loader(style, "cyber-data-clock-loader")
+      var glitch = loader(ambient.item, "cyber-glitch-loader")
+      var sweep = loader(ambient.item, "cyber-sweep-loader")
+      glitch.item.startGlitch(); sweep.item.startSweep()
+      verify(clockLoader.item.running && loader(glitch.item, "cyber-glitch-reset").running && loader(sweep.item, "cyber-sweep-travel").running)
+      var switches = {}; switches[keys[i]] = false
+      style.settings = {style:"cyberpunk", cyber:switches}
+      compare(clockLoader.active, i !== 0)
+      compare(loader(figure, "cyber-data-text-loader").active, i !== 0)
+      compare(loader(meter, "cyber-meter-motion-loader").active, i !== 0)
+      compare(loader(chart, "cyber-chart-motion-loader").active, i !== 0)
+      if (i !== 0) verify(clockLoader.item.running)
+      else compare(clockLoader.item, null)
+      compare(glitch.active, i !== 1); compare(sweep.active, i !== 2)
+      if (i !== 1) verify(loader(glitch.item, "cyber-glitch-timer").running && loader(glitch.item, "cyber-glitch-reset").running)
+      else compare(glitch.item, null)
+      if (i !== 2) verify(loader(sweep.item, "cyber-sweep-timer").running && loader(sweep.item, "cyber-sweep-travel").running)
+      else compare(sweep.item, null)
+      var dot = loader(overview, "cyber-dot-loader")
+      compare(dot.active, i !== 3)
+      if (i !== 3) { style.sampleTick = 0; compare(dot.item.opacity, 1); style.sampleTick = 1; compare(dot.item.opacity, 0.5) }
+      else compare(dot.item, null)
+      compare(boot.active, i !== 4)
+      if (i !== 4) verify(loader(boot.item, "cyber-boot-timer").running)
+      else compare(boot.item, null)
+    }
+    boot.pending = false
+  }
+  function test_chart_independent_series_do_not_rewind() {
+    var plot = createTemporaryObject(chartMotionComponent, test)
+    verify(plot !== null)
+    plot.samples = [90]
+    manualClock.dataStep()
+    var before = plot.shown[0]
+    plot.samplesB = [60]
+    compare(plot.shown[0], before)
+    manualClock.dataStep()
+    verify(plot.shown[0] >= before)
+    compare(plot.shown[0], 90)
+    verify(plot.running)
+    manualClock.dataStep()
+    compare(plot.shownB[0], 60)
+    verify(!plot.running)
+  }
   function test_data_motion_exact_and_unchanged() {
     style.settings = {style:"cyberpunk", cyber:{}}
     var val = loader(figure, "cyber-data-text-loader").item
     var bar = loader(meter, "cyber-meter-motion-loader").item
     var plot = loader(chart, "cyber-chart-motion-loader").item
+    compare(loader(style, "cyber-data-clock-loader").item.interval, 50)
     verify(!val.running && !bar.running && !plot.running)
     figure.sourceText = "87.3%"; meter.fraction = 0.7234; chart.samples = [10, 40, 85]
     tryCompare(plot, "running", true, 100)
@@ -167,7 +222,8 @@ TestCase {
     figure.sourceText = "-8.0 C"; compare(figure.text, "-8.0 C")
     val = loader(figure, "cyber-data-text-loader").item
     figure.sourceText = "-4.25 C"; verify(val.running); verify(figure.text.indexOf("-6.75") === 0)
-    tryCompare(val, "running", false, 300); compare(figure.text, "-4.25 C")
+    // Include 100 ms for QtTest polling beyond the animation budget.
+    tryCompare(val, "running", false, 400); compare(figure.text, "-4.25 C")
   }
   function test_chart_missing_endpoint() {
     style.settings = {style:"cyberpunk", cyber:{}}
@@ -188,9 +244,11 @@ TestCase {
     val.valueChanged.connect(a); bar.valueChanged.connect(b); plot.shownChanged.connect(c)
     var start = Date.now()
     figure.sourceText = "75.0%"; meter.fraction = 0.8; chart.samples = [10,40,80]
-    tryVerify(function() { return !val.running && !bar.running && !plot.running }, 300)
-    verify(Date.now() - start <= 300)
-    for (var i = 0; i < counts.length; i++) verify(counts[i] > 0 && counts[i] <= 6)
+    // Allow 100 ms for QtTest polling and scheduling beyond the 300 ms budget.
+    tryVerify(function() { return !val.running && !bar.running && !plot.running }, 400)
+    verify(Date.now() - start <= 400)
+    compare(val.step, 3); compare(bar.step, 3); compare(plot.stepA, 3)
+    for (var i = 0; i < counts.length; i++) compare(counts[i], 3)
     val.valueChanged.disconnect(a); bar.valueChanged.disconnect(b); plot.shownChanged.disconnect(c)
   }
   function test_ambient_timing_and_disable_mid_glitch() {
@@ -198,16 +256,19 @@ TestCase {
     var effects = ambient.item
     verify(effects.glitchInterval >= 20000 && effects.glitchDuration <= 250)
     verify(effects.sweepInterval >= 30000 && effects.sweepStepInterval * effects.sweepSteps <= 2000)
+    compare(effects.glitchInterval, 25000); compare(effects.glitchDuration, 180)
+    compare(effects.sweepInterval, 35000); compare(effects.sweepStepInterval, 300); compare(effects.sweepSteps, 5)
     var glitch = loader(effects, "cyber-glitch-loader")
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     var start = Date.now()
-    tryCompare(effects, "glitchOffset", 0, 250)
-    verify(Date.now() - start <= 250)
+    // Allow 100 ms for QtTest polling and scheduling beyond each budget.
+    tryCompare(effects, "glitchOffset", 0, 350)
+    verify(Date.now() - start <= 350)
     var sweep = loader(effects, "cyber-sweep-loader").item
     sweep.startSweep(); compare(sweep.step, 1)
     start = Date.now()
-    tryCompare(sweep, "step", 0, 2000)
-    verify(Date.now() - start <= 2000)
+    tryCompare(sweep, "step", 0, 2100)
+    verify(Date.now() - start <= 2100)
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:false}}
     compare(effects.glitchOffset, 0); verify(!glitch.active)
@@ -225,8 +286,10 @@ TestCase {
     focusTarget.forceActiveFocus(); verify(focusTarget.activeFocus)
     var start = Date.now()
     boot.pending = true; verify(boot.active)
-    tryCompare(boot, "active", false, 1500)
-    verify(Date.now() - start <= 1500); verify(focusTarget.activeFocus)
+    compare(loader(boot.item, "cyber-boot-timer").interval, 1200)
+    // Allow 100 ms for QtTest polling and scheduling beyond the 1500 ms budget.
+    tryCompare(boot, "active", false, 1600)
+    verify(Date.now() - start <= 1600); verify(focusTarget.activeFocus)
     keyClick(Qt.Key_A); compare(focusTarget.presses, 1)
     boot.pending = true; verify(boot.active)
     mouseClick(boot.item, 10, 10)
@@ -235,6 +298,16 @@ TestCase {
     keyClick(Qt.Key_A)
     verify(!boot.active && focusTarget.activeFocus)
     keyClick(Qt.Key_A); compare(focusTarget.presses, 2)
+  }
+  function test_boot_saved_focus_destroyed() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var target = temporaryFocus.createObject(test)
+    target.forceActiveFocus(); verify(target.activeFocus)
+    boot.pending = true; verify(boot.active)
+    compare(boot.item.previousFocus, target)
+    target.destroy(); wait(0)
+    boot.item.finish()
+    verify(!boot.active)
   }
   function test_dot_uses_sample_tick() {
     style.settings = {style:"cyberpunk", cyber:{}}

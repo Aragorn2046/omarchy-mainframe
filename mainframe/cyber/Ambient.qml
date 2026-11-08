@@ -23,9 +23,9 @@ Item {
         offset = 2; reset.restart()
         if (root.smokeAmbientNow) console.log("AMBIENT glitch t=" + Date.now())
       }
-      Timer { interval: root.glitchInterval; repeat: true; running: true; onTriggered: glitchItem.startGlitch() }
+      Timer { objectName: "cyber-glitch-timer"; interval: root.glitchInterval; repeat: true; running: true; onTriggered: glitchItem.startGlitch() }
       Timer { interval: 8000; running: root.smokeAmbientNow; onTriggered: glitchItem.startGlitch() }
-      Timer { id: reset; interval: root.glitchDuration; onTriggered: glitchItem.offset = 0 }
+      Timer { id: reset; objectName: "cyber-glitch-reset"; interval: root.glitchDuration; onTriggered: glitchItem.offset = 0 }
     }
   }
   Loader {
@@ -41,9 +41,9 @@ Item {
         if (root.smokeAmbientNow) console.log("AMBIENT sweep t=" + Date.now())
       }
       Rectangle { width: parent.width; height: 1; y: parent.height * parent.step / root.sweepSteps; color: root.accent; opacity: parent.step > 0 ? 0.35 : 0 }
-      Timer { interval: root.sweepInterval; repeat: true; running: true; onTriggered: sweep.startSweep() }
+      Timer { objectName: "cyber-sweep-timer"; interval: root.sweepInterval; repeat: true; running: true; onTriggered: sweep.startSweep() }
       Timer { interval: 10000; running: root.smokeAmbientNow; onTriggered: sweep.startSweep() }
-      Timer { id: travel; interval: root.sweepStepInterval; repeat: true; onTriggered: { sweep.step++; if (sweep.step > root.sweepSteps) { stop(); sweep.step = 0 } } }
+      Timer { id: travel; objectName: "cyber-sweep-travel"; interval: root.sweepStepInterval; repeat: true; onTriggered: { sweep.step++; if (sweep.step > root.sweepSteps) { stop(); sweep.step = 0 } } }
     }
   }
 }

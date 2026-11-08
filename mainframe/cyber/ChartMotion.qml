@@ -13,7 +13,8 @@ Item {
   property real fromB: 0
   property bool animateA: false
   property bool animateB: false
-  property int step: 0
+  property int stepA: 0
+  property int stepB: 0
   property bool ready: false
   property bool running: false
   function same(a, b) {
@@ -46,16 +47,18 @@ Item {
       fromA = last(shown)
       animateA = isFinite(fromA) && isFinite(last(samples)) && last(samples) !== last(previousA)
       previousA = samples
+      stepA = animateA ? 1 : 0
+      shown = animateA ? blend(samples, fromA, 1 / 3) : samples
     }
     if (changedB) {
       fromB = last(shownB)
       animateB = isFinite(fromB) && isFinite(last(samplesB)) && last(samplesB) !== last(previousB)
       previousB = samplesB
+      stepB = animateB ? 1 : 0
+      shownB = animateB ? blend(samplesB, fromB, 1 / 3) : samplesB
     }
     if (!animateA && !animateB) { running = false; shown = samples; shownB = samplesB; return }
-    step = 1; running = true
-    shown = animateA ? blend(samples, fromA, 1 / 3) : samples
-    shownB = animateB ? blend(samplesB, fromB, 1 / 3) : samplesB
+    running = true
     if (clock) clock.requestDataStep()
   }
   onSamplesChanged: update()
@@ -64,10 +67,17 @@ Item {
     target: root.clock
     function onDataStep() {
       if (!root.running) return
-      root.step++
-      root.shown = root.step >= 3 || !root.animateA ? root.samples : root.blend(root.samples, root.fromA, root.step / 3)
-      root.shownB = root.step >= 3 || !root.animateB ? root.samplesB : root.blend(root.samplesB, root.fromB, root.step / 3)
-      if (root.step >= 3) { root.running = false; root.animateA = false; root.animateB = false }
+      if (root.animateA) {
+        root.stepA++
+        root.shown = root.stepA >= 3 ? root.samples : root.blend(root.samples, root.fromA, root.stepA / 3)
+        if (root.stepA >= 3) root.animateA = false
+      }
+      if (root.animateB) {
+        root.stepB++
+        root.shownB = root.stepB >= 3 ? root.samplesB : root.blend(root.samplesB, root.fromB, root.stepB / 3)
+        if (root.stepB >= 3) root.animateB = false
+      }
+      if (!root.animateA && !root.animateB) root.running = false
       else root.clock.requestDataStep()
     }
   }

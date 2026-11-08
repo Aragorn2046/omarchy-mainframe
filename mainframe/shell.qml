@@ -139,6 +139,7 @@ ShellRoot {
       settingsRevision++
     }
     if (configWriter.running) { if (kind === "settings") pendingSettings = value; else settingsOverlay.message = "Please wait for the current operation"; return }
+    if (kind === "settings") pendingSettings = null
     configAction = "write"; configInput = JSON.stringify({kind:kind, data:value})
     configWriter.command = ["python3", Quickshell.shellDir + "/config_manager.py", "write"]; configWriter.stdinEnabled = true; configWriter.running = true
   }
@@ -1375,7 +1376,7 @@ ShellRoot {
     stdout: StdioCollector { onStreamFinished: { try { var result = JSON.parse(text); settingsOverlay.message = result.error ? Agents.safeHelp(result.error) : (result.status || (result.ok ? (shell.configAction === "test" ? "OK" : "Saved") : "Error")) } catch(e) { settingsOverlay.message = "Error" } } }
     onExited: function(code, status) {
       if (shell.agentsVisible) shell.loadAgents()
-      if (shell.pendingSettings) { var pending = shell.pendingSettings; shell.pendingSettings = null; Qt.callLater(function() { shell.saveConfig("settings", pending) }) }
+      if (shell.pendingSettings) Qt.callLater(function() { if (shell.pendingSettings && !configWriter.running) shell.saveConfig("settings", shell.pendingSettings) })
       else if (!configReader.running) configReader.running = true
     }
   }

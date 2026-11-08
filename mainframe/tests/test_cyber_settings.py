@@ -12,6 +12,13 @@ spec.loader.exec_module(manager)
 
 
 class CyberSettingsTest(unittest.TestCase):
+    def test_write_creates_fresh_settings_file(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(manager, 'CONFIG', Path(directory)):
+            path = Path(directory) / 'settings.json'
+            self.assertFalse(path.exists())
+            manager.write('settings', {'overviewView': 'systems', 'showUnavailable': True})
+            self.assertEqual(json.loads(path.read_text()), {'overviewView': 'systems', 'showUnavailable': True})
+
     def test_old_and_new_settings(self):
         for settings in ({}, {'overviewView': 'agents', 'showUnavailable': False},
                          {'style': 'cyberpunk', 'cyber': {'hudFrames': True, 'neonGlow': False}}):
