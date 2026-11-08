@@ -1286,13 +1286,17 @@ PY
   fi
 fi
 
-echo "== storage shutdown =="
-if python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" && \
-   python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" --faults; then
-  echo "storage shutdown: pass"
+if [[ "${MAINFRAME_SMOKE_SKIP_STORAGE:-}" == "1" ]]; then
+  echo "storage shutdown: SKIP (MAINFRAME_SMOKE_SKIP_STORAGE=1: no scannable disk in this environment)"
 else
-  echo "storage shutdown: FAIL"
-  fail=1
+  echo "== storage shutdown =="
+  if python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" && \
+     python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" --faults; then
+    echo "storage shutdown: pass"
+  else
+    echo "storage shutdown: FAIL"
+    fail=1
+  fi
 fi
 
 echo "== sparkline interaction =="

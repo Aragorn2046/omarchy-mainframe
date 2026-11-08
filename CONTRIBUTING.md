@@ -44,7 +44,7 @@ MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 
 
 The same checks run automatically on every pull request. CI uses Omarchy's Quickshell package.
 CI skips the real SSH check, connections to remote hosts,
-the live Wayland window, and the systemd scope. CI reports CPU and frame-rate numbers without failing on limit breaches, while
+the live Wayland window, the systemd scope, and the storage shutdown check. CI reports CPU and frame-rate numbers without failing on limit breaches, while
 `scripts/mainframe-smoke.sh` enforces the limits locally. Report mode still fails when measurements are missing.
 
 ## Pull requests
