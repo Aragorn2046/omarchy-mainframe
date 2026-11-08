@@ -166,6 +166,9 @@ def run(base, log_path, faults):
                             os.killpg(group, signal.SIGKILL)
                         except ProcessLookupError:
                             pass
+                    # The session leader may have left the groups found above.
+                    if proc.poll() is None:
+                        proc.kill()
                 proc.wait()
     finally:
         shutil.rmtree(runtime)

@@ -7,12 +7,6 @@
 # MAINFRAME_SMOKE_NO_GUI=1 skips QML, graphical interaction, and SSH checks.
 set -u
 
-# Quickshell can crash without a writable runtime directory.
-if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "$XDG_RUNTIME_DIR" || ! -w "$XDG_RUNTIME_DIR" || ! -x "$XDG_RUNTIME_DIR" ]]; then
-  echo "smoke: XDG_RUNTIME_DIR must be set to a writable, accessible directory" >&2
-  exit 1
-fi
-
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 fail=0
@@ -1229,6 +1223,11 @@ run_qml selftest
 if [[ "${MAINFRAME_SMOKE_NO_GUI:-}" == "1" ]]; then
   echo "GUI and SSH smoke checks: skipped (MAINFRAME_SMOKE_NO_GUI=1)"
 else
+# Quickshell can crash without a writable runtime directory.
+if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "$XDG_RUNTIME_DIR" || ! -w "$XDG_RUNTIME_DIR" || ! -x "$XDG_RUNTIME_DIR" ]]; then
+  echo "smoke: XDG_RUNTIME_DIR must be set to a writable, accessible directory" >&2
+  exit 1
+fi
 echo "== qml load =="
 if ! command -v qs >/dev/null 2>&1; then
   echo "qml load: qs is not on PATH; cannot verify"

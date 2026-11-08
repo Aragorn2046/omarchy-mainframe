@@ -3303,6 +3303,9 @@ _USAGE_FILE_LIMIT = 200000
 
 
 def _usage_json_depth_ok(text):
+    # Nesting cannot exceed the number of openers; count them cheaply in C.
+    if text.count('[') + text.count('{') <= _USAGE_JSON_DEPTH_LIMIT:
+        return True
     depth = 0
     in_string = escaped = False
     for char in text:
@@ -3482,16 +3485,16 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
     dirty = False
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | getattr(os, 'O_NOFOLLOW', 0))
-        with os.fdopen(fd, 'r', encoding='utf-8') as stream:
+        with os.fdopen(fd, 'rb') as stream:
             info = os.fstat(stream.fileno())
             if not stat.S_ISREG(info.st_mode):
                 raise ValueError('index is not a regular file')
             if info.st_size > _USAGE_INDEX_LIMIT:
                 raise ValueError('oversized index')
-            if not _usage_json_depth_ok(stream.read()):
+            text = stream.read().decode('utf-8-sig')
+            if not _usage_json_depth_ok(text):
                 raise ValueError('index nesting too deep')
-            stream.seek(0)
-            loaded = json.load(stream)
+            loaded = json.loads(text)
         if (not isinstance(loaded, dict) or loaded.get('version') != 8 or
                 any(not isinstance(loaded.get(k), dict) for k in ('files', 'seen', 'sessions', 'hours')) or
                 any(not _usage_valid_cursor(value) for value in loaded['sessions'].values()) or
@@ -3771,9 +3774,10 @@ def usage_scan(home=None, cache=None, limit=_USAGE_LIMIT, now=None):
                             if (b'"usage"' in pending or b'token_count' in pending or
                                     (provider == 'codex' and any(x in pending for x in (b'turn_context', b'session_meta')))):
                                 try:
-                                    if not _usage_json_depth_ok(pending.decode('utf-8-sig')):
+                                    text = pending.decode('utf-8-sig')
+                                    if not _usage_json_depth_ok(text):
                                         raise ValueError('usage nesting too deep')
-                                    data = json.loads(pending)
+                                    data = json.loads(text)
                                     if isinstance(data, dict): _usage_record(state, provider, data, Seen(), staged_sessions, staged_hours, utc_now.date().isoformat())
                                 except (ValueError, UnicodeError, TypeError, RecursionError):
                                     if b'"usage"' in pending or b'token_count' in pending:
