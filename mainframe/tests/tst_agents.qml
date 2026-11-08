@@ -140,5 +140,11 @@ TestCase {
     compare(findChild(limits.itemAt(0), 'agents-limit-meter').shown, 0.55)
     compare(findChild(limits.itemAt(1), 'agents-limit-percent').text, 'Warning · 80%')
     compare(findChild(limits.itemAt(1), 'agents-limit-meter').shown, 0.8)
+    compare(findChild(limits.itemAt(1), 'agents-limit-title').text, 'Fable Weekly')
+    record.limits = [{percent:null}, {percent:true}, {percent:false}, {}, {}, {}]
+    view.rows = [Agents.parse(JSON.stringify(record), 'agent', Date.now())]
+    compare(limits.count, 6)
+    for (var i = 0; i < limits.count; i++)
+      compare(findChild(limits.itemAt(i), 'agents-limit-percent').text, '—')
   }
 }

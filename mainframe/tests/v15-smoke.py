@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix='mf15-') as tmp:
             view = 'systems' if page in ('sessions', 'overview') else page
             expected = f'PAGE name={view} rows={6 if page == "agents" else 4} overflow=0'
             extra = 'unreachable=3' if page == 'overview' else ('connected=4' if page == 'sessions' else 'broken=0')
-            if proc.returncode or expected not in line or extra not in line or errors:
+            limit_ok = page != 'agents' or 'AGENT_LIMIT text=Warning · 81%' in log
+            if proc.returncode or expected not in line or extra not in line or not limit_ok or errors:
                 raise SystemExit(f'FAIL {width} {page}: {line}\n' + '\n'.join(errors) + '\n' + log[-2500:])
             print(f'PASS {width} {page}: {line.split("PAGE ", 1)[1]}')

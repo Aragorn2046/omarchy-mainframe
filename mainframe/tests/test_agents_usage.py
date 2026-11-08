@@ -26,7 +26,9 @@ class UsageFilesTest(unittest.TestCase):
                 'claude': {'limits': [{'label': 'Session (5-hour)', 'percent': 0.55},
                                       {'title': 'Fable Weekly', 'percent': 0.8},
                                       {'percent': -1}, {'percent': 2}, {'percent': None}, {'percent': True}]},
-                'codex': {'limits': [{'label': 'Weekly', 'percent': 0.8}]},
+                'codex': {'limits': [{'percent': value} for value in
+                                     (0.4, 40, 81, 1, 150, float('nan'), float('inf'),
+                                      float('-inf'), True, False, None)]},
             }
             env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'),
                        XDG_CACHE_HOME=str(root / 'cache'), OMARCHY_PATH=str(root / 'omarchy'))
@@ -38,8 +40,9 @@ class UsageFilesTest(unittest.TestCase):
                     account = {'id': provider, 'name': provider, 'provider': provider, 'dir': str(root / provider)}
                     self.assertTrue(config_manager.collect(account))
                 command = {'id': 'custom', 'name': 'Custom', 'provider': 'command',
-                           'command': [sys.executable, '-c', 'print(\'{"limits":[{"percent":0.5},{"percent":55}]}\')']}
+                           'command': [sys.executable, '-c', 'print(\'{"provider":"claude","limits":[{"percent":0.5},{"percent":55}]}\')']}
                 self.assertTrue(config_manager.collect(command))
+                self.assertEqual(json.loads((cache / 'custom.json').read_text())['provider'], 'command')
             # An old account cache has the same raw helper format, even when fresh.
             (cache / 'old.json').write_text(json.dumps({'id': 'old', 'provider': 'claude',
                                                        'limits': [{'percent': 0.55}]}))
@@ -47,13 +50,44 @@ class UsageFilesTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
             records = {record['id']: record for record in (json.loads(item['raw']) for item in json.loads(result.stdout))}
             self.assertAlmostEqual(records['claude']['limits'][0]['percent'], 55)
-            self.assertEqual([item['percent'] for item in records['claude']['limits'][1:]], [80, 0, 100, None, True])
+            self.assertEqual([item.get('percent') for item in records['claude']['limits'][1:]], [80, None, 2, None, True])
             self.assertEqual(records['claude']['limits'][1]['title'], 'Fable Weekly')
-            self.assertEqual(records['codex']['limits'][0]['percent'], 80)
+            self.assertEqual([limit.get('percent') for limit in records['codex']['limits']],
+                             [40, 40, 81, 100, 100, None, None, None, True, False, None])
             self.assertAlmostEqual(records['old']['limits'][0]['percent'], 55)
             self.assertEqual(records['other']['limits'][0]['percent'], 80)
             self.assertEqual([item['percent'] for item in records['custom']['limits']], [0.5, 55])
+            self.assertEqual(records['custom']['provider'], 'command')
             self.assertEqual(json.loads((cache / 'claude.json').read_text())['limits'][0]['percent'], 0.55)
+
+    def test_limits_state_and_cache_values_and_repeated_reads(self):
+        values = [0.4, 40, 81, 1, 150, -1, float('nan'), float('inf'),
+                  float('-inf'), True, False, None]
+        expected = [40, 40, 81, 100, 100, None, None, None, None, True, False, None]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage = root / 'state/omarchy/agents/usage'
+            cache = root / 'cache/mainframe/agents'
+            usage.mkdir(parents=True); cache.mkdir(parents=True)
+            for directory, ident in ((usage, 'state'), (cache, 'cache')):
+                (directory / (ident + '.json')).write_text(json.dumps({
+                    'id': ident, 'provider': 'claude',
+                    'limits': [{'percent': value} for value in values]}))
+            unchanged = '{ "id": "unchanged", "limits": [{"percent": 40}, {"percent": 0}, {"percent": null}, {"percent": true}] }'
+            (usage / 'unchanged.json').write_text(unchanged)
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            def read():
+                return subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True).stdout
+            first = read()
+            self.assertEqual(first, read())
+            items = {item['file']: item for item in json.loads(first)}
+            self.assertFalse(items['state.json'].get('mainframe', False))
+            self.assertTrue(items['cache.json']['mainframe'])
+            self.assertEqual(items['unchanged.json']['raw'], unchanged)
+            for ident in ('state', 'cache'):
+                limits = json.loads(items[ident + '.json']['raw'])['limits']
+                self.assertEqual([limit.get('percent') for limit in limits], expected)
+                for limit in limits[5:9]: self.assertNotIn('percent', limit)
 
     def test_nested_and_oversized_records_do_not_stop_other_files(self):
         with tempfile.TemporaryDirectory() as tmp:
