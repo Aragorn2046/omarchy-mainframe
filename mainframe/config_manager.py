@@ -69,6 +69,9 @@ def validate(kind, data):
                 if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in rates.values()): raise ValueError('Invalid price rate')
     elif kind == 'settings':
         if data.get('overviewView', 'systems') not in ('systems', 'storage', 'agents') or not isinstance(data.get('showUnavailable', False), bool): raise ValueError('Invalid display settings')
+        if data.get('style', 'classic') not in ('classic', 'cyberpunk'): raise ValueError('Invalid style')
+        cyber = data.get('cyber', {})
+        if not isinstance(cyber, dict) or any(not isinstance(value, bool) for value in cyber.values()): raise ValueError('Invalid cyber settings')
     else: raise ValueError('Unknown configuration')
     return data
 
@@ -104,9 +107,15 @@ def write(kind, data, replace_invalid=False):
     target = CONFIG / (kind + '.json')
     if target.is_symlink():
         raise ValueError(f'{kind}.json is a symbolic link; not overwriting it')
-    _, error = read_config(kind)
+    current, error = read_config(kind)
     if error and replace_invalid is not True:
         raise ValueError(f'{error}. Fix or move the file before saving, or explicitly replace it.')
+    if kind == 'settings' and not error:
+        cyber = data.get('cyber')
+        data = {**current, **data}
+        if cyber is not None:
+            data['cyber'] = {**current.get('cyber', {}), **cyber}
+        validate(kind, data)
     CONFIG.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(prefix='.' + kind + '-', dir=target.parent)
     try:

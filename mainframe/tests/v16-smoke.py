@@ -14,6 +14,9 @@ with tempfile.TemporaryDirectory(prefix='mf16-') as tmp:
         (base/name).mkdir(parents=True)
     (base/'runtime').chmod(0o700)
     (base/'config/mainframe/hosts.json').write_text(json.dumps({'hosts':[{'name':n,'ssh':n.lower().replace(' ', '-')} for n in ('Host A','Host B','Host C')]}))
+    saved_settings = {'overviewView':'systems', 'showUnavailable':False, 'theme':'follow-omarchy',
+                      'style':'classic', 'cyber':{'hudFrames':False}, 'futureSetting':42}
+    (base/'config/mainframe/settings.json').write_text(json.dumps(saved_settings))
     record={'name':'Fixture','updatedAt':datetime.datetime.now(datetime.timezone.utc).isoformat(),'limits':[{'label':'Weekly','percent':0.3}]}
     (base/'state/omarchy/agents/usage/a.json').write_text(json.dumps(record))
     for width in (1800,900):
@@ -33,5 +36,5 @@ with tempfile.TemporaryDirectory(prefix='mf16-') as tmp:
             expected='systems' if page=='settings' else page
             if proc.returncode or f'PAGE name={expected}' not in line or (('rows=1' not in line) if page == 'agents' else ('rows=6' not in line or not re.search(r'drives=(1[5-9]|[2-9][0-9])',line)) if page == 'storage' else ('rows=4' not in line)) or 'overflow=0' not in line or errors:
                 raise SystemExit(f'FAIL {width} {page}: {line}\n'+ '\n'.join(errors)+'\n'+log[-2000:])
-            if page == 'settings' and json.loads((base/'config/mainframe/settings.json').read_text()) != {'overviewView':'systems','showUnavailable':True}: raise SystemExit('Settings write failed')
+            if page == 'settings' and json.loads((base/'config/mainframe/settings.json').read_text()) != dict(saved_settings, showUnavailable=True): raise SystemExit('Settings write lost existing keys')
             print(f'PASS {width} {page}: {line.split("PAGE ",1)[1]}')

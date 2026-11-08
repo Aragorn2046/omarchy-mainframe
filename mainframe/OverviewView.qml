@@ -1,9 +1,11 @@
 import QtQuick
 import QtQuick.Layouts
+import "cyber" as Cyber
 import "lib/agents.js" as Agents
 
 Item {
   id: root
+  property var cyberStyle: null
   property alias flick: scrollView
   property var rows: []
   property color ink; property color mutedInk; property color accent; property color secondary
@@ -40,13 +42,18 @@ Item {
           readonly property real minimumHeight: 134
           Layout.fillWidth: true
           Layout.preferredHeight: Math.max(minimumHeight, (root.height - Math.max(0, root.rows.length - 1) * 10) / Math.max(1, root.rows.length))
-          radius: 10; color: root.cardColor; border.color: root.borderColor; clip: true
+          radius: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 10; color: root.cardColor; border.width: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 1; border.color: root.borderColor; clip: true
+          Loader { objectName: "cyber-hud-loader"; anchors.fill: parent; active: root.cyberStyle && root.cyberStyle.hudFrames; sourceComponent: Cyber.HudFrame { accent: root.accent } }
           ColumnLayout {
             anchors.fill: parent; anchors.margins: 12; spacing: 7
             RowLayout {
               Layout.fillWidth: true
-              Rectangle { width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk }
-              Text { objectName: 'overview-title'; text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+              Rectangle {
+                width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk
+                opacity: pulse.item ? pulse.item.opacity : 1
+                Loader { id: pulse; objectName: "cyber-dot-loader"; active: root.visible && root.cyberStyle && root.cyberStyle.windowActive && root.cyberStyle.pulsingStatusDots; sourceComponent: Cyber.Pulse { sampleTick: root.cyberStyle.sampleTick } }
+              }
+              Text { objectName: 'overview-title'; text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
               Text { objectName: 'overview-badge'; textFormat: Text.PlainText; text: card.modelData.badge || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
               Text { textFormat: Text.PlainText; text: card.modelData.status || 'idle'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
             }
@@ -54,8 +61,8 @@ Item {
               Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 4
-                Text { objectName: "overview-cpu-value"; textFormat: Text.PlainText; text: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: 'monospace'; font.pixelSize: 14 }
-                Sparkline { objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
+                Cyber.DataText { cyberStyle: root.cyberStyle; objectName: "overview-cpu-value"; textFormat: Text.PlainText; sourceText: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                Sparkline { cyberStyle: root.cyberStyle; objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
                 Row {
                   Layout.fillWidth: true; spacing: 2; clip: true
                   Repeater {
@@ -72,9 +79,9 @@ Item {
               }
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 6
-                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'MEM  ' + (card.mem ? card.mem.usedText : '—'); color: root.ink; font.family: 'monospace'; font.pixelSize: 14; elide: Text.ElideRight }
-                Text { textFormat: Text.PlainText; text: card.mem && card.mem.usedText !== '—' && card.mem.usedText !== 'n/a' ? Math.round(card.mem.fraction * 100) + '%' : '—'; color: root.ink; font.family: 'monospace'; font.pixelSize: 14 }
-                Meter { Layout.fillWidth: true; implicitHeight: 7; fraction: card.mem ? card.mem.fraction : 0; fill: root.secondary; track: root.track; critical: false }
+                Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'MEM  ' + (card.mem ? card.mem.usedText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14; elide: Text.ElideRight }
+                Text { textFormat: Text.PlainText; text: card.mem && card.mem.usedText !== '—' && card.mem.usedText !== 'n/a' ? Math.round(card.mem.fraction * 100) + '%' : '—'; color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                Meter { cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 7; fraction: card.mem ? card.mem.fraction : 0; fill: root.secondary; track: root.track; critical: false }
                 Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'swap  ' + (card.mem ? card.mem.swapText : '—'); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
               }
             }

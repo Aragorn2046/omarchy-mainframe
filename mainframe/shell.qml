@@ -3,6 +3,7 @@
 import QtQuick
 import QtQuick.Layouts
 import QtQuick.Window
+import "cyber" as Cyber
 import Quickshell
 import Quickshell.Io
 import "lib/metrics.js" as Metrics
@@ -77,6 +78,9 @@ ShellRoot {
   property string configInput: ""
   property string configAction: ""
   property var pendingSettings: null
+  property var initialSettingsEdits: null
+  property int settingsRevision: 0
+  property int readingSettingsRevision: 0
   property bool hostsInitialized: false
   property string hostsSnapshot: ""
   property var remoteSlots: []
@@ -93,7 +97,7 @@ ShellRoot {
     if (["systems", "storage", "agents"].indexOf(value) < 0) return
     overviewView = value
     if (!settingsLoaded) return
-    saveConfig("settings", {overviewView:value, showUnavailable:settingsData.settings.showUnavailable === true})
+    saveConfig("settings", Object.assign({overviewView:value}, settingsData.settings, {overviewView:value}))
     if (agentsVisible) { loadAgents(); refreshAgents(false) }
   }
   function cycleOverview(step) { setOverviewView(Navigation.cycle(overviewView, step)) }
@@ -125,7 +129,17 @@ ShellRoot {
     if (initialized) { configReloadTimer.restart(); if (settingsLoaded && name === "settings") refreshThemes("") }
   }
   function saveConfig(kind, value) {
+    if (kind === "settings") {
+      if (!settingsLoaded) {
+        initialSettingsEdits = Object.assign({}, initialSettingsEdits || {}, value)
+        return
+      }
+      value = Object.assign({}, settingsData.settings || {}, value)
+      settingsData = Object.assign({}, settingsData, {settings:value})
+      settingsRevision++
+    }
     if (configWriter.running) { if (kind === "settings") pendingSettings = value; else settingsOverlay.message = "Please wait for the current operation"; return }
+    if (kind === "settings") pendingSettings = null
     configAction = "write"; configInput = JSON.stringify({kind:kind, data:value})
     configWriter.command = ["python3", Quickshell.shellDir + "/config_manager.py", "write"]; configWriter.stdinEnabled = true; configWriter.running = true
   }
@@ -1348,10 +1362,12 @@ ShellRoot {
   Process {
     id: configReader
     command: ["python3", Quickshell.shellDir + "/config_manager.py", "read"]
+    onStarted: shell.readingSettingsRevision = shell.settingsRevision
     stdout: StdioCollector { onStreamFinished: { try {
-      var data = JSON.parse(text); var changed = shell.settingsData.settings.showUnavailable !== data.settings.showUnavailable; var accountsChanged = JSON.stringify(shell.settingsData.accounts) !== JSON.stringify(data.accounts); shell.settingsData = data; if (changed && shell.agentsVisible) shell.loadAgents(); if (shell.settingsLoaded && accountsChanged && shell.agentsVisible) shell.refreshAgents(false)
+      var data = JSON.parse(text); if (shell.readingSettingsRevision !== shell.settingsRevision || shell.pendingSettings || configWriter.running) data.settings = shell.settingsData.settings; var changed = shell.settingsData.settings.showUnavailable !== data.settings.showUnavailable; var accountsChanged = JSON.stringify(shell.settingsData.accounts) !== JSON.stringify(data.accounts); shell.settingsData = data; if (changed && shell.agentsVisible) shell.loadAgents(); if (shell.settingsLoaded && accountsChanged && shell.agentsVisible) shell.refreshAgents(false)
       if (data.errors && Object.keys(data.errors).length) settingsOverlay.message = Object.keys(data.errors).map(function(kind) { return data.errors[kind] }).join("\n")
       if (!shell.settingsLoaded) { shell.settingsLoaded = true; if (!shell.smokeMode || !String(Quickshell.env("MAINFRAME_SMOKE_PAGE") || "")) shell.overviewView = ["systems", "storage", "agents"].indexOf(data.settings.overviewView) >= 0 ? data.settings.overviewView : "systems"; if (shell.agentsVisible) { shell.loadAgents(); if (shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_PAGE") || "") === "agents") shell.refreshAgents(false) } }
+      if (shell.initialSettingsEdits) { var edits = shell.initialSettingsEdits; shell.initialSettingsEdits = null; Qt.callLater(function() { shell.saveConfig("settings", edits) }) }
     } catch (e) { settingsOverlay.message = "Cannot read settings" } } }
   }
   Process {
@@ -1359,9 +1375,9 @@ ShellRoot {
     onStarted: { if (stdinEnabled) { write(shell.configInput); stdinEnabled = false } }
     stdout: StdioCollector { onStreamFinished: { try { var result = JSON.parse(text); settingsOverlay.message = result.error ? Agents.safeHelp(result.error) : (result.status || (result.ok ? (shell.configAction === "test" ? "OK" : "Saved") : "Error")) } catch(e) { settingsOverlay.message = "Error" } } }
     onExited: function(code, status) {
-      if (!configReader.running) configReader.running = true
       if (shell.agentsVisible) shell.loadAgents()
-      if (shell.pendingSettings) { var pending = shell.pendingSettings; shell.pendingSettings = null; Qt.callLater(function() { shell.saveConfig("settings", pending) }) }
+      if (shell.pendingSettings) Qt.callLater(function() { if (shell.pendingSettings && !configWriter.running) shell.saveConfig("settings", shell.pendingSettings) })
+      else if (!configReader.running) configReader.running = true
     }
   }
   // FileView watches existing files; periodic reload also discovers newly created files.
@@ -1596,6 +1612,55 @@ ShellRoot {
       id: windowContent
       anchors.fill: parent
       color: String(Quickshell.env("MAINFRAME_PREVIEW_OUTPUT") || "") ? shell.themeBg : "transparent"
+    Cyber.CyberStyle {
+      id: cyberAppearance
+      settings: shell.settingsData.settings
+      windowActive: windowProbe.Window.window && windowProbe.Window.window.visible && windowProbe.Window.window.visibility !== Window.Minimized && !shell.quitting
+      sampleTick: shell.samples
+      glitchOffset: ambient.item ? ambient.item.glitchOffset : 0
+    }
+    Loader {
+      id: ambient
+      objectName: "cyber-ambient-loader"
+      anchors.fill: parent; z: 190
+      active: cyberAppearance.windowActive && (cyberAppearance.titleGlitch || cyberAppearance.scanlineSweep)
+      sourceComponent: Cyber.Ambient {
+        accent: shell.themeAccent
+        smokeAmbientNow: shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_AMBIENT_NOW") || "") === "1"
+        glitchEnabled: cyberAppearance.titleGlitch
+        sweepEnabled: cyberAppearance.scanlineSweep
+      }
+    }
+    Loader {
+      id: boot
+      objectName: "cyber-boot-loader"
+      property bool pending: !(shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_SKIP_BOOT") || "") === "1")
+      property bool started: false
+      onActiveChanged: { if (active) started = true; else if (started) pending = false }
+      anchors.fill: parent; z: 300
+      active: pending && shell.settingsLoaded && cyberAppearance.windowActive && cyberAppearance.bootSequence
+      sourceComponent: Cyber.Boot { ink: shell.themeFg; accent: shell.themeAccent; color: shell.themeBg; onFinished: boot.pending = false }
+      Connections {
+        target: shell
+        function onSettingsLoadedChanged() {
+          if (shell.settingsLoaded && !cyberAppearance.bootSequence) boot.pending = false
+          if (shell.settingsLoaded && String(Quickshell.env("MAINFRAME_SMOKE_STYLE_EXPECTED") || "")) {
+            console.log("CYBER static=" + [cyberAppearance.hudFrames, cyberAppearance.neonGlow, cyberAppearance.gridBackdrop, cyberAppearance.displayFont, cyberAppearance.segmentedMeters].every(function(v) { return v })
+              + " motion=" + [cyberAppearance.dataAnimations, cyberAppearance.titleGlitch, cyberAppearance.scanlineSweep, cyberAppearance.pulsingStatusDots, cyberAppearance.bootSequence].filter(function(v) { return v }).length)
+          }
+        }
+      }
+      Connections {
+        target: cyberAppearance
+        function onWindowActiveChanged() { if (!cyberAppearance.windowActive && shell.settingsLoaded) boot.pending = false }
+      }
+    }
+    Loader {
+      objectName: "cyber-grid-loader"
+      anchors.fill: parent
+      active: cyberAppearance.gridBackdrop
+      sourceComponent: Cyber.GridBackdrop { accent: shell.themeAccent }
+    }
     Rectangle {
       id: helpOverlay
       anchors.fill: parent; z: 200; visible: shell.helpOpen
@@ -1643,7 +1708,7 @@ ShellRoot {
       id: settingsOverlay; anchors.fill: parent; visible: shell.settingsOpen
       config: shell.settingsData; ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent; cardColor: shell.themeCard; borderColor: shell.themeBorder
       onClose: shell.settingsOpen = false
-      onSave: function(kind, value) { shell.saveConfig(kind, value); if (kind === "settings") shell.overviewView = value.overviewView }
+      onSave: function(kind, value) { shell.saveConfig(kind, value); if (kind === "settings" && value.overviewView) shell.overviewView = value.overviewView }
       onTestHost: function(alias) { shell.testConfig("host", alias) }
       onTestAccount: function(account) { shell.testConfig("account", account) }
     }
@@ -1685,6 +1750,8 @@ ShellRoot {
                 Layout.preferredWidth: 7
                 Layout.preferredHeight: 7
                 radius: 3.5
+                opacity: dotPulse.item ? dotPulse.item.opacity : 1
+                Loader { id: dotPulse; objectName: "cyber-dot-loader"; active: cyberAppearance.windowActive && cyberAppearance.pulsingStatusDots && parent.visible; sourceComponent: Cyber.Pulse { sampleTick: cyberAppearance.sampleTick } }
                 color: {
                   if (modelData.status === "connected") return shell.themeAccent
                   if (modelData.status.indexOf("connecting") === 0) return Metrics.qtColor(shell.themeColors && shell.themeColors.yellow ? shell.themeColors.yellow : "#e0c36a")
@@ -1865,7 +1932,7 @@ ShellRoot {
 
       RowLayout {
         visible: shell.page === "overview"; Layout.fillWidth: true
-        Text { textFormat: Text.PlainText; text: "OVERVIEW"; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true }
+        Text { transform: Translate { x: cyberAppearance.glitchOffset } textFormat: Text.PlainText; text: "OVERVIEW"; color: shell.themeLabel; font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true }
         Repeater { model: ["systems", "storage", "agents"]; delegate: Text {
           textFormat: Text.PlainText
           required property var modelData; text: (modelData === "systems" ? "" : " · ") + modelData.charAt(0).toUpperCase() + modelData.slice(1)
@@ -1874,6 +1941,7 @@ ShellRoot {
         } }
       }
       OverviewView {
+        cyberStyle: cyberAppearance
         id: systemsView
         Layout.fillWidth: true
         Layout.fillHeight: true
@@ -1884,6 +1952,7 @@ ShellRoot {
         onOpenMachine: function(index) { shell.selectTab(index + 1) }
       }
       FleetStorage {
+        cyberStyle: cyberAppearance
         id: fleetStorage
         Layout.fillWidth: true; Layout.fillHeight: true
         visible: shell.page === "overview" && shell.overviewView === "storage"
@@ -1892,6 +1961,7 @@ ShellRoot {
         cardColor: shell.themeCard; borderColor: shell.themeBorder; track: shell.themeTrack
       }
       AgentsView {
+        cyberStyle: cyberAppearance
         id: agentsView
         Layout.fillWidth: true
         Layout.fillHeight: true
@@ -1918,6 +1988,7 @@ ShellRoot {
         columns: shell.columns
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-cpu"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -1941,11 +2012,12 @@ ShellRoot {
 
             RowLayout {
               Layout.fillWidth: true
-              Text {
+              Cyber.DataText {
+                cyberStyle: cyberAppearance
                 textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.percentText : "—"
+                sourceText: shell.cpuView ? shell.cpuView.percentText : "—"
                 color: shell.themeFg
-                font.family: "monospace"
+                font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                 font.pixelSize: shell.pxHero
                 font.weight: Font.Medium
               }
@@ -1968,6 +2040,7 @@ ShellRoot {
 
             Text { textFormat: Text.PlainText; visible: shell.cpuView && !!shell.cpuView.windowsText; text: shell.cpuView ? (shell.cpuView.windowsText || "") : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel }
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2139,6 +2212,7 @@ ShellRoot {
                   }
 
                   Meter {
+                    cyberStyle: cyberAppearance
                     objectName: "core-meter"
                     vertical: true
                     // anchors.bottom made a short cell negative. Height is clamped,
@@ -2173,6 +2247,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-mem"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2193,11 +2268,13 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            Text {
+            Cyber.DataText {
+
+              cyberStyle: cyberAppearance
               textFormat: Text.PlainText
-              text: shell.memView ? (shell.memView.headerText || shell.memView.usedText) : "—"
+              sourceText: shell.memView ? (shell.memView.headerText || shell.memView.usedText) : "—"
               color: shell.themeFg
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.pxFigure
               font.weight: Font.Medium
               elide: Text.ElideRight
@@ -2206,6 +2283,7 @@ ShellRoot {
 
             Text { textFormat: Text.PlainText; visible: shell.memView && !!shell.memView.wslText; text: shell.memView ? (shell.memView.windowsUnavailable ? "Windows totals unavailable" : (shell.memView.wslText || "")) : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel; Layout.fillWidth: true; elide: Text.ElideRight }
             Meter {
+              cyberStyle: cyberAppearance
               Layout.fillWidth: true
               Layout.preferredHeight: 12
               fraction: shell.memView ? shell.memView.fraction : 0
@@ -2231,6 +2309,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2282,6 +2361,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-gpu"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2302,12 +2382,14 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            Text {
+            Cyber.DataText {
+
+              cyberStyle: cyberAppearance
               textFormat: Text.PlainText
               readonly property bool gpuLive: shell.gpuView != null && shell.gpuView.unsupported !== true && shell.gpuView.na !== true
-              text: shell.gpuView == null ? "not available" : shell.gpuView.percentText
+              sourceText: shell.gpuView == null ? "not available" : shell.gpuView.percentText
               color: gpuLive ? shell.themeFg : shell.themeLabel
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: gpuLive ? shell.pxHero : shell.pxLabel
               font.weight: Font.Medium
             }
@@ -2323,6 +2405,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2340,6 +2423,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           id: diskCard
           objectName: "card-disk"
           clickable: true
@@ -2373,11 +2457,12 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeAccent }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.diskView ? shell.diskView.readText : "unavailable"
+                    sourceText: shell.diskView ? shell.diskView.readText : "unavailable"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2403,11 +2488,12 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeCyan }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.diskView ? shell.diskView.writeText : "unavailable"
+                    sourceText: shell.diskView ? shell.diskView.writeText : "unavailable"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2440,6 +2526,7 @@ ShellRoot {
             }
 
             Meter {
+              cyberStyle: cyberAppearance
               Layout.fillWidth: true
               Layout.preferredHeight: 12
               fraction: shell.diskView ? shell.diskView.fraction : 0
@@ -2449,6 +2536,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2496,6 +2584,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-net"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2544,11 +2633,12 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeAccent }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.netView ? shell.netView.downText : "—"
+                    sourceText: shell.netView ? shell.netView.downText : "—"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2574,11 +2664,12 @@ ShellRoot {
                   Layout.minimumWidth: 0
                   spacing: 5
                   Rectangle { Layout.preferredWidth: 7; Layout.preferredHeight: 7; radius: 1; color: shell.themeCyan }
-                  Text {
+                  Cyber.DataText {
+                    cyberStyle: cyberAppearance
                     textFormat: Text.PlainText
-                    text: shell.netView ? shell.netView.upText : "—"
+                    sourceText: shell.netView ? shell.netView.upText : "—"
                     color: shell.themeFg
-                    font.family: "monospace"
+                    font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
                     font.pixelSize: shell.pxFigure
                     font.weight: Font.Medium
                     elide: Text.ElideRight
@@ -2625,6 +2716,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2646,6 +2738,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-bat"
           Layout.fillWidth: true
           Layout.fillHeight: true
@@ -2666,11 +2759,13 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            Text {
+            Cyber.DataText {
+
+              cyberStyle: cyberAppearance
               textFormat: Text.PlainText
-              text: shell.batView != null ? shell.batView.percentText : "no battery"
+              sourceText: shell.batView != null ? shell.batView.percentText : "no battery"
               color: shell.batView != null ? shell.themeFg : shell.themeLabel
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.batView != null ? shell.pxHero : shell.pxLabel
               font.weight: Font.Medium
             }
@@ -2690,11 +2785,12 @@ ShellRoot {
               visible: shell.batView != null
               text: shell.batView != null ? shell.batView.powerText : ""
               color: shell.themeFg
-              font.family: "monospace"
+              font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
               font.pixelSize: shell.pxFigure
             }
 
             Meter {
+              cyberStyle: cyberAppearance
               visible: shell.batView != null
               Layout.fillWidth: true
               Layout.preferredHeight: shell.batView != null ? 12 : 0
@@ -2706,6 +2802,7 @@ ShellRoot {
             }
 
             Sparkline {
+              cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
               tooltipBg: shell.themeCard
@@ -2726,6 +2823,7 @@ ShellRoot {
         }
 
         Card {
+          cyberStyle: cyberAppearance; accent: shell.themeAccent
           objectName: "card-proc"
           Layout.fillWidth: true
           Layout.fillHeight: true

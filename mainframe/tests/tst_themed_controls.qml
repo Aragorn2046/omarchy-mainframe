@@ -31,6 +31,52 @@ TestCase {
     overlay.destroy()
   }
 
+  function test_settings_save_emits_only_the_changed_key() {
+    var overlay = overlayComponent.createObject(test, {
+      config: {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{
+        overviewView:"systems", showUnavailable:false, theme:"example",
+        style:"cyberpunk", cyber:{hudFrames:false}, futureSetting:42
+      }}
+    })
+    var saved = null
+    overlay.save.connect(function(kind, value) { if (kind === "settings") saved = value })
+    overlay.saveSetting("overviewView", "agents")
+    compare(saved.overviewView, "agents")
+    compare(Object.keys(saved).length, 1)
+    overlay.destroy()
+  }
+
+  function test_cyber_settings_controls() {
+    var overlay = overlayComponent.createObject(test, {config:{hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"classic", cyber:{hudFrames:false, future:true}}}})
+    var saved = null
+    overlay.save.connect(function(kind, value) { if (kind === "settings") saved = value })
+    compare(findChild(overlay, "cyber-switch-hudFrames"), null)
+    overlay.config = {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"cyberpunk", cyber:{hudFrames:false, future:true}}}
+    var hud = findChild(overlay, "cyber-switch-hudFrames")
+    verify(hud !== null && !hud.checked)
+    verify(findChild(overlay, "cyber-switch-bootSequence").checked)
+    overlay.saveCyber("neonGlow", false)
+    compare(saved.cyber.hudFrames, false)
+    compare(saved.cyber.neonGlow, false)
+    compare(saved.cyber.future, true)
+    overlay.config = {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"classic"}}
+    compare(findChild(overlay, "cyber-switch-hudFrames"), null)
+    overlay.destroy()
+  }
+
+  function test_cyber_delegates_survive_save() {
+    var overlay = overlayComponent.createObject(test, {config:{hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"cyberpunk", cyber:{}}}})
+    var keys = ["hudFrames", "neonGlow", "gridBackdrop", "displayFont", "segmentedMeters", "dataAnimations", "titleGlitch", "scanlineSweep", "pulsingStatusDots", "bootSequence"]
+    var delegates = keys.map(function(key) { return findChild(overlay, "cyber-switch-" + key) })
+    overlay.save.connect(function(kind, value) {
+      overlay.config = {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"cyberpunk", cyber:value.cyber}}
+    })
+    delegates[0].toggle(); delegates[0].clicked()
+    compare(delegates[0].checked, false)
+    for (var i = 0; i < keys.length; i++) compare(findChild(overlay, "cyber-switch-" + keys[i]), delegates[i])
+    overlay.destroy()
+  }
+
   function test_controls() {
     compare(button.height, 30)
     compare(field.height, 30)

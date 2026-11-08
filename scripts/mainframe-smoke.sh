@@ -357,10 +357,10 @@ def cpu_gate_verdict(pct, limit):
     return "PASS"
 
 
-def frame_gate_verdict(frame_count, elapsed, connected, saw_frame):
+def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3):
     if not connected or not saw_frame or elapsed <= 0 or frame_count < 0:
         return "FAIL"
-    return "PASS" if frame_count / elapsed <= 3 else "FAIL"
+    return "PASS" if frame_count / elapsed <= limit else "FAIL"
 
 
 def sample_cadence_min(window_s):
@@ -430,6 +430,8 @@ def gate_selftest():
     check(cpu_gate_verdict(None, 2.0) == "FAIL", "missing cpu fails")
     check(frame_gate_verdict(60, 20, True, True) == 'PASS', '3 fps passes')
     check(frame_gate_verdict(61, 20, True, True) == 'FAIL', 'over 3 fps fails')
+    check(frame_gate_verdict(160, 20, True, True, 8) == 'PASS', '8 fps passes')
+    check(frame_gate_verdict(161, 20, True, True, 8) == 'FAIL', 'over 8 fps fails')
     check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
     check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
     pct = cpu_core_percent(0, 1000000, 10.0, "cgroup", 100)
@@ -703,6 +705,19 @@ if machine and not env.get("MAINFRAME_SMOKE_TAB_NAME"):
     env["MAINFRAME_SMOKE_TAB"] = "1"
 xdg_home = tempfile.mkdtemp(prefix="mainframe-xdg-")
 env["XDG_CONFIG_HOME"] = xdg_home
+if mode in ("cyber-static", "cyber-all"):
+    # Boot is tested separately. Trigger ambient effects during the measurement.
+    env["MAINFRAME_SMOKE_SKIP_BOOT"] = "1"
+    env["MAINFRAME_SMOKE_STYLE_EXPECTED"] = mode
+    if mode == "cyber-all":
+        env["MAINFRAME_SMOKE_AMBIENT_NOW"] = "1"
+    config_dir = os.path.join(xdg_home, "mainframe")
+    os.makedirs(config_dir)
+    switches = {} if mode == "cyber-all" else {key: False for key in (
+        "dataAnimations", "titleGlitch", "scanlineSweep", "pulsingStatusDots", "bootSequence")}
+    with open(os.path.join(config_dir, "settings.json"), "w", encoding="utf-8") as config:
+        json.dump({"style": "cyberpunk", "cyber": switches}, config)
+    print("style measurement: " + mode, flush=True)
 atexit.register(lambda: shutil.rmtree(xdg_home, ignore_errors=True))
 
 log_fd, log_path = tempfile.mkstemp(prefix="mainframe-smoke-")
@@ -936,6 +951,23 @@ else:
         print("qml %dx%d: FAIL overview systems or local row missing" % (width, height))
         fail = True
 
+if mode in ("cyber-static", "cyber-all"):
+    expected = "CYBER static=true motion=" + ("5" if mode == "cyber-all" else "0")
+    if expected not in log:
+        print("style measurement: FAIL (expected %s)" % expected)
+        fail = True
+    else:
+        print("style measurement: verified " + expected)
+
+if mode == "cyber-all":
+    for effect in ("glitch", "sweep"):
+        stamps = [int(match.group(1)) for match in re.finditer(r"AMBIENT " + effect + r" t=(\d+)", log)]
+        if t0 is None or t1 is None or not any(t0 <= stamp <= t1 for stamp in stamps):
+            print("ambient %s: FAIL (not observed during measurement)" % effect)
+            fail = True
+        else:
+            print("ambient %s: observed during measurement" % effect)
+
 if measure:
     if t0 is None or t1 is None or before is None or after is None:
         print("cpu qs+collector: measurement window did not complete")
@@ -989,11 +1021,12 @@ if measure:
                 connected = 'FRAME_DIAGNOSTIC connected' in log
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
-                if frame_gate_verdict(len(frames), elapsed, connected, saw_frame) != 'PASS':
-                    print('frame gate: FAIL (expected <= 3 fps and a working probe)')
+                frame_limit = 8 if mode == 'cyber-all' else 3
+                if frame_gate_verdict(len(frames), elapsed, connected, saw_frame, frame_limit) != 'PASS':
+                    print('frame gate: FAIL (expected <= %d fps and a working probe)' % frame_limit)
                     fail = True
                 else:
-                    print('frame gate: PASS (<= 3 fps)')
+                    print('frame gate: PASS (<= %d fps)' % frame_limit)
         samples = 0
         sample_re = re.compile(r"(?:^|\s)SAMPLE(?:\s|$)")
         stamp_re = re.compile(r"(?:^|\s)t=(\d+)(?=\s|$)")
@@ -1264,6 +1297,8 @@ if command -v qs >/dev/null 2>&1; then
   # timeout_s is 60. Core count is this machine's nproc, inside the checker.
   run_qml 1800 1125 26000 60 4 2 1
   run_qml 900 1125 26000 60 2 4 1
+  run_qml 1800 1125 26000 60 4 2 1 cyber-static
+  run_qml 1800 1125 26000 60 4 2 1 cyber-all
   run_qml 1800 1125 5000 20 4 2 0 machine
   run_qml 900 1125 5000 20 2 4 0 machine
 else

@@ -5,12 +5,29 @@ import "lib/agents.js" as Agents
 Rectangle {
   id: root
   property var config: ({hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{overviewView:'systems',showUnavailable:false}})
+  readonly property var cyberSwitches: [
+    {key:'hudFrames', label:'HUD frames'}, {key:'neonGlow', label:'Neon glow'},
+    {key:'gridBackdrop', label:'Grid backdrop'}, {key:'displayFont', label:'Display font'},
+    {key:'segmentedMeters', label:'Segmented meters'}, {key:'dataAnimations', label:'Data animations'},
+    {key:'titleGlitch', label:'Title glitch'}, {key:'scanlineSweep', label:'Scanline sweep'},
+    {key:'pulsingStatusDots', label:'Pulsing status dots'}, {key:'bootSequence', label:'Boot sequence'}
+  ]
   property string message: ''
   property color ink; property color mutedInk; property color accent; property color cardColor; property color borderColor
   signal save(string kind, var value)
   signal testHost(string alias)
   signal testAccount(var account)
   signal close()
+  function saveSetting(key, value) {
+    var settings = {}
+    settings[key] = value
+    save('settings', settings)
+  }
+  function saveCyber(key, value) {
+    var switches = Object.assign({}, root.config.settings.cyber || {})
+    switches[key] = value
+    saveSetting('cyber', switches)
+  }
   color: '#b0000000'; z: 100
   function account() {
     var provider = providerBox.currentText, item = {id: accountId.text, provider:provider, name:accountName.text}
@@ -77,10 +94,32 @@ Rectangle {
           ThemedButton { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; text: 'Add'; onClicked: { var a = root.config.accounts.accounts.slice(); a.push(root.account()); root.save('accounts', {accounts:a}) } }
         }
         Text { textFormat: Text.PlainText; text: 'DISPLAY'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 15; font.bold: true }
-        ThemedCheckBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; text: 'Show unavailable providers'; checked: root.config.settings.showUnavailable === true; onClicked: root.save('settings', {showUnavailable:checked, overviewView:root.config.settings.overviewView || 'systems'}) }
+        ThemedCheckBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; text: 'Show unavailable providers'; checked: root.config.settings.showUnavailable === true; onClicked: root.saveSetting('showUnavailable', checked) }
         RowLayout {
           Text { textFormat: Text.PlainText; text: 'Default overview'; color: root.ink; font.family: 'monospace'; font.pixelSize: 15 }
-          ThemedComboBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; model: ['systems','storage','agents']; currentIndex: Math.max(0, model.indexOf(root.config.settings.overviewView)); onActivated: root.save('settings', {showUnavailable:root.config.settings.showUnavailable === true, overviewView:currentText}) }
+          ThemedComboBox { ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor; model: ['systems','storage','agents']; currentIndex: Math.max(0, model.indexOf(root.config.settings.overviewView)); onActivated: root.saveSetting('overviewView', currentText) }
+        }
+        Text { textFormat: Text.PlainText; text: 'STYLE'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 15; font.bold: true }
+        RowLayout {
+          Text { textFormat: Text.PlainText; text: 'Style'; color: root.ink; font.family: 'monospace'; font.pixelSize: 15 }
+          ThemedComboBox {
+            objectName: 'style-combo'
+            ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor
+            model: ['classic', 'cyberpunk']
+            currentIndex: root.config.settings.style === 'cyberpunk' ? 1 : 0
+            onActivated: root.saveSetting('style', currentText)
+          }
+        }
+        Repeater {
+          model: root.config.settings.style === 'cyberpunk' ? root.cyberSwitches : []
+          delegate: ThemedCheckBox {
+            required property var modelData
+            objectName: 'cyber-switch-' + modelData.key
+            ink: root.ink; mutedInk: root.mutedInk; accent: root.accent; cardColor: root.cardColor; borderColor: root.borderColor
+            text: modelData.label
+            checked: !root.config.settings.cyber || root.config.settings.cyber[modelData.key] !== false
+            onClicked: root.saveCyber(modelData.key, checked)
+          }
         }
       }
     }

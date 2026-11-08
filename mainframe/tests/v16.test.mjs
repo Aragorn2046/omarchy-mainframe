@@ -99,3 +99,47 @@ test('validated atomic settings and account configuration', async () => {
     assert.equal((await run({kind:'settings',data:{overviewView:'storage',showUnavailable:true}})).status,0);
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+
+test('a newer settings save supersedes a deferred pending save in memory and on disk', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'mf16-race-'));
+  try {
+    const source = readFileSync(resolve('mainframe/shell.qml'), 'utf8');
+    const save = source.match(/function saveConfig\(kind, value\) \{[\s\S]*?\n  \}/)[0];
+    const onExit = source.split('\n').find(line => line.includes('if (shell.pendingSettings) Qt.callLater'));
+    assert.ok(onExit);
+    const callbacks = [], writes = [];
+    const state = {settingsLoaded:true, settingsData:{settings:{}}, settingsRevision:0, pendingSettings:null,
+      settingsOverlay:{message:''}, Quickshell:{shellDir:resolve('mainframe')}, Qt:{callLater:fn => callbacks.push(fn)}};
+    state.shell = state;
+    let running = false;
+    state.configWriter = {get running() { return running; }, set running(value) {
+      running = value;
+      if (value) {
+        const request = JSON.parse(state.configInput);
+        assert.equal(request.kind, 'settings');
+        writes.push(state.configInput);
+      }
+    }};
+    runInNewContext(save + '; this.saveConfig = saveConfig', state);
+    state.saveConfig('settings', {overviewView:'systems'});
+    state.saveConfig('settings', {overviewView:'storage'});
+    state.configWriter.running = false;
+    runInNewContext(onExit, state);
+    state.saveConfig('settings', {overviewView:'agents'});
+    callbacks.shift()();
+    state.configWriter.running = false;
+    runInNewContext(onExit, state);
+    assert.equal(callbacks.length, 0);
+    assert.equal(state.settingsData.settings.overviewView, 'agents');
+    for (const input of writes) {
+      const status = await new Promise((resolveResult, reject) => {
+        const child = spawn('python3', [resolve('mainframe/config_manager.py'), 'write'], {
+          env:{...process.env, XDG_CONFIG_HOME:dir}, stdio:['pipe', 'ignore', 'ignore']
+        });
+        child.on('error', reject); child.on('exit', resolveResult); child.stdin.end(input);
+      });
+      assert.equal(status, 0);
+    }
+    assert.equal(JSON.parse(readFileSync(join(dir, 'mainframe/settings.json'), 'utf8')).overviewView, 'agents');
+  } finally { rmSync(dir, {recursive:true, force:true}); }
+});
