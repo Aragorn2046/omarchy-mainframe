@@ -64,6 +64,19 @@ TestCase {
     overlay.destroy()
   }
 
+  function test_cyber_delegates_survive_save() {
+    var overlay = overlayComponent.createObject(test, {config:{hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"cyberpunk", cyber:{}}}})
+    var keys = ["hudFrames", "neonGlow", "gridBackdrop", "displayFont", "segmentedMeters", "dataAnimations", "titleGlitch", "scanlineSweep", "pulsingStatusDots", "bootSequence"]
+    var delegates = keys.map(function(key) { return findChild(overlay, "cyber-switch-" + key) })
+    overlay.save.connect(function(kind, value) {
+      overlay.config = {hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{style:"cyberpunk", cyber:value.cyber}}
+    })
+    delegates[0].toggle(); delegates[0].clicked()
+    compare(delegates[0].checked, false)
+    for (var i = 0; i < keys.length; i++) compare(findChild(overlay, "cyber-switch-" + keys[i]), delegates[i])
+    overlay.destroy()
+  }
+
   function test_controls() {
     compare(button.height, 30)
     compare(field.height, 30)

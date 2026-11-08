@@ -29,6 +29,7 @@ TestCase {
     ink: "white"; mutedInk: "gray"; accent: "cyan"; warning: "yellow"; critical: "red"; cardColor: "black"; borderColor: "gray"; track: "gray"
     rows: [{name:"Example",category:"other",limits:[{label:"Usage",percent:25,level:"",reset:""}],activity:[],models:[],age:"",status:"",help:""}]
   }
+  Item { id: focusTarget; property int presses: 0; Keys.onPressed: function(event) { presses++; event.accepted = true } }
   Cyber.DataText { id: figure; cyberStyle: style; sourceText: "20.0%" }
   Loader {
     id: ambient; active: style.windowActive && (style.titleGlitch || style.scanlineSweep)
@@ -155,16 +156,85 @@ TestCase {
     verify(!plot.running)
     compare(plot.shown[0], 20)
   }
+  function test_data_text_units_and_negative() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var val = loader(figure, "cyber-data-text-loader").item
+    figure.sourceText = "999.0 KiB/s"; compare(figure.text, "999.0 KiB/s")
+    figure.sourceText = "1.0 MiB/s"; compare(figure.text, "1.0 MiB/s"); verify(!val.running)
+    figure.sourceText = "900 KB/s"; figure.sourceText = "1.2 MB/s"; compare(figure.text, "1.2 MB/s"); verify(!val.running)
+    figure.sourceText = "CPU  3.0%"; figure.sourceText = "GPU  8.0%"; compare(figure.text, "GPU  8.0%"); verify(!val.running)
+    figure.sourceText = "unavailable"; compare(figure.text, "unavailable")
+    figure.sourceText = "-8.0 C"; compare(figure.text, "-8.0 C")
+    val = loader(figure, "cyber-data-text-loader").item
+    figure.sourceText = "-4.25 C"; verify(val.running); verify(figure.text.indexOf("-6.75") === 0)
+    tryCompare(val, "running", false, 300); compare(figure.text, "-4.25 C")
+  }
+  function test_chart_missing_endpoint() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var plot = loader(chart, "cyber-chart-motion-loader").item
+    chart.samples = [10,40,null]
+    compare(plot.shown[2], null); verify(!plot.running)
+    chart.samples = [10,40,Infinity]; compare(plot.shown[2], Infinity); verify(!plot.running)
+    chart.samples = [10,40,NaN]; verify(isNaN(plot.shown[2])); verify(!plot.running)
+    chart.samples = [10,40,20]; compare(plot.shown[2], 20); verify(!plot.running)
+  }
+  function test_data_timing_and_step_count() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var val = loader(figure, "cyber-data-text-loader").item
+    var bar = loader(meter, "cyber-meter-motion-loader").item
+    var plot = loader(chart, "cyber-chart-motion-loader").item
+    var counts = [0,0,0]
+    var a = function() { counts[0]++ }, b = function() { counts[1]++ }, c = function() { counts[2]++ }
+    val.valueChanged.connect(a); bar.valueChanged.connect(b); plot.shownChanged.connect(c)
+    var start = Date.now()
+    figure.sourceText = "75.0%"; meter.fraction = 0.8; chart.samples = [10,40,80]
+    tryVerify(function() { return !val.running && !bar.running && !plot.running }, 300)
+    verify(Date.now() - start <= 300)
+    for (var i = 0; i < counts.length; i++) verify(counts[i] > 0 && counts[i] <= 6)
+    val.valueChanged.disconnect(a); bar.valueChanged.disconnect(b); plot.shownChanged.disconnect(c)
+  }
+  function test_ambient_timing_and_disable_mid_glitch() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    var effects = ambient.item
+    verify(effects.glitchInterval >= 20000 && effects.glitchDuration <= 250)
+    verify(effects.sweepInterval >= 30000 && effects.sweepStepInterval * effects.sweepSteps <= 2000)
+    var glitch = loader(effects, "cyber-glitch-loader")
+    glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
+    var start = Date.now()
+    tryCompare(effects, "glitchOffset", 0, 250)
+    verify(Date.now() - start <= 250)
+    var sweep = loader(effects, "cyber-sweep-loader").item
+    sweep.startSweep(); compare(sweep.step, 1)
+    start = Date.now()
+    tryCompare(sweep, "step", 0, 2000)
+    verify(Date.now() - start <= 2000)
+    glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
+    style.settings = {style:"cyberpunk", cyber:{titleGlitch:false}}
+    compare(effects.glitchOffset, 0); verify(!glitch.active)
+    style.settings = {style:"cyberpunk", cyber:{titleGlitch:true}}
+    compare(effects.glitchOffset, 0)
+  }
+  function test_grid_item_count_large() {
+    style.settings = {style:"cyberpunk", cyber:{}}
+    grid.width = 8000; grid.height = 4000
+    verify(grid.item.children.length <= 2)
+    grid.width = 200; grid.height = 100
+  }
   function test_boot_finishes_and_skips() {
     style.settings = {style:"cyberpunk", cyber:{}}
+    focusTarget.forceActiveFocus(); verify(focusTarget.activeFocus)
+    var start = Date.now()
     boot.pending = true; verify(boot.active)
     tryCompare(boot, "active", false, 1500)
+    verify(Date.now() - start <= 1500); verify(focusTarget.activeFocus)
+    keyClick(Qt.Key_A); compare(focusTarget.presses, 1)
     boot.pending = true; verify(boot.active)
     mouseClick(boot.item, 10, 10)
-    verify(!boot.active)
+    verify(!boot.active && focusTarget.activeFocus)
     boot.pending = true; verify(boot.active)
-    boot.item.forceActiveFocus(); keyClick(Qt.Key_A)
-    verify(!boot.active)
+    keyClick(Qt.Key_A)
+    verify(!boot.active && focusTarget.activeFocus)
+    keyClick(Qt.Key_A); compare(focusTarget.presses, 2)
   }
   function test_dot_uses_sample_tick() {
     style.settings = {style:"cyberpunk", cyber:{}}

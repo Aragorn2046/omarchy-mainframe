@@ -706,9 +706,11 @@ if machine and not env.get("MAINFRAME_SMOKE_TAB_NAME"):
 xdg_home = tempfile.mkdtemp(prefix="mainframe-xdg-")
 env["XDG_CONFIG_HOME"] = xdg_home
 if mode in ("cyber-static", "cyber-all"):
-    # Boot is tested separately. Ambient timers first fire after the 20 s window.
+    # Boot is tested separately. Trigger ambient effects during the measurement.
     env["MAINFRAME_SMOKE_SKIP_BOOT"] = "1"
     env["MAINFRAME_SMOKE_STYLE_EXPECTED"] = mode
+    if mode == "cyber-all":
+        env["MAINFRAME_SMOKE_AMBIENT_NOW"] = "1"
     config_dir = os.path.join(xdg_home, "mainframe")
     os.makedirs(config_dir)
     switches = {} if mode == "cyber-all" else {key: False for key in (
@@ -956,6 +958,15 @@ if mode in ("cyber-static", "cyber-all"):
         fail = True
     else:
         print("style measurement: verified " + expected)
+
+if mode == "cyber-all":
+    for effect in ("glitch", "sweep"):
+        stamps = [int(match.group(1)) for match in re.finditer(r"AMBIENT " + effect + r" t=(\d+)", log)]
+        if t0 is None or t1 is None or not any(t0 <= stamp <= t1 for stamp in stamps):
+            print("ambient %s: FAIL (not observed during measurement)" % effect)
+            fail = True
+        else:
+            print("ambient %s: observed during measurement" % effect)
 
 if measure:
     if t0 is None or t1 is None or before is None or after is None:

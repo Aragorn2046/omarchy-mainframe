@@ -24,6 +24,13 @@ class CyberSettingsTest(unittest.TestCase):
             with self.subTest(settings=settings), self.assertRaises(ValueError):
                 manager.validate('settings', settings)
 
+    def test_write_rejects_non_objects_before_merging(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(manager, 'CONFIG', Path(directory)):
+            for data in (None, [], 'invalid', 3, {'cyber': None}, {'cyber': []}, {'cyber': 'invalid'}):
+                with self.subTest(data=data), self.assertRaises(ValueError):
+                    manager.write('settings', data)
+            self.assertFalse((Path(directory) / 'settings.json').exists())
+
     def test_write_preserves_existing_settings(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(manager, 'CONFIG', Path(directory)):
             path = Path(directory) / 'settings.json'

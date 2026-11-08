@@ -1625,6 +1625,7 @@ ShellRoot {
       active: cyberAppearance.windowActive && (cyberAppearance.titleGlitch || cyberAppearance.scanlineSweep)
       sourceComponent: Cyber.Ambient {
         accent: shell.themeAccent
+        smokeAmbientNow: shell.smokeMode && String(Quickshell.env("MAINFRAME_SMOKE_AMBIENT_NOW") || "") === "1"
         glitchEnabled: cyberAppearance.titleGlitch
         sweepEnabled: cyberAppearance.scanlineSweep
       }

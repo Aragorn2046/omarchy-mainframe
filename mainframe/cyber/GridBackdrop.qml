@@ -1,15 +1,20 @@
 import QtQuick
 
-Item {
+Canvas {
   id: root
   property color accent
-  clip: true
-  Repeater {
-    model: Math.ceil(root.width / 40)
-    Rectangle { required property int index; x: index * 40; width: 1; height: root.height; color: root.accent; opacity: 0.06 }
-  }
-  Repeater {
-    model: Math.ceil(root.height / 4)
-    Rectangle { required property int index; y: index * 4; width: root.width; height: 1; color: root.accent; opacity: index % 10 === 0 ? 0.06 : 0.025 }
+  onAccentChanged: requestPaint()
+  onWidthChanged: requestPaint()
+  onHeightChanged: requestPaint()
+  onPaint: {
+    var ctx = getContext("2d")
+    ctx.clearRect(0, 0, width, height)
+    ctx.fillStyle = accent
+    ctx.globalAlpha = 0.06
+    for (var x = 0; x < width; x += 40) ctx.fillRect(x, 0, 1, height)
+    for (var y = 0; y < height; y += 4) {
+      ctx.globalAlpha = y % 40 === 0 ? 0.06 : 0.025
+      ctx.fillRect(0, y, width, 1)
+    }
   }
 }

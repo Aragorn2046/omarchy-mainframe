@@ -16,8 +16,21 @@ Item {
   property int step: 0
   property bool ready: false
   property bool running: false
-  function same(a, b) { return JSON.stringify(a || []) === JSON.stringify(b || []) }
-  function last(list) { return list && list.length ? Number(list[list.length - 1]) : NaN }
+  function same(a, b) {
+    a = a || []; b = b || []
+    if (a.length !== b.length) return false
+    for (var i = 0; i < a.length; ++i) {
+      if (a[i] !== b[i] && !(typeof a[i] === "number" && typeof b[i] === "number" && isNaN(a[i]) && isNaN(b[i]))) return false
+    }
+    return true
+  }
+  function last(list) {
+    if (!list || !list.length) return NaN
+    var value = list[list.length - 1]
+    if (value === null || value === undefined) return NaN
+    var number = Number(value)
+    return isFinite(number) ? number : NaN
+  }
   function blend(target, from, progress) {
     var result = Array.prototype.slice.call(target || [])
     var end = last(result)
@@ -41,8 +54,8 @@ Item {
     }
     if (!animateA && !animateB) { running = false; shown = samples; shownB = samplesB; return }
     step = 1; running = true
-    shown = animateA ? blend(samples, fromA, 0.25) : samples
-    shownB = animateB ? blend(samplesB, fromB, 0.25) : samplesB
+    shown = animateA ? blend(samples, fromA, 1 / 3) : samples
+    shownB = animateB ? blend(samplesB, fromB, 1 / 3) : samplesB
     if (clock) clock.requestDataStep()
   }
   onSamplesChanged: update()
@@ -52,9 +65,9 @@ Item {
     function onDataStep() {
       if (!root.running) return
       root.step++
-      root.shown = root.step >= 4 || !root.animateA ? root.samples : root.blend(root.samples, root.fromA, root.step / 4)
-      root.shownB = root.step >= 4 || !root.animateB ? root.samplesB : root.blend(root.samplesB, root.fromB, root.step / 4)
-      if (root.step >= 4) { root.running = false; root.animateA = false; root.animateB = false }
+      root.shown = root.step >= 3 || !root.animateA ? root.samples : root.blend(root.samples, root.fromA, root.step / 3)
+      root.shownB = root.step >= 3 || !root.animateB ? root.samplesB : root.blend(root.samplesB, root.fromB, root.step / 3)
+      if (root.step >= 3) { root.running = false; root.animateA = false; root.animateB = false }
       else root.clock.requestDataStep()
     }
   }

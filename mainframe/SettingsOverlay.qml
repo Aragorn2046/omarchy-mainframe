@@ -5,6 +5,13 @@ import "lib/agents.js" as Agents
 Rectangle {
   id: root
   property var config: ({hosts:{hosts:[]}, accounts:{accounts:[]}, settings:{overviewView:'systems',showUnavailable:false}})
+  readonly property var cyberSwitches: [
+    {key:'hudFrames', label:'HUD frames'}, {key:'neonGlow', label:'Neon glow'},
+    {key:'gridBackdrop', label:'Grid backdrop'}, {key:'displayFont', label:'Display font'},
+    {key:'segmentedMeters', label:'Segmented meters'}, {key:'dataAnimations', label:'Data animations'},
+    {key:'titleGlitch', label:'Title glitch'}, {key:'scanlineSweep', label:'Scanline sweep'},
+    {key:'pulsingStatusDots', label:'Pulsing status dots'}, {key:'bootSequence', label:'Boot sequence'}
+  ]
   property string message: ''
   property color ink; property color mutedInk; property color accent; property color cardColor; property color borderColor
   signal save(string kind, var value)
@@ -104,13 +111,7 @@ Rectangle {
           }
         }
         Repeater {
-          model: root.config.settings.style === 'cyberpunk' ? [
-            {key:'hudFrames', label:'HUD frames'}, {key:'neonGlow', label:'Neon glow'},
-            {key:'gridBackdrop', label:'Grid backdrop'}, {key:'displayFont', label:'Display font'},
-            {key:'segmentedMeters', label:'Segmented meters'}, {key:'dataAnimations', label:'Data animations'},
-            {key:'titleGlitch', label:'Title glitch'}, {key:'scanlineSweep', label:'Scanline sweep'},
-            {key:'pulsingStatusDots', label:'Pulsing status dots'}, {key:'bootSequence', label:'Boot sequence'}
-          ] : []
+          model: root.config.settings.style === 'cyberpunk' ? root.cyberSwitches : []
           delegate: ThemedCheckBox {
             required property var modelData
             objectName: 'cyber-switch-' + modelData.key
