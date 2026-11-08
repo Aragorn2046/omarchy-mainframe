@@ -351,20 +351,20 @@ def cpu_gate_limit(live):
     return 2.0 if live else 3.0
 
 
-def cpu_gate_verdict(pct, limit):
-    if pct is None or pct < 0 or pct >= limit:
+def cpu_gate_verdict(pct, limit, mode=''):
+    if pct is None or pct < 0:
         return "FAIL"
-    return "PASS"
+    return power_gate_verdict("FAIL", mode) if pct >= limit else "PASS"
 
 
-def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3):
+def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3, mode=''):
     if not connected or not saw_frame or elapsed <= 0 or frame_count < 0:
         return "FAIL"
-    return "PASS" if frame_count / elapsed <= limit else "FAIL"
+    return power_gate_verdict("FAIL", mode) if frame_count / elapsed > limit else "PASS"
 
 
 def power_gate_verdict(verdict, mode):
-    return "REPORT" if mode == "report" else verdict
+    return "REPORT" if mode == "report" and verdict == "FAIL" else verdict
 
 
 def sample_cadence_min(window_s):
@@ -438,11 +438,15 @@ def gate_selftest():
     check(frame_gate_verdict(161, 20, True, True, 8) == 'FAIL', 'over 8 fps fails')
     check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
     check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
-    for verdict in (cpu_gate_verdict(4.0, 3.0), frame_gate_verdict(61, 20, True, True)):
-        check(power_gate_verdict(verdict, '') == 'FAIL', 'default mode fails over limit')
-        check(power_gate_verdict(verdict, 'report') == 'REPORT', 'report mode does not fail over limit')
-    for verdict in ('PASS', 'FAIL'):
-        check(power_gate_verdict(verdict, 'report') == 'REPORT', 'report mode reports every verdict')
+    check(cpu_gate_verdict(4.0, 3.0, 'report') == 'REPORT', 'report mode reports over-limit cpu')
+    check(frame_gate_verdict(61, 20, True, True, 3, 'report') == 'REPORT', 'report mode reports over-limit frames')
+    check(cpu_gate_verdict(1.0, 3.0, 'report') == 'PASS', 'report mode passes cpu under limit')
+    check(frame_gate_verdict(60, 20, True, True, 3, 'report') == 'PASS', 'report mode passes frames under limit')
+    check(cpu_gate_verdict(None, 3.0, 'report') == 'FAIL', 'report mode fails missing cpu')
+    check(cpu_gate_verdict(-0.01, 3.0, 'report') == 'FAIL', 'report mode fails negative cpu')
+    check(frame_gate_verdict(0, 20, False, False, 3, 'report') == 'FAIL', 'report mode fails missing frame probe')
+    check(frame_gate_verdict(0, 20, True, False, 3, 'report') == 'FAIL', 'report mode fails unseen frame probe')
+    check(frame_gate_verdict(0, 0, True, True, 3, 'report') == 'FAIL', 'report mode fails invalid frame window')
     pct = cpu_core_percent(0, 1000000, 10.0, "cgroup", 100)
     check(pct is not None and abs(pct - 10.0) < 1e-9, "cgroup 10%")
     pct = cpu_core_percent(50, 150, 10.0, "proc", 100)
@@ -989,7 +993,7 @@ if measure:
         else:
             pct = cpu_core_percent(before, after, elapsed, cpu_mode, clk)
             limit = cpu_gate_limit(live)
-            verdict = power_gate_verdict(cpu_gate_verdict(pct, limit), os.environ.get('MAINFRAME_SMOKE_GATES', ''))
+            verdict = cpu_gate_verdict(pct, limit, os.environ.get('MAINFRAME_SMOKE_GATES', ''))
             kind = "live" if live else "offscreen"
             if pct is None:
                 print("cpu qs+collector: no reading (%s)" % kind)
@@ -1031,8 +1035,8 @@ if measure:
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
                 frame_limit = 8 if mode == 'cyber-all' else 3
-                frame_verdict = power_gate_verdict(
-                    frame_gate_verdict(len(frames), elapsed, connected, saw_frame, frame_limit),
+                frame_verdict = frame_gate_verdict(
+                    len(frames), elapsed, connected, saw_frame, frame_limit,
                     os.environ.get('MAINFRAME_SMOKE_GATES', ''))
                 if frame_verdict == 'FAIL':
                     print('frame gate: FAIL (expected <= %d fps and a working probe)' % frame_limit)
