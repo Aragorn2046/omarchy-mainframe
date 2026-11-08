@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='mf15-') as tmp:
     for i, name in enumerate(('Claude Alice', 'Claude Bob', 'Codex', 'Grok', 'Antigravity', 'ElevenLabs', 'Higgsfield')):
         record = {'name': name, 'tierLabel': 'Pro', 'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   'todayPrompts': 15, 'todaySessions': 2, 'todayTotalTokens': 12000,
-                  'limits': [{'label': 'Weekly', 'percent': 81, 'resetsAt': '2030-01-01T00:00:00Z'}],
+                  'limits': [{'label': 'Weekly', 'percent': 0.81, 'resetsAt': '2030-01-01T00:00:00Z'}],
                   'recentDays': [{'date': datetime.date.today().isoformat(), 'messageCount': 7}],
                   'modelUsage': {'model': {'inputTokens': 1000, 'outputTokens': 200, 'cacheReadInputTokens': 50}}}
         if i == 1:  # A short Claude card shares a row with a taller one.

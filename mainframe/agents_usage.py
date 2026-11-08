@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read usage files only. Do not follow file symlinks outside the usage directory."""
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -70,12 +71,32 @@ def identity(d):
         return d
     except (ValueError, TypeError, RecursionError, MemoryError): return None
 
+# Both Omarchy state files and pre-fix Mainframe account caches contain helper
+# fractions. Command account caches already use Mainframe's 0..100 contract.
+def normalize_limits(record):
+    limits = record.get('limits')
+    if not isinstance(limits, list): return False
+    changed = False
+    for limit in limits:
+        if not isinstance(limit, dict): continue
+        value = limit.get('percent')
+        if isinstance(value, bool) or not isinstance(value, (int, float)): continue
+        if isinstance(value, float) and not math.isfinite(value): continue
+        limit['percent'] = max(0, min(1, value)) * 100
+        changed = True
+    return changed
+
 # Configured records are anchors; choose the strongest direct match for each
 # Omarchy record before merging any unanchored records.
 parsed = []
 for item in records:
     try:
-        parsed.append(json.loads(item['raw']))
+        record = json.loads(item['raw'])
+        if (isinstance(record, dict) and
+                (not item.get('mainframe') or record.get('provider') in ('claude', 'codex')) and
+                normalize_limits(record)):
+            item['raw'] = json.dumps(record, ensure_ascii=True)
+        parsed.append(record)
     except ValueError:
         parsed.append(None)
     except (RecursionError, MemoryError):
