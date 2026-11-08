@@ -49,11 +49,14 @@ class UsageFilesTest(unittest.TestCase):
             (usage / 'other.json').write_text(json.dumps({'id': 'other', 'limits': [{'percent': 0.8}]}))
             result = subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
             records = {record['id']: record for record in (json.loads(item['raw']) for item in json.loads(result.stdout))}
-            self.assertAlmostEqual(records['claude']['limits'][0]['percent'], 55)
-            self.assertEqual([item.get('percent') for item in records['claude']['limits'][1:]], [80, None, 2, None, True])
+            # A value above 1 makes each whole record use the percentage scale.
+            self.assertEqual(records['claude']['limits'][0]['percent'], 0.55)
+            self.assertEqual([item.get('percent') for item in records['claude']['limits'][1:]], [0.8, None, 2, None, None])
+            for index in (2, 4, 5): self.assertNotIn('percent', records['claude']['limits'][index])
             self.assertEqual(records['claude']['limits'][1]['title'], 'Fable Weekly')
             self.assertEqual([limit.get('percent') for limit in records['codex']['limits']],
-                             [40, 40, 81, 100, 100, None, None, None, True, False, None])
+                             [0.4, 40, 81, 1, 100, None, None, None, None, None, None])
+            for limit in records['codex']['limits'][5:]: self.assertNotIn('percent', limit)
             self.assertAlmostEqual(records['old']['limits'][0]['percent'], 55)
             self.assertEqual(records['other']['limits'][0]['percent'], 80)
             self.assertEqual([item['percent'] for item in records['custom']['limits']], [0.5, 55])
@@ -63,7 +66,8 @@ class UsageFilesTest(unittest.TestCase):
     def test_limits_state_and_cache_values_and_repeated_reads(self):
         values = [0.4, 40, 81, 1, 150, -1, float('nan'), float('inf'),
                   float('-inf'), True, False, None]
-        expected = [40, 40, 81, 100, 100, None, None, None, None, True, False, None]
+        # The 40, 81 and 150 make this entire record use the percentage scale.
+        expected = [0.4, 40, 81, 1, 100, None, None, None, None, None, None, None]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             usage = root / 'state/omarchy/agents/usage'
@@ -73,7 +77,7 @@ class UsageFilesTest(unittest.TestCase):
                 (directory / (ident + '.json')).write_text(json.dumps({
                     'id': ident, 'provider': 'claude',
                     'limits': [{'percent': value} for value in values]}))
-            unchanged = '{ "id": "unchanged", "limits": [{"percent": 40}, {"percent": 0}, {"percent": null}, {"percent": true}] }'
+            unchanged = '{ "id": "unchanged", "limits": [{"percent": 40}, {"percent": 0}] }'
             (usage / 'unchanged.json').write_text(unchanged)
             env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
             def read():
@@ -87,7 +91,29 @@ class UsageFilesTest(unittest.TestCase):
             for ident in ('state', 'cache'):
                 limits = json.loads(items[ident + '.json']['raw'])['limits']
                 self.assertEqual([limit.get('percent') for limit in limits], expected)
-                for limit in limits[5:9]: self.assertNotIn('percent', limit)
+                for limit in limits[5:]: self.assertNotIn('percent', limit)
+
+    def test_record_scale_rounding_and_invalid_percent_removal(self):
+        cases = [([0.4, 0.81, 1], [40, 81, 100]),
+                 ([1, 45], [1, 45]), ([0.8, 45], [0.8, 45]),
+                 ([150, 20], [100, 20]), ([0.29], [29])]
+        invalid = [True, False, '0.5', None, float('nan'), float('inf'), float('-inf'), -1]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage = root / 'state/omarchy/agents/usage'
+            usage.mkdir(parents=True)
+            for i, (values, _) in enumerate(cases):
+                (usage / f'{i}.json').write_text(json.dumps({
+                    'id': str(i), 'limits': [{'percent': value} for value in values + invalid]}))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'),
+                       XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            records = {record['id']: record for record in (json.loads(item['raw']) for item in json.loads(result.stdout))}
+            for i, (values, expected) in enumerate(cases):
+                with self.subTest(values=values):
+                    limits = records[str(i)]['limits']
+                    self.assertEqual([limit['percent'] for limit in limits[:len(values)]], expected)
+                    for limit in limits[len(values):]: self.assertNotIn('percent', limit)
 
     def test_nested_and_oversized_records_do_not_stop_other_files(self):
         with tempfile.TemporaryDirectory() as tmp:

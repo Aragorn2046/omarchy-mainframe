@@ -71,30 +71,35 @@ def identity(d):
         return d
     except (ValueError, TypeError, RecursionError, MemoryError): return None
 
-# Omarchy documents 0..1 helper fractions (Panel.qml renders percent * 100).
-# Also accept existing 1..100 percentages, clamp higher values, and drop invalid values.
+# If any valid percent exceeds 1, the record uses 0..100; otherwise it uses 0..1.
+# A 0..100 record with all values <= 1 is ambiguous and read as fractions; Omarchy
+# helpers and state files always write fractions, so this only affects non-Omarchy files.
 # config_manager's data.update uses the account provider, so command caches remain
 # provider 'command' even if command output claims 'claude'; never scale them.
 def normalize_limits(record):
     limits = record.get('limits')
     if not isinstance(limits, list): return False
     changed = False
+    valid = []
     for limit in limits:
         if not isinstance(limit, dict): continue
         if 'percent' not in limit: continue
         value = limit['percent']
-        if isinstance(value, bool) or not isinstance(value, (int, float)):
-            continue
-        if (isinstance(value, float) and not math.isfinite(value)) or value < 0:
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                (isinstance(value, float) and not math.isfinite(value)) or value < 0):
             del limit['percent']
             changed = True
             continue
-        normalized = value * 100 if value <= 1 else min(value, 100)
+        valid.append((limit, value))
+    percentages = any(value > 1 for _, value in valid)
+    for limit, value in valid:
+        normalized = min(value, 100) if percentages else round(value * 100, 2)
         if normalized != value:
             limit['percent'] = normalized
             changed = True
     return changed
 
+# Rewrite raw only on change; every read starts from disk, never normalized output.
 # Configured records are anchors; choose the strongest direct match for each
 # Omarchy record before merging any unanchored records.
 parsed = []

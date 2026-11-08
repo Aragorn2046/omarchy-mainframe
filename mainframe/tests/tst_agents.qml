@@ -130,19 +130,29 @@ TestCase {
   }
   function test_normalized_limits_show_matching_text_and_meter() {
     // Values match the records emitted by agents_usage.py for helper fractions.
-    var record = {name:'Agent', limits:[{label:'Session', percent:55},
+    var record = {name:'Agent', limits:[{label:'Session', percent:29},
                                        {title:'Fable Weekly', percent:80}]}
     view.rows = [Agents.parse(JSON.stringify(record), 'agent', Date.now())]
     var card = findChild(view, 'agents-cards-repeater').itemAt(0)
     var limits = findChild(card, 'agents-limits-repeater')
     compare(limits.count, 2)
-    compare(findChild(limits.itemAt(0), 'agents-limit-percent').text, '55%')
-    compare(findChild(limits.itemAt(0), 'agents-limit-meter').shown, 0.55)
+    compare(findChild(limits.itemAt(0), 'agents-limit-percent').text, '29%')
+    compare(findChild(limits.itemAt(0), 'agents-limit-meter').shown, 0.29)
     compare(findChild(limits.itemAt(1), 'agents-limit-percent').text, 'Warning · 80%')
     compare(findChild(limits.itemAt(1), 'agents-limit-meter').shown, 0.8)
     compare(findChild(limits.itemAt(1), 'agents-limit-title').text, 'Fable Weekly')
     record.limits = [{percent:null}, {percent:true}, {percent:false}, {}, {}, {}]
+    card = null
+    limits = null
     view.rows = [Agents.parse(JSON.stringify(record), 'agent', Date.now())]
+    tryVerify(function() {
+      var cards = findChild(view, 'agents-cards-repeater')
+      var currentCard = cards && cards.itemAt(0)
+      var currentLimits = currentCard && findChild(currentCard, 'agents-limits-repeater')
+      return currentLimits && currentLimits.count === 6 && currentLimits.itemAt(5)
+    })
+    card = findChild(view, 'agents-cards-repeater').itemAt(0)
+    limits = findChild(card, 'agents-limits-repeater')
     compare(limits.count, 6)
     for (var i = 0; i < limits.count; i++)
       compare(findChild(limits.itemAt(i), 'agents-limit-percent').text, '—')
