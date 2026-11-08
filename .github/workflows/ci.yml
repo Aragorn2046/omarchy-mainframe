@@ -16,7 +16,8 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    container: archlinux:latest
+    # archlinux:latest, pinned 2026-11-08. Dependabot or a maintainer bumps this digest.
+    container: archlinux@sha256:b1c2fe6e717bfd5673af8fc217e1e1c3ce0dcbb1d53c3414c8425e7ce79fc6d9
     timeout-minutes: 20
     steps:
       - name: Install test dependencies
@@ -24,8 +25,11 @@ jobs:
           # quickshell runs the app; qt6-declarative provides qmltestrunner.
           # nodejs and python run the tests; procps-ng provides process tools.
           # git checks out the repository; ttf-dejavu supplies offscreen fonts.
-          pacman -Syu --noconfirm --needed quickshell qt6-declarative nodejs python procps-ng git ttf-dejavu
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm --needed quickshell qt6-declarative nodejs python procps-ng git ttf-dejavu || \
+            pacman -Syu --noconfirm --needed quickshell qt6-declarative nodejs python procps-ng git ttf-dejavu
           useradd -m mainframe-ci
+          install -d -m 0700 -o mainframe-ci -g mainframe-ci /tmp/mainframe-ci-runtime
       - name: Check out repository
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -33,18 +37,18 @@ jobs:
       - name: Give test user ownership of checkout
         run: chown -R mainframe-ci:mainframe-ci "$GITHUB_WORKSPACE"
       - name: JavaScript tests
-        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci node --test mainframe/tests/
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci XDG_RUNTIME_DIR=/tmp/mainframe-ci-runtime node --test mainframe/tests/
       - name: Python tests
         run: |
           # Match GitHub's unlimited stack to exercise the explicit JSON depth limit.
           ulimit -s unlimited
-          runuser -u mainframe-ci -- env HOME=/home/mainframe-ci python3 -m unittest discover -s mainframe/tests -p 'test_*.py'
+          runuser -u mainframe-ci -- env HOME=/home/mainframe-ci XDG_RUNTIME_DIR=/tmp/mainframe-ci-runtime python3 -m unittest discover -s mainframe/tests -p 'test_*.py'
       - name: Collector self-test
-        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci python3 mainframe/collect.py --selftest
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci XDG_RUNTIME_DIR=/tmp/mainframe-ci-runtime python3 mainframe/collect.py --selftest
       - name: QML tests
-        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic /usr/lib/qt6/bin/qmltestrunner -input mainframe/tests
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci XDG_RUNTIME_DIR=/tmp/mainframe-ci-runtime QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic /usr/lib/qt6/bin/qmltestrunner -input mainframe/tests
       - name: Headless smoke tests
         # Skip the real SSH failure check and remote connections: CI has no hosts.
         # The live window is not enabled: CI has no Wayland session. No user bus is needed.
         # Shared runners are noisy, so report CPU and frame measurements without blocking merges.
-        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci MAINFRAME_SMOKE_GATES=report MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic scripts/mainframe-smoke.sh
+        run: runuser -u mainframe-ci -- env HOME=/home/mainframe-ci XDG_RUNTIME_DIR=/tmp/mainframe-ci-runtime MAINFRAME_SMOKE_GATES=report MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic scripts/mainframe-smoke.sh
