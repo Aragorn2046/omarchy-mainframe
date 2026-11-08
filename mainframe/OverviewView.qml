@@ -26,13 +26,16 @@ Item {
       spacing: 10
       Repeater {
         id: repeater
-        model: root.rows
+        objectName: "overview-repeater"
+        model: root.rows.length
         delegate: Rectangle {
           id: card
           objectName: "overview-machine-card"
-          required property var modelData
+          required property int index
+          readonly property var modelData: root.rows[index] || ({})
           readonly property var v: modelData.view || null
           readonly property var cpu: v && v.cpu ? v.cpu : null
+          readonly property var cores: (cpu && cpu.cores) || []
           readonly property var mem: v && v.mem ? v.mem : null
           readonly property real minimumHeight: 134
           Layout.fillWidth: true
@@ -43,23 +46,25 @@ Item {
             RowLayout {
               Layout.fillWidth: true
               Rectangle { width: 8; height: 8; radius: 4; color: card.modelData.status === 'connected' ? root.accent : root.mutedInk }
-              Text { text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
-              Text { textFormat: Text.PlainText; text: card.modelData.badge; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+              Text { objectName: 'overview-title'; text: Agents.safeHelp(card.modelData.name); color: root.ink; textFormat: Text.PlainText; font.family: 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true }
+              Text { objectName: 'overview-badge'; textFormat: Text.PlainText; text: card.modelData.badge || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
               Text { textFormat: Text.PlainText; text: card.modelData.status || 'idle'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
             }
             RowLayout {
               Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 4
-                Text { textFormat: Text.PlainText; text: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: 'monospace'; font.pixelSize: 14 }
+                Text { objectName: "overview-cpu-value"; textFormat: Text.PlainText; text: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: 'monospace'; font.pixelSize: 14 }
                 Sparkline { objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
                 Row {
                   Layout.fillWidth: true; spacing: 2; clip: true
                   Repeater {
-                    model: card.cpu ? card.cpu.cores : []
+                    objectName: "overview-cores-repeater"
+                    model: card.cores.length
                     delegate: Rectangle {
-                      required property var modelData
-                      width: Math.max(1, Math.min(10, (parent.width - Math.max(0, (card.cpu ? card.cpu.cores.length : 0) - 1) * 2) / Math.max(1, card.cpu ? card.cpu.cores.length : 1)))
+                      required property int index
+                      readonly property var modelData: card.cores[index] || ({percent: 0})
+                      width: Math.max(1, Math.min(10, (parent.width - Math.max(0, card.cores.length - 1) * 2) / Math.max(1, card.cores.length)))
                       height: 7; color: root.accent; opacity: Math.max(0.15, Math.min(1, (Number(modelData.percent) || 0) / 100))
                     }
                   }
