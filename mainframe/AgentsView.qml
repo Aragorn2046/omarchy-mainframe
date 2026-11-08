@@ -21,8 +21,8 @@ Item {
   function checkLayout() {
     var failures = 0
     for (var i = 0; i < sectionRepeater.count; i++) { var section = sectionRepeater.itemAt(i); if (section) failures += section.checkLayout() }
-    var lastSection = sectionRepeater.itemAt(sectionRepeater.count - 1)
-    if (lastSection && valueCard.y <= lastSection.y + lastSection.height) failures++
+    var lastSection = sectionRepeater.count > 0 ? sectionRepeater.itemAt(sectionRepeater.count - 1) : null
+    if (lastSection && (lastSection.height > 0 || valueCard.height > 0) && valueCard.y <= lastSection.y + lastSection.height) failures++
     return failures
   }
   ColumnLayout {
