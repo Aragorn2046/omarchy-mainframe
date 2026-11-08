@@ -10,6 +10,11 @@ hardware support and design improvements are all welcome.
   approach before you spend time on it.
 - **Security problems:** do **not** open a public issue. See [SECURITY.md](SECURITY.md).
 
+## Where to start
+
+Look for issues labelled `good first issue` or `help wanted`. Share questions and ideas in GitHub Discussions.
+For a first-time contributor, GitHub's default settings require maintainer approval before CI runs.
+
 ## What fits Mainframe
 
 - Plain QML, JavaScript and Python only. No compiled code, no build step, no extra runtime dependencies beyond what
@@ -30,12 +35,14 @@ qs -p mainframe          # run straight from the checkout
 ## Tests (please run before opening a pull request)
 
 ```bash
-node --test mainframe/tests/                 # metrics and view logic
-python3 mainframe/collect.py --selftest      # data collector
-scripts/mainframe-smoke.sh                   # headless load, layout, CPU and cleanup checks
+node --test mainframe/tests/
+python3 -m unittest discover -s mainframe/tests -p 'test_*.py'
+python3 mainframe/collect.py --selftest
+QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic /usr/lib/qt6/bin/qmltestrunner -input mainframe/tests
+MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic scripts/mainframe-smoke.sh
 ```
 
-The same checks run automatically on every pull request.
+The same checks run automatically on every pull request. The smoke test skips real SSH and the live Wayland window.
 
 ## Pull requests
 

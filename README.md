@@ -1,5 +1,7 @@
 # Mainframe
 
+[![CI](https://github.com/Aragorn2046/omarchy-mainframe/actions/workflows/ci.yml/badge.svg)](https://github.com/Aragorn2046/omarchy-mainframe/actions/workflows/ci.yml)
+
 **A beautiful, theme-aware system monitor for [Omarchy](https://omarchy.org).** Every core, memory, GPU, disk,
 network, battery and your busiest apps, on one screen, at once. Other machines get a tab. No 1991 terminal look.
 
