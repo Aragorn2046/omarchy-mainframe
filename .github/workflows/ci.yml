@@ -22,12 +22,25 @@ jobs:
     steps:
       - name: Install test dependencies
         run: |
+          set -o pipefail
           # quickshell runs the app; qt6-declarative provides qmltestrunner.
           # nodejs and python run the tests; procps-ng provides process tools.
           # git checks out the repository; ttf-dejavu supplies offscreen fonts.
+          pacman-key --init
+          pacman-key --populate archlinux
           pacman -Sy --noconfirm archlinux-keyring
-          pacman -Syu --noconfirm --needed quickshell qt6-declarative nodejs python procps-ng git ttf-dejavu || \
-            pacman -Syu --noconfirm --needed quickshell qt6-declarative nodejs python procps-ng git ttf-dejavu
+          pacman-key --recv-keys 40DFB630FF42BCFFB047046CF0134EE680CAC571 --keyserver hkps://keys.openpgp.org || \
+            pacman-key --recv-keys 40DFB630FF42BCFFB047046CF0134EE680CAC571 --keyserver hkps://keyserver.ubuntu.com
+          pacman-key --finger 40DFB630FF42BCFFB047046CF0134EE680CAC571
+          pacman-key --lsign-key 40DFB630FF42BCFFB047046CF0134EE680CAC571
+          sed -i '/^\[core\]/i [omarchy]\nServer = https://pkgs.omarchy.org/stable/$arch\n' /etc/pacman.conf
+          pacman -Sy
+          pacman -Syu --noconfirm --needed omarchy/quickshell extra/qt6-declarative extra/nodejs core/python core/procps-ng extra/git extra/ttf-dejavu || \
+            pacman -Syu --noconfirm --needed omarchy/quickshell extra/qt6-declarative extra/nodejs core/python core/procps-ng extra/git extra/ttf-dejavu
+          installed_version=$(pacman -Q quickshell | awk '{print $2}')
+          omarchy_version=$(pacman -Si omarchy/quickshell | awk '/^Version[[:space:]]*:/ {print $3}')
+          test -n "$installed_version"
+          test "$installed_version" = "$omarchy_version"
           useradd -m mainframe-ci
           install -d -m 0700 -o mainframe-ci -g mainframe-ci /tmp/mainframe-ci-runtime
       - name: Check out repository

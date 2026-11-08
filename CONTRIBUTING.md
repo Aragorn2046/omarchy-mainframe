@@ -42,7 +42,8 @@ QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic /usr/lib/qt6/bin/qmltestrunner -
 MAINFRAME_SMOKE_NO_SCOPE=1 MAINFRAME_SMOKE_NO_SSH=1 MAINFRAME_SMOKE_NO_REMOTE=1 QT_QPA_PLATFORM=offscreen QSG_RENDER_LOOP=basic scripts/mainframe-smoke.sh
 ```
 
-The same checks run automatically on every pull request. CI skips the real SSH check, connections to remote hosts,
+The same checks run automatically on every pull request. CI uses Omarchy's Quickshell package.
+CI skips the real SSH check, connections to remote hosts,
 the live Wayland window, and the systemd scope. CI reports CPU and frame-rate numbers without failing on limit breaches, while
 `scripts/mainframe-smoke.sh` enforces the limits locally. Report mode still fails when measurements are missing.
 
