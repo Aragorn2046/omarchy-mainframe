@@ -205,7 +205,7 @@ MIT
 
 Overview has Systems, Storage and Agents views. Collectors run independently for all machines while Overview is open. Select a machine card to open its dashboard.
 
-Add accounts in settings. Claude and Codex use the Omarchy collectors with the account directory and an isolated cache. A command account accepts a JSON array of arguments and must print one Omarchy-format JSON record. Mainframe never reads provider credentials. Records refresh when stale, every ten minutes while Agents is open, and on `r`. Existing Omarchy usage files also appear. Unavailable providers are hidden unless enabled in Display settings.
+Add accounts in settings. Claude and Codex use the Omarchy collectors with the account directory and an isolated cache. A command account accepts a JSON array of arguments and must print one usage JSON record. Its limit `percent` values use 0–100 (for example, `55` means 55%); Omarchy collector and usage-file values use fractions from 0–1. Mainframe never reads provider credentials. Records refresh when stale, every ten minutes while Agents is open, and on `r`. Existing Omarchy usage files also appear. Unavailable providers are hidden unless enabled in Display settings.
 
 A usage JSON file can set `category` to `llm`, `video`, `image`, `voice`, or `other` to choose its section in Agents. The value is case-insensitive; without it, Mainframe infers the section from the provider, ID, or name.
 

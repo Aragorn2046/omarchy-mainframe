@@ -21,6 +21,8 @@ Item {
   function checkLayout() {
     var failures = 0
     for (var i = 0; i < sectionRepeater.count; i++) { var section = sectionRepeater.itemAt(i); if (section) failures += section.checkLayout() }
+    var lastSection = sectionRepeater.count > 0 ? sectionRepeater.itemAt(sectionRepeater.count - 1) : null
+    if (lastSection && (lastSection.height > 0 || valueCard.height > 0) && valueCard.y <= lastSection.y + lastSection.height) failures++
     return failures
   }
   ColumnLayout {
@@ -38,39 +40,6 @@ Item {
       contentWidth: width; contentHeight: sections.implicitHeight
       ColumnLayout {
         id: sections; width: parent.width; spacing: 10
-        Card {
-          Layout.fillWidth: true; Layout.preferredHeight: valueContent.implicitHeight + 54
-          cyberStyle: root.cyberStyle; accent: root.accent; title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
-          ColumnLayout {
-            id: valueContent; width: parent.width; spacing: 6
-            RowLayout {
-              Layout.fillWidth: true
-              Repeater {
-                model: root.valueTotals.length
-                delegate: ColumnLayout {
-                  required property int index
-                  readonly property var modelData: root.valueTotals[index] || ({label:'', value:0})
-                  Layout.fillWidth: true
-                  Text { textFormat: Text.PlainText; text: modelData.label; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
-                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : '') + (root.valueData.stale ? ' · includes stale data' : ''); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 16; font.bold: true }
-                }
-              }
-            }
-            Repeater {
-              objectName: "agents-value-repeater"
-              model: root.valueRows.length
-              delegate: Text {
-                required property int index
-                readonly property var modelData: root.valueRows[index] || ({name:'', totals:{}})
-                Layout.fillWidth: true; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight
-                text: (modelData.name || modelData.host || '') + '  ' + (modelData.status && modelData.status !== 'ready' ? modelData.status : UsageValue.money((modelData.totals || {}).today) + '  /  ' + UsageValue.money((modelData.totals || {}).seven) + '  /  ' + UsageValue.money((modelData.totals || {}).thirty))
-              }
-            }
-            Text { textFormat: Text.PlainText; visible: root.valueData.excluded > 0; text: root.valueData.excluded + (root.valueData.excluded === 1 ? ' machine not included' : ' machines not included'); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
-            Repeater { objectName: 'agents-unpriced-repeater'; model: (root.valueData.unpriced && root.valueData.unpriced.length) || 0; delegate: Text { required property int index; readonly property var modelData: (root.valueData.unpriced && root.valueData.unpriced[index]) || ""; textFormat: Text.PlainText; text: modelData + ' — no price · ' + Agents.units((root.valueData.unpricedTokens || {})[modelData]) + ' tokens'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight } }
-            Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'Estimate at public API list prices; subscription fees not included.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; wrapMode: Text.Wrap }
-          }
-        }
         Repeater {
           id: sectionRepeater; objectName: 'agents-sections-repeater'; model: root.sectionData.length
           delegate: ColumnLayout {
@@ -119,10 +88,10 @@ Item {
                         Layout.fillWidth: true; spacing: 3
                         RowLayout {
                           Layout.fillWidth: true
-                          Text { Layout.fillWidth: true; text: modelData.label || ''; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
+                          Text { objectName: 'agents-limit-title'; Layout.fillWidth: true; text: modelData.label || ''; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
                           Text { objectName: 'agents-limit-percent'; textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent == null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
                         }
-                        Meter { cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
+                        Meter { objectName: 'agents-limit-meter'; cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
                         Text { textFormat: Text.PlainText; visible: !!modelData.reset; text: modelData.reset || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                       }
                     }
@@ -159,6 +128,40 @@ Item {
                 }
               }
             }
+          }
+        }
+        Card {
+          id: valueCard; objectName: 'agents-value-card'
+          Layout.fillWidth: true; Layout.preferredHeight: valueContent.implicitHeight + 54
+          cyberStyle: root.cyberStyle; accent: root.accent; title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
+          ColumnLayout {
+            id: valueContent; width: parent.width; spacing: 6
+            RowLayout {
+              Layout.fillWidth: true
+              Repeater {
+                model: root.valueTotals.length
+                delegate: ColumnLayout {
+                  required property int index
+                  readonly property var modelData: root.valueTotals[index] || ({label:'', value:0})
+                  Layout.fillWidth: true
+                  Text { textFormat: Text.PlainText; text: modelData.label; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+                  Text { textFormat: Text.PlainText; text: UsageValue.money(modelData.value) + (root.valueData.partial ? ' partial' : '') + (root.valueData.stale ? ' · includes stale data' : ''); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 16; font.bold: true }
+                }
+              }
+            }
+            Repeater {
+              objectName: "agents-value-repeater"
+              model: root.valueRows.length
+              delegate: Text {
+                required property int index
+                readonly property var modelData: root.valueRows[index] || ({name:'', totals:{}})
+                Layout.fillWidth: true; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight
+                text: (modelData.name || modelData.host || '') + '  ' + (modelData.status && modelData.status !== 'ready' ? modelData.status : UsageValue.money((modelData.totals || {}).today) + '  /  ' + UsageValue.money((modelData.totals || {}).seven) + '  /  ' + UsageValue.money((modelData.totals || {}).thirty))
+              }
+            }
+            Text { textFormat: Text.PlainText; visible: root.valueData.excluded > 0; text: root.valueData.excluded + (root.valueData.excluded === 1 ? ' machine not included' : ' machines not included'); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+            Repeater { objectName: 'agents-unpriced-repeater'; model: (root.valueData.unpriced && root.valueData.unpriced.length) || 0; delegate: Text { required property int index; readonly property var modelData: (root.valueData.unpriced && root.valueData.unpriced[index]) || ""; textFormat: Text.PlainText; text: modelData + ' — no price · ' + Agents.units((root.valueData.unpricedTokens || {})[modelData]) + ' tokens'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; Layout.fillWidth: true; elide: Text.ElideRight } }
+            Text { textFormat: Text.PlainText; Layout.fillWidth: true; text: 'Estimate at public API list prices; subscription fees not included.'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; wrapMode: Text.Wrap }
           }
         }
       }
