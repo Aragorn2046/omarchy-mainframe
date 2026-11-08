@@ -193,3 +193,67 @@ test('category recognizes provider in full account id', () => {
   assert.equal(A.category({id:'claude_work'}), 'llm');
   assert.equal(A.category({id:'notclaude_work'}), 'other');
 });
+
+
+test('skyline packing uses available columns and preserves masonry', () => {
+  const opts = {minCardWidth:340, gap:10, maxColumns:6};
+  assert.equal(A.pack([], 300, opts).columns, 1);
+  assert.deepEqual(A.pack([], 1750, opts), {columns:5, columnWidth:342, height:0, blocks:[]});
+  const blocks = [
+    {key:'llm', headingHeight:15, cardHeights:[100, 180, 100, 100, 180, 100]},
+    {key:'video', headingHeight:15, cardHeights:[80]},
+    {key:'voice', headingHeight:15, cardHeights:[90]},
+  ];
+  const packed = A.pack(blocks, 1750, opts);
+  const [llm, video, voice] = packed.blocks;
+  assert.equal(video.y, voice.y);
+  assert.notEqual(video.x, voice.x);
+  assert.equal(llm.cards[0].height, 100);
+  assert.equal(llm.cards[1].height, 180);
+  assert.equal(llm.cards[5].y, llm.cards[0].y + llm.cards[0].height + 10);
+  const rectangles = packed.blocks.flatMap((block, index) => [
+    {...block.heading, height:blocks[index].headingHeight}, ...block.cards
+  ]);
+  for (const [i, a] of rectangles.entries()) {
+    assert.ok(a.x >= 0 && a.x + a.width <= 1750);
+    for (const b of rectangles.slice(i + 1))
+      assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y);
+  }
+  assert.equal(packed.height, Math.max(...rectangles.map(rect => rect.y + rect.height)));
+});
+
+test('packing distributes whole pixels across columns', () => {
+  const blocks = [
+    {key:'first', headingHeight:15, cardHeights:[100]},
+    {key:'middle', headingHeight:15, cardHeights:[100, 100]},
+    {key:'last', headingHeight:15, cardHeights:[100]},
+    {key:'extra', headingHeight:15, cardHeights:[100]},
+  ];
+  for (const width of [1476, 1750, 1476.75]) {
+    const packed = A.pack(blocks, width);
+    const cards = packed.blocks.flatMap(block => block.cards);
+    const columnCards = cards.filter(card => card.y === 25).sort((a, b) => a.x - b.x);
+    const available = Math.floor(width) - (packed.columns - 1) * 10;
+    const base = Math.floor(available / packed.columns);
+    const extra = available - base * packed.columns;
+    assert.equal(packed.columnWidth, base);
+    assert.deepEqual(columnCards.map(card => card.width), Array.from({length:packed.columns}, (_, i) => base + (i < extra ? 1 : 0)));
+    assert.equal(columnCards.at(-1).x + columnCards.at(-1).width, Math.floor(width));
+    for (const block of packed.blocks) {
+      for (const rect of [block, block.heading, ...block.cards]) {
+        assert.ok(Number.isInteger(rect.x));
+        assert.ok(Number.isInteger(rect.width));
+      }
+      assert.equal(block.heading.x, block.x);
+      assert.equal(block.heading.width, block.width);
+      assert.equal(block.width, Math.max(...block.cards.map(card => card.x + card.width)) - block.x);
+    }
+    for (const [i, a] of cards.entries()) for (const b of cards.slice(i + 1))
+      assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y);
+  }
+  const fractionalGap = A.pack(blocks, 1476, {gap:10.5});
+  const cards = fractionalGap.blocks.flatMap(block => block.cards);
+  assert.ok(cards.every(card => Number.isInteger(card.x) && Number.isInteger(card.width)));
+  assert.equal(Math.max(...cards.map(card => card.x + card.width)), 1476);
+  assert.equal(cards[0].y, 25.5);
+});

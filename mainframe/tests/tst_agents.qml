@@ -8,9 +8,6 @@ TestCase {
   id: testCase
   name: "Agents"
   width: 900; height: 700; visible: true; when: windowShown
-  property var gapSection: null
-  property var gapCard: null
-  readonly property real valueCardGap: gapSection && gapCard ? gapCard.y - (gapSection.y + gapSection.height) : -1
   AgentsView {
     id: view
     anchors.fill: parent
@@ -20,8 +17,7 @@ TestCase {
     return {totals:{today:amount,seven:0,thirty:0}, providers:{claude:{today:amount,seven:0,thirty:0},codex:{today:0,seven:0,thirty:0}}, hosts:hosts, unpriced:[], unpricedTokens:{}, partial:false, excluded:0}
   }
   function cleanup() {
-    gapSection = null
-    gapCard = null
+    testCase.width = 900
     view.rows = []
     view.valueData = valueData(0, [])
     view.flick.cancelFlick()
@@ -39,12 +35,8 @@ TestCase {
     var valueCard = findChild(view, 'agents-value-card')
     compare(sections.count, 5)
     tryVerify(function() {
-      var last = sections.itemAt(sections.count - 1)
-      return last && last.height > 0 && valueCard.y > last.y + last.height
+      return view.packed.blocks.length === 5 && view.packed.height > 0 && valueCard.y === view.packed.height + 10 && view.checkLayout() === 0
     })
-    gapSection = sections.itemAt(sections.count - 1)
-    gapCard = valueCard
-    tryCompare(testCase, 'valueCardGap', 10, 2000)
     compare(view.checkLayout(), 0)
     verify(view.flick.contentHeight > view.flick.height)
     // The standalone view has no End shortcut; the shell calls this function for End.
@@ -54,6 +46,31 @@ TestCase {
     verify(valueCard.visible)
     verify(top >= 0)
     verify(bottom <= view.flick.height + 1)
+  }
+  function test_video_and_voice_share_space() {
+    testCase.width = 1750
+    var rows = []
+    for (var i = 0; i < 6; i++) rows.push({name:'LLM ' + i, category:'llm', age:''})
+    rows.push({name:'Higgsfield', category:'video', age:''})
+    rows.push({name:'ElevenLabs', category:'voice', age:''})
+    view.rows = rows
+    tryVerify(function() { return view.packed.columns === 5 && view.packed.blocks.length === 3 && view.checkLayout() === 0 })
+    var video = view.packed.blocks[1].cards[0]
+    var voice = view.packed.blocks[2].cards[0]
+    verify(video.x !== voice.x)
+    verify(Math.abs(video.y - voice.y) <= 1)
+  }
+  function test_packing_updates_after_content_and_width_change() {
+    testCase.width = 900
+    view.rows = [{name:'Agent', category:'other', age:'', limits:[]}]
+    var section = findChild(view, 'agents-sections-repeater').itemAt(0)
+    var card = findChild(section, 'agents-cards-repeater').itemAt(0)
+    tryVerify(function() { return view.packed.blocks.length === 1 && card.height === card.contentHeight })
+    var oldHeight = card.height
+    view.rows = [{name:'Agent', category:'other', age:'', limits:[{label:'Limit', percent:50}]}]
+    tryVerify(function() { return card.height > oldHeight && card.height === card.contentHeight && view.checkLayout() === 0 })
+    testCase.width = 350
+    tryVerify(function() { return view.packed.columns === 1 && card.width === view.flick.width && view.checkLayout() === 0 })
   }
   function test_refresh_preserves_value_rows() {
     view.valueData = valueData(1, [])

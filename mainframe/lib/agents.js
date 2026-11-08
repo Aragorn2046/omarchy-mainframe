@@ -111,6 +111,47 @@ function sections(items) {
     return {key:pair[0], heading:pair[1], cards:cards};
   }).filter(function(section) { return section.cards.length > 0; });
 }
+// Place sections on a shared skyline while retaining each card's own height.
+function pack(blocks, width, options) {
+  options = options || {};
+  var gap = options.gap === undefined ? 10 : options.gap;
+  var pixelGap = Math.floor(gap);
+  var minWidth = options.minCardWidth === undefined ? 340 : options.minCardWidth;
+  var maxColumns = options.maxColumns === undefined ? 6 : options.maxColumns;
+  width = Math.max(0, Math.floor(width));
+  var columns = Math.max(1, Math.min(maxColumns, Math.floor((width + gap) / (minWidth + gap))));
+  var available = width - (columns - 1) * pixelGap;
+  var columnWidth = Math.floor(available / columns), extra = available - columnWidth * columns;
+  var skyline = [], starts = [], widths = [], result = [], bottom = 0, i, nextX = 0;
+  for (i = 0; i < columns; i++) {
+    skyline.push(0); starts.push(nextX); widths.push(columnWidth + (i < extra ? 1 : 0));
+    nextX += widths[i] + pixelGap;
+  }
+  blocks.forEach(function(block) {
+    var count = block.cardHeights.length, span = Math.min(count, columns);
+    if (!span) { result.push({key:block.key, x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]}); return; }
+    var start = 0, top = Infinity, c, j;
+    for (c = 0; c <= columns - span; c++) {
+      var candidate = 0;
+      for (j = c; j < c + span; j++) candidate = Math.max(candidate, skyline[j]);
+      if (candidate < top) { top = candidate; start = c; }
+    }
+    var x = starts[start], last = start + span - 1;
+    var blockWidth = starts[last] + widths[last] - x;
+    var heading = {x:x, y:top, width:blockWidth}, cards = [];
+    var cardTop = top + block.headingHeight + gap;
+    for (j = start; j < start + span; j++) skyline[j] = cardTop;
+    block.cardHeights.forEach(function(height) {
+      var chosen = start;
+      for (var k = start + 1; k < start + span; k++) if (skyline[k] < skyline[chosen]) chosen = k;
+      cards.push({x:starts[chosen], y:skyline[chosen], width:widths[chosen], height:height});
+      bottom = Math.max(bottom, skyline[chosen] + height);
+      skyline[chosen] += height + gap;
+    });
+    result.push({key:block.key, x:x, y:top, width:blockWidth, heading:heading, cards:cards});
+  });
+  return {columns:columns, columnWidth:columnWidth, height:bottom, blocks:result};
+}
 function sorted(items) { return items.slice().sort(function(a,b) { return a.name.localeCompare(b.name, undefined, {sensitivity:'base'}); }); }
-var api = {percent:percent, visible:visible, parse:parse, sorted:sorted, age:age, reset:reset, units:units, activity:activity, safeHelp:safeHelp, category:category, sections:sections};
+var api = {percent:percent, visible:visible, parse:parse, sorted:sorted, age:age, reset:reset, units:units, activity:activity, safeHelp:safeHelp, category:category, sections:sections, pack:pack};
 if (typeof module !== 'undefined' && module.exports) module.exports = api;
