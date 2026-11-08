@@ -1358,7 +1358,7 @@ def read_stat(pid):
     if len(rest) < 20:
         return None
     try:
-        return {"ppid": int(rest[1]), "start": int(rest[19]), "pgrp": int(rest[2])}
+        return {"state": rest[0], "ppid": int(rest[1]), "start": int(rest[19]), "pgrp": int(rest[2])}
     except ValueError:
         return None
 
@@ -1434,26 +1434,26 @@ try:
             if b"collect.py" in cmdline(pid):
                 st = read_stat(pid)
                 if st:
-                    collectors.append((pid, st["start"]))
+                    collectors.append((pid, st["start"], st["ppid"]))
         if collectors:
             break
         time.sleep(0.1)
     if not collectors:
         print("kill -9: collect.py did not start")
         sys.exit(1)
-    # Only the qs pid. A group kill would hide a missing death signal.
-    os.kill(leader, signal.SIGKILL)
-    try:
-        os.waitpid(leader, 0)
-    except OSError:
-        pass
+    parents = {parent for _, _, parent in collectors}
+    if len(parents) != 1 or not parents.issubset({leader, *descendants(leader)}):
+        print("kill -9: collector parent is not a single qs descendant: %s" % parents)
+        sys.exit(1)
+    # Kill only the actual shell parent. A group kill would hide a missing death signal.
+    os.kill(parents.pop(), signal.SIGKILL)
     left = time.monotonic() + 2.0
     still = list(collectors)
     while time.monotonic() < left:
         still = []
-        for pid, start in collectors:
+        for pid, start, _parent in collectors:
             st = read_stat(pid)
-            if st and st["start"] == start:
+            if st and st["start"] == start and st["state"] != "Z":
                 still.append(pid)
         if not still:
             break
