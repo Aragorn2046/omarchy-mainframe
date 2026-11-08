@@ -120,7 +120,7 @@ ShellRoot {
     if (!helpOpen && storageOpen && storageView.flick.visible) storageView.moveRow(step)
     else scrollActive(step > 0 ? "line-down" : "line-up")
   }
-  function refreshAgents(force) { if (!agentsVisible || quitting) return; if (agentRefresh.running) { agentRefreshPending = true; return } agentRefresh.command = ["python3", Quickshell.shellDir + "/config_manager.py", "refresh"]; agentRefresh.running = true }
+  function refreshAgents(force) { if (!agentsVisible || quitting) return; if (agentRefresh.running) { agentRefreshPending = true; agentRefreshForce = agentRefreshForce || force; return } var command = ["python3", Quickshell.shellDir + "/config_manager.py", "refresh"]; if (force) command.push("--force"); agentRefresh.command = command; agentRefresh.running = true }
   function configChanged(name, value) {
     var snapshots = configSnapshots
     if (snapshots[name] === value) return
