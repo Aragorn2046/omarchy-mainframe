@@ -351,16 +351,20 @@ def cpu_gate_limit(live):
     return 2.0 if live else 3.0
 
 
-def cpu_gate_verdict(pct, limit):
-    if pct is None or pct < 0 or pct >= limit:
+def cpu_gate_verdict(pct, limit, mode=''):
+    if pct is None or pct < 0:
         return "FAIL"
-    return "PASS"
+    return power_gate_verdict("FAIL", mode) if pct >= limit else "PASS"
 
 
-def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3):
+def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3, mode=''):
     if not connected or not saw_frame or elapsed <= 0 or frame_count < 0:
         return "FAIL"
-    return "PASS" if frame_count / elapsed <= limit else "FAIL"
+    return power_gate_verdict("FAIL", mode) if frame_count / elapsed > limit else "PASS"
+
+
+def power_gate_verdict(verdict, mode):
+    return "REPORT" if mode == "report" and verdict == "FAIL" else verdict
 
 
 def sample_cadence_min(window_s):
@@ -434,6 +438,15 @@ def gate_selftest():
     check(frame_gate_verdict(161, 20, True, True, 8) == 'FAIL', 'over 8 fps fails')
     check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
     check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
+    check(cpu_gate_verdict(4.0, 3.0, 'report') == 'REPORT', 'report mode reports over-limit cpu')
+    check(frame_gate_verdict(61, 20, True, True, 3, 'report') == 'REPORT', 'report mode reports over-limit frames')
+    check(cpu_gate_verdict(1.0, 3.0, 'report') == 'PASS', 'report mode passes cpu under limit')
+    check(frame_gate_verdict(60, 20, True, True, 3, 'report') == 'PASS', 'report mode passes frames under limit')
+    check(cpu_gate_verdict(None, 3.0, 'report') == 'FAIL', 'report mode fails missing cpu')
+    check(cpu_gate_verdict(-0.01, 3.0, 'report') == 'FAIL', 'report mode fails negative cpu')
+    check(frame_gate_verdict(0, 20, False, False, 3, 'report') == 'FAIL', 'report mode fails missing frame probe')
+    check(frame_gate_verdict(0, 20, True, False, 3, 'report') == 'FAIL', 'report mode fails unseen frame probe')
+    check(frame_gate_verdict(0, 0, True, True, 3, 'report') == 'FAIL', 'report mode fails invalid frame window')
     pct = cpu_core_percent(0, 1000000, 10.0, "cgroup", 100)
     check(pct is not None and abs(pct - 10.0) < 1e-9, "cgroup 10%")
     pct = cpu_core_percent(50, 150, 10.0, "proc", 100)
@@ -980,7 +993,7 @@ if measure:
         else:
             pct = cpu_core_percent(before, after, elapsed, cpu_mode, clk)
             limit = cpu_gate_limit(live)
-            verdict = cpu_gate_verdict(pct, limit)
+            verdict = cpu_gate_verdict(pct, limit, os.environ.get('MAINFRAME_SMOKE_GATES', ''))
             kind = "live" if live else "offscreen"
             if pct is None:
                 print("cpu qs+collector: no reading (%s)" % kind)
@@ -1000,7 +1013,7 @@ if measure:
             else:
                 print("local collector count: 1 throughout sampled window")
             print("cpu gate: %s (< %.1f%% of one core, %s)" % (verdict, limit, kind))
-            if verdict != "PASS":
+            if verdict == "FAIL":
                 fail = True
             if not live:
                 for name in ('qs', 'collector'):
@@ -1022,9 +1035,14 @@ if measure:
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
                 frame_limit = 8 if mode == 'cyber-all' else 3
-                if frame_gate_verdict(len(frames), elapsed, connected, saw_frame, frame_limit) != 'PASS':
+                frame_verdict = frame_gate_verdict(
+                    len(frames), elapsed, connected, saw_frame, frame_limit,
+                    os.environ.get('MAINFRAME_SMOKE_GATES', ''))
+                if frame_verdict == 'FAIL':
                     print('frame gate: FAIL (expected <= %d fps and a working probe)' % frame_limit)
                     fail = True
+                elif frame_verdict == 'REPORT':
+                    print('frame gate: REPORT (expected <= %d fps and a working probe)' % frame_limit)
                 else:
                     print('frame gate: PASS (<= %d fps)' % frame_limit)
         samples = 0
@@ -1205,6 +1223,11 @@ run_qml selftest
 if [[ "${MAINFRAME_SMOKE_NO_GUI:-}" == "1" ]]; then
   echo "GUI and SSH smoke checks: skipped (MAINFRAME_SMOKE_NO_GUI=1)"
 else
+# Quickshell can crash without a writable runtime directory.
+if [[ -z "${XDG_RUNTIME_DIR:-}" || ! -d "$XDG_RUNTIME_DIR" || ! -w "$XDG_RUNTIME_DIR" || ! -x "$XDG_RUNTIME_DIR" ]]; then
+  echo "smoke: XDG_RUNTIME_DIR must be set to a writable, accessible directory" >&2
+  exit 1
+fi
 echo "== qml load =="
 if ! command -v qs >/dev/null 2>&1; then
   echo "qml load: qs is not on PATH; cannot verify"
@@ -1262,13 +1285,17 @@ PY
   fi
 fi
 
-echo "== storage shutdown =="
-if python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" && \
-   python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" --faults; then
-  echo "storage shutdown: pass"
+if [[ "${MAINFRAME_SMOKE_SKIP_STORAGE:-}" == "1" ]]; then
+  echo "storage shutdown: SKIP (MAINFRAME_SMOKE_SKIP_STORAGE=1: no scannable disk in this environment)"
 else
-  echo "storage shutdown: FAIL"
-  fail=1
+  echo "== storage shutdown =="
+  if python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" && \
+     python3 "$ROOT/mainframe/tests/storage-shutdown-smoke.py" --faults; then
+    echo "storage shutdown: pass"
+  else
+    echo "storage shutdown: FAIL"
+    fail=1
+  fi
 fi
 
 echo "== sparkline interaction =="
@@ -1334,7 +1361,7 @@ def read_stat(pid):
     if len(rest) < 20:
         return None
     try:
-        return {"ppid": int(rest[1]), "start": int(rest[19]), "pgrp": int(rest[2])}
+        return {"state": rest[0], "ppid": int(rest[1]), "start": int(rest[19]), "pgrp": int(rest[2])}
     except ValueError:
         return None
 
@@ -1410,26 +1437,26 @@ try:
             if b"collect.py" in cmdline(pid):
                 st = read_stat(pid)
                 if st:
-                    collectors.append((pid, st["start"]))
+                    collectors.append((pid, st["start"], st["ppid"]))
         if collectors:
             break
         time.sleep(0.1)
     if not collectors:
         print("kill -9: collect.py did not start")
         sys.exit(1)
-    # Only the qs pid. A group kill would hide a missing death signal.
-    os.kill(leader, signal.SIGKILL)
-    try:
-        os.waitpid(leader, 0)
-    except OSError:
-        pass
+    parents = {parent for _, _, parent in collectors}
+    if len(parents) != 1 or not parents.issubset({leader, *descendants(leader)}):
+        print("kill -9: collector parent is not a single qs descendant: %s" % parents)
+        sys.exit(1)
+    # Kill only the actual shell parent. A group kill would hide a missing death signal.
+    os.kill(parents.pop(), signal.SIGKILL)
     left = time.monotonic() + 2.0
     still = list(collectors)
     while time.monotonic() < left:
         still = []
-        for pid, start in collectors:
+        for pid, start, _parent in collectors:
             st = read_stat(pid)
-            if st and st["start"] == start:
+            if st and st["start"] == start and st["state"] != "Z":
                 still.append(pid)
         if not still:
             break

@@ -6,6 +6,29 @@ import os
 from pathlib import Path
 import sys
 
+MAX_JSON_DEPTH = 128
+
+def json_depth_ok(text):
+    depth = 0
+    in_string = escaped = False
+    for char in text:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == '\\':
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in '[{':
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                return False
+        elif char in ']}':
+            depth = max(0, depth - 1)
+    return True
+
 base = Path(os.environ.get('XDG_STATE_HOME') or (str(Path.home()) + '/.local/state')) / 'omarchy/agents/usage'
 records = []
 try:
@@ -105,6 +128,10 @@ def normalize_limits(record):
 parsed = []
 for item in records:
     try:
+        if not json_depth_ok(item['raw']):
+            item['raw'] = ''
+            parsed.append(None)
+            continue
         record = json.loads(item['raw'])
         if (isinstance(record, dict) and
                 (not item.get('mainframe') or record.get('provider') in ('claude', 'codex')) and

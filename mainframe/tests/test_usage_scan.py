@@ -57,7 +57,12 @@ class ScannerTest(unittest.TestCase):
     def test_index_memory_error_rebuilds(self):
         from unittest.mock import patch
         self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('one')]); self.scan()
-        with patch.object(c.json, 'load', side_effect=MemoryError):
+        index_text = (self.cache / 'usage-index.json').read_text()
+        loads = json.loads
+        def parse(text, *args, **kwargs):
+            if text == index_text: raise MemoryError
+            return loads(text, *args, **kwargs)
+        with patch.object(c.json, 'loads', side_effect=parse):
             result = self.scan()
         self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
         self.assertEqual(json.loads((self.cache / 'usage-index.json').read_text())['version'], 8)
@@ -485,6 +490,64 @@ class ScannerTest(unittest.TestCase):
             index = json.loads(json.dumps(baseline)); index['hours'][self.day] = value
             path.write_text(json.dumps(index))
             self.assertEqual(self.scan()['days'][self.day]['claude/model-a']['input'], 10)
+
+    def test_nested_usage_record_is_skipped_before_parsing(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl')
+        deep = '{"usage":' + '[' * 128 + '0' + ']' * 128 + '}'
+        normal = self.claude('valid')
+        normal['text'] = '\\"' + '[' * 200 + '}' * 200
+        path.write_bytes(deep.encode() + b'\n' + json.dumps(normal).encode() + b'\n')
+        loads = json.loads
+        def parse(raw, *args, **kwargs):
+            self.assertNotEqual(raw, deep, 'deep record reached the JSON parser')
+            return loads(raw, *args, **kwargs)
+        with patch.object(c.json, 'loads', side_effect=parse):
+            result = self.scan()
+        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
+
+    def test_nested_usage_index_is_rebuilt_before_parsing(self):
+        from unittest.mock import patch
+        self.lines(self.file('.claude/projects/a.jsonl'), [self.claude('valid')])
+        self.cache.mkdir()
+        deep = '[' * 129 + '0' + ']' * 129
+        (self.cache / 'usage-index.json').write_text(deep)
+        depth_ok = c._usage_json_depth_ok
+        loads = json.loads
+        checked = []
+        def check(text):
+            result = depth_ok(text)
+            checked.append((text, result))
+            return result
+        def parse(text, *args, **kwargs):
+            self.assertNotEqual(text, deep, 'deep index reached the JSON parser')
+            return loads(text, *args, **kwargs)
+        with patch.object(c, '_usage_json_depth_ok', side_effect=check), \
+                patch.object(c.json, 'loads', side_effect=parse), \
+                patch.object(c.json, 'load', side_effect=AssertionError('unexpected json.load')):
+            result = self.scan()
+        self.assertIn((deep, False), checked)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
+
+    def test_bomless_utf16_usage_line_is_skipped(self):
+        from unittest.mock import patch
+        path = self.file('.claude/projects/a.jsonl')
+        record = self.claude('utf16')
+        # Ensure the byte-level marker is present in an otherwise valid UTF-16LE record.
+        record['text'] = ''.join(chr(int.from_bytes(pair, 'little')) for pair in
+                                 (b'to', b'ke', b'n_', b'co', b'un', b't '))
+        encoded = json.dumps(record, ensure_ascii=False).encode('utf-16le')
+        self.assertIn(b'token_count', encoded)
+        path.write_bytes(encoded + b'\n' + json.dumps(self.claude('valid')).encode() + b'\n')
+        loads = json.loads
+        def parse(text, *args, **kwargs):
+            self.assertNotEqual(text, encoded, 'UTF-16 record reached the JSON parser as bytes')
+            return loads(text, *args, **kwargs)
+        with patch.object(c.json, 'loads', side_effect=parse):
+            result = self.scan()
+        self.assertEqual(result['skipped'], 1)
+        self.assertEqual(result['days'][self.day]['claude/model-a']['input'], 10)
 
     def test_oversized_tail_and_malformed_usage_lines_are_skipped(self):
         path = self.file('.claude/projects/a.jsonl')
