@@ -1,10 +1,15 @@
 import QtQuick
 import QtTest
 import ".."
+import "../lib/navigation.js" as Navigation
 
 TestCase {
+  id: testCase
   name: "Agents"
   width: 900; height: 700; visible: true; when: windowShown
+  property var gapSection: null
+  property var gapCard: null
+  readonly property real valueCardGap: gapSection && gapCard ? gapCard.y - (gapSection.y + gapSection.height) : -1
   AgentsView {
     id: view
     anchors.fill: parent
@@ -12,6 +17,42 @@ TestCase {
   }
   function valueData(amount, hosts) {
     return {totals:{today:amount,seven:0,thirty:0}, providers:{claude:{today:amount,seven:0,thirty:0},codex:{today:0,seven:0,thirty:0}}, hosts:hosts, unpriced:[], unpricedTokens:{}, partial:false, excluded:0}
+  }
+  function cleanup() {
+    gapSection = null
+    gapCard = null
+    view.rows = []
+    view.valueData = valueData(0, [])
+    view.flick.cancelFlick()
+    view.flick.contentY = 0
+  }
+  function test_value_card_follows_agent_sections() {
+    var rows = []
+    var categories = ['llm', 'video', 'image', 'voice', 'other']
+    for (var i = 0; i < categories.length; i++)
+      for (var j = 0; j < 3; j++) rows.push({name:categories[i] + j, category:categories[i]})
+    view.valueData = {totals:{today:12,seven:65,thirty:240}, providers:{claude:{today:8,seven:42,thirty:150},codex:{today:4,seven:23,thirty:90}}, hosts:[{host:'dawn',totals:{today:12,seven:65,thirty:240}}], unpriced:[], unpricedTokens:{}, partial:false, excluded:0}
+    compare(view.checkLayout(), 0)
+    view.rows = rows
+    var sections = findChild(view, 'agents-sections-repeater')
+    var valueCard = findChild(view, 'agents-value-card')
+    compare(sections.count, 5)
+    tryVerify(function() {
+      var last = sections.itemAt(sections.count - 1)
+      return last && last.height > 0 && valueCard.y > last.y + last.height
+    })
+    gapSection = sections.itemAt(sections.count - 1)
+    gapCard = valueCard
+    tryCompare(testCase, 'valueCardGap', 10, 2000)
+    compare(view.checkLayout(), 0)
+    verify(view.flick.contentHeight > view.flick.height)
+    // The standalone view has no End shortcut; the shell calls this function for End.
+    view.flick.contentY = Navigation.scrollTarget(view.flick.contentY, view.flick.contentHeight, view.flick.height, 'bottom')
+    var top = valueCard.mapToItem(view.flick, 0, 0).y
+    var bottom = top + valueCard.height
+    verify(valueCard.visible)
+    verify(top >= 0)
+    verify(bottom <= view.flick.height + 1)
   }
   function test_refresh_preserves_value_rows() {
     view.valueData = valueData(1, [])
