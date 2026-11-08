@@ -1487,6 +1487,18 @@ ShellRoot {
         var pageRows = shell.agentsVisible ? shell.agentRows.length : shell.overviewRows.length
         console.log("LAYOUT view=" + (shell.settingsOpen ? "settings" : shell.overviewView) + " w=" + Math.round(window.width) + " h=" + Math.round(window.height) + " rows=" + pageRows + " overflow=" + pageOverflow + " samples=" + samples)
         console.log("PAGE name=" + shell.overviewView + " rows=" + pageRows + " overflow=" + pageOverflow + " drives=" + shell.overviewRows.reduce(function(n, row) { return n + (row.view && row.view.filesystems ? row.view.filesystems.length : 0) }, 0) + " unreachable=" + shell.overviewRows.filter(function(row) { return row.status === "unreachable" }).length + " broken=" + shell.agentRows.filter(function(row) { return row.broken }).length + " connected=" + shell.overviewRows.filter(function(row) { return row.status === "connected" }).length)
+        if (shell.agentsVisible) {
+          function limitText(item) {
+            if (item.objectName === 'agents-limit-percent') return item.text
+            var children = item.children || []
+            for (var i = 0; i < children.length; i++) {
+              var found = limitText(children[i])
+              if (found !== null) return found
+            }
+            return null
+          }
+          console.log('AGENT_LIMIT text=' + limitText(agentsView))
+        }
       }
       if (shell.storageOpen) console.log("STORAGE w=" + Math.round(storageView.width) + " h=" + Math.round(storageView.height) + " visible=" + (storageView.visible ? 1 : 0) + " data=" + (shell.storageData ? 1 : 0) + " rows=" + storageView.rows.length + " patterns=" + storageView.rows.filter(function(row) { return row.pattern }).length + " overflow=" + ((storageView.width > window.width || storageView.height > window.height ? 1 : 0) + storageView.checkStorageLayout()))
       var previewOutput = String(Quickshell.env("MAINFRAME_PREVIEW_OUTPUT") || "")

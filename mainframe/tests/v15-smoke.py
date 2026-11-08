@@ -19,7 +19,7 @@ with tempfile.TemporaryDirectory(prefix='mf15-') as tmp:
     for i, name in enumerate(('Claude Alice', 'Claude Bob', 'Codex', 'Grok', 'Antigravity', 'ElevenLabs', 'Higgsfield')):
         record = {'name': name, 'tierLabel': 'Pro', 'updatedAt': datetime.datetime.now(datetime.timezone.utc).isoformat(),
                   'todayPrompts': 15, 'todaySessions': 2, 'todayTotalTokens': 12000,
-                  'limits': [{'label': 'Weekly', 'percent': 81, 'resetsAt': '2030-01-01T00:00:00Z'}],
+                  'limits': [{'label': 'Weekly', 'percent': 0.81, 'resetsAt': '2030-01-01T00:00:00Z'}],
                   'recentDays': [{'date': datetime.date.today().isoformat(), 'messageCount': 7}],
                   'modelUsage': {'model': {'inputTokens': 1000, 'outputTokens': 200, 'cacheReadInputTokens': 50}}}
         if i == 1:  # A short Claude card shares a row with a taller one.
@@ -46,6 +46,7 @@ with tempfile.TemporaryDirectory(prefix='mf15-') as tmp:
             view = 'systems' if page in ('sessions', 'overview') else page
             expected = f'PAGE name={view} rows={6 if page == "agents" else 4} overflow=0'
             extra = 'unreachable=3' if page == 'overview' else ('connected=4' if page == 'sessions' else 'broken=0')
-            if proc.returncode or expected not in line or extra not in line or errors:
+            limit_ok = page != 'agents' or 'AGENT_LIMIT text=Warning · 81%' in log
+            if proc.returncode or expected not in line or extra not in line or not limit_ok or errors:
                 raise SystemExit(f'FAIL {width} {page}: {line}\n' + '\n'.join(errors) + '\n' + log[-2500:])
             print(f'PASS {width} {page}: {line.split("PAGE ", 1)[1]}')

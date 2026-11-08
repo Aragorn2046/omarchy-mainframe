@@ -88,10 +88,10 @@ Item {
                         Layout.fillWidth: true; spacing: 3
                         RowLayout {
                           Layout.fillWidth: true
-                          Text { Layout.fillWidth: true; text: modelData.label || ''; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
+                          Text { objectName: 'agents-limit-title'; Layout.fillWidth: true; text: modelData.label || ''; textFormat: Text.PlainText; color: root.ink; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight }
                           Text { objectName: 'agents-limit-percent'; textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent == null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
                         }
-                        Meter { cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
+                        Meter { objectName: 'agents-limit-meter'; cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
                         Text { textFormat: Text.PlainText; visible: !!modelData.reset; text: modelData.reset || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
                       }
                     }

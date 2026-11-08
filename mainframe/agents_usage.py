@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Read usage files only. Do not follow file symlinks outside the usage directory."""
 import json
+import math
 import os
 from pathlib import Path
 import sys
@@ -70,12 +71,46 @@ def identity(d):
         return d
     except (ValueError, TypeError, RecursionError, MemoryError): return None
 
+# If any valid percent exceeds 1, the record uses 0..100; otherwise it uses 0..1.
+# A 0..100 record with all values <= 1 is ambiguous and read as fractions; Omarchy
+# helpers and state files always write fractions, so this only affects non-Omarchy files.
+# config_manager's data.update uses the account provider, so command caches remain
+# provider 'command' even if command output claims 'claude'; never scale them.
+def normalize_limits(record):
+    limits = record.get('limits')
+    if not isinstance(limits, list): return False
+    changed = False
+    valid = []
+    for limit in limits:
+        if not isinstance(limit, dict): continue
+        if 'percent' not in limit: continue
+        value = limit['percent']
+        if (isinstance(value, bool) or not isinstance(value, (int, float)) or
+                (isinstance(value, float) and not math.isfinite(value)) or value < 0):
+            del limit['percent']
+            changed = True
+            continue
+        valid.append((limit, value))
+    percentages = any(value > 1 for _, value in valid)
+    for limit, value in valid:
+        normalized = min(value, 100) if percentages else round(value * 100, 2)
+        if normalized != value:
+            limit['percent'] = normalized
+            changed = True
+    return changed
+
+# Rewrite raw only on change; every read starts from disk, never normalized output.
 # Configured records are anchors; choose the strongest direct match for each
 # Omarchy record before merging any unanchored records.
 parsed = []
 for item in records:
     try:
-        parsed.append(json.loads(item['raw']))
+        record = json.loads(item['raw'])
+        if (isinstance(record, dict) and
+                (not item.get('mainframe') or record.get('provider') in ('claude', 'codex')) and
+                normalize_limits(record)):
+            item['raw'] = json.dumps(record, ensure_ascii=True)
+        parsed.append(record)
     except ValueError:
         parsed.append(None)
     except (RecursionError, MemoryError):
@@ -148,14 +183,17 @@ for group in groups.values():
     configured = [i for i in group if records[i].get('mainframe') and identities[i] is not None]
     if configured and not item.get('mainframe'):
         source = parsed[max(configured, key=freshness)]
+        changed = False
         for key in ('id', 'name', 'provider', 'dir', 'configHash'):
-            if key in source:
+            if key in source and (key not in raw or raw[key] != source[key]):
                 raw[key] = source[key]
-        try:
-            item['raw'] = json.dumps(raw, ensure_ascii=True)
-        except (ValueError, RecursionError, MemoryError):
-            item['raw'] = ''
-            raw = None
+                changed = True
+        if changed:
+            try:
+                item['raw'] = json.dumps(raw, ensure_ascii=True)
+            except (ValueError, RecursionError, MemoryError):
+                item['raw'] = ''
+                raw = None
     merged.append((item, raw))
 # The default Claude account owns shared projects when its record is present.
 default_dir = realpath(str(Path.home() / '.claude'))
@@ -180,35 +218,33 @@ for i, (item, raw) in enumerate(merged):
 # Configured projects folders determine sharing; use history only without a directory.
 histories, folders = {}, {}
 for item, raw in merged:
+    original_shared = {key: raw[key] for key in ('sharedStatsWith', 'sharedProjectsFolder') if key in raw} if isinstance(raw, dict) else {}
     if isinstance(raw, dict) and ('sharedStatsWith' in raw or 'sharedProjectsFolder' in raw):
         raw.pop('sharedStatsWith', None)
         raw.pop('sharedProjectsFolder', None)
-        item['raw'] = json.dumps(raw, ensure_ascii=True)
     d = identity(raw)
-    if not d or d.get('provider') not in ('claude', 'codex') or not isinstance(d.get('name'), str):
-        continue
-    if d.get('dir'):
+    if d and d.get('provider') in ('claude', 'codex') and isinstance(d.get('name'), str) and d.get('dir'):
         try:
             key = (d['provider'], realpath(os.path.join(os.path.expanduser(d['dir']), 'projects')))
             if key in folders:
                 raw['sharedStatsWith'] = folders[key]
                 raw['sharedProjectsFolder'] = True
-                item['raw'] = json.dumps(raw, ensure_ascii=True)
             elif d['name']:
                 folders[key] = d['name']
         except (ValueError, OSError):
             pass
-        continue
-    days = d.get('recentDays') if isinstance(d.get('recentDays'), list) else []
-    models = d.get('modelUsage') if isinstance(d.get('modelUsage'), dict) else {}
-    active_days = len({day['date'] for day in days if isinstance(day, dict) and isinstance(day.get('date'), str) and day['date'] and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in day.values())})
-    tokens = sum(v for model in models.values() if isinstance(model, dict) for k, v in model.items() if k in ('inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens') and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0)
-    if active_days < 2 or tokens < 1000000:
-        continue
-    key = (d['provider'], json.dumps(days, sort_keys=True), json.dumps(models, sort_keys=True))
-    if key in histories:
-        raw['sharedStatsWith'] = histories[key]
+    elif d and d.get('provider') in ('claude', 'codex') and isinstance(d.get('name'), str):
+        days = d.get('recentDays') if isinstance(d.get('recentDays'), list) else []
+        models = d.get('modelUsage') if isinstance(d.get('modelUsage'), dict) else {}
+        active_days = len({day['date'] for day in days if isinstance(day, dict) and isinstance(day.get('date'), str) and day['date'] and any(isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0 for v in day.values())})
+        tokens = sum(v for model in models.values() if isinstance(model, dict) for k, v in model.items() if k in ('inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens') and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0)
+        if active_days >= 2 and tokens >= 1000000:
+            key = (d['provider'], json.dumps(days, sort_keys=True), json.dumps(models, sort_keys=True))
+            if key in histories:
+                raw['sharedStatsWith'] = histories[key]
+            elif d['name']:
+                histories[key] = d['name']
+    current_shared = {key: raw[key] for key in ('sharedStatsWith', 'sharedProjectsFolder') if key in raw} if isinstance(raw, dict) else {}
+    if original_shared != current_shared:
         item['raw'] = json.dumps(raw, ensure_ascii=True)
-    elif d['name']:
-        histories[key] = d['name']
 json.dump([item for item, _ in merged], sys.stdout, ensure_ascii=True)

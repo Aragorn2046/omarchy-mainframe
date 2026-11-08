@@ -8,10 +8,113 @@ import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
+import sys
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'agents_usage.py'
+sys.path.insert(0, str(SCRIPT.parent))
+import config_manager
 
 class UsageFilesTest(unittest.TestCase):
+    def test_helper_fractions_old_cache_and_command_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage = root / 'state/omarchy/agents/usage'
+            cache = root / 'cache/mainframe/agents'
+            helpers = root / 'omarchy/bin'
+            for path in (usage, cache, helpers): path.mkdir(parents=True)
+            fixtures = {
+                'claude': {'limits': [{'label': 'Session (5-hour)', 'percent': 0.55},
+                                      {'title': 'Fable Weekly', 'percent': 0.8},
+                                      {'percent': -1}, {'percent': 2}, {'percent': None}, {'percent': True}]},
+                'codex': {'limits': [{'percent': value} for value in
+                                     (0.4, 40, 81, 1, 150, float('nan'), float('inf'),
+                                      float('-inf'), True, False, None)]},
+            }
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'),
+                       XDG_CACHE_HOME=str(root / 'cache'), OMARCHY_PATH=str(root / 'omarchy'))
+            with patch.dict(os.environ, env, clear=True), patch.object(config_manager, 'CACHE', cache):
+                for provider, fixture in fixtures.items():
+                    helper = helpers / ('omarchy-agent-usage-' + provider)
+                    helper.write_text('#!/usr/bin/env python3\nprint(' + repr(json.dumps(fixture)) + ')\n')
+                    helper.chmod(0o755)
+                    account = {'id': provider, 'name': provider, 'provider': provider, 'dir': str(root / provider)}
+                    self.assertTrue(config_manager.collect(account))
+                command = {'id': 'custom', 'name': 'Custom', 'provider': 'command',
+                           'command': [sys.executable, '-c', 'print(\'{"provider":"claude","limits":[{"percent":0.5},{"percent":55}]}\')']}
+                self.assertTrue(config_manager.collect(command))
+                self.assertEqual(json.loads((cache / 'custom.json').read_text())['provider'], 'command')
+            # An old account cache has the same raw helper format, even when fresh.
+            (cache / 'old.json').write_text(json.dumps({'id': 'old', 'provider': 'claude',
+                                                       'limits': [{'percent': 0.55}]}))
+            (usage / 'other.json').write_text(json.dumps({'id': 'other', 'limits': [{'percent': 0.8}]}))
+            result = subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            records = {record['id']: record for record in (json.loads(item['raw']) for item in json.loads(result.stdout))}
+            # A value above 1 makes each whole record use the percentage scale.
+            self.assertEqual(records['claude']['limits'][0]['percent'], 0.55)
+            self.assertEqual([item.get('percent') for item in records['claude']['limits'][1:]], [0.8, None, 2, None, None])
+            for index in (2, 4, 5): self.assertNotIn('percent', records['claude']['limits'][index])
+            self.assertEqual(records['claude']['limits'][1]['title'], 'Fable Weekly')
+            self.assertEqual([limit.get('percent') for limit in records['codex']['limits']],
+                             [0.4, 40, 81, 1, 100, None, None, None, None, None, None])
+            for limit in records['codex']['limits'][5:]: self.assertNotIn('percent', limit)
+            self.assertAlmostEqual(records['old']['limits'][0]['percent'], 55)
+            self.assertEqual(records['other']['limits'][0]['percent'], 80)
+            self.assertEqual([item['percent'] for item in records['custom']['limits']], [0.5, 55])
+            self.assertEqual(records['custom']['provider'], 'command')
+            self.assertEqual(json.loads((cache / 'claude.json').read_text())['limits'][0]['percent'], 0.55)
+
+    def test_limits_state_and_cache_values_and_repeated_reads(self):
+        values = [0.4, 40, 81, 1, 150, -1, float('nan'), float('inf'),
+                  float('-inf'), True, False, None]
+        # The 40, 81 and 150 make this entire record use the percentage scale.
+        expected = [0.4, 40, 81, 1, 100, None, None, None, None, None, None, None]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage = root / 'state/omarchy/agents/usage'
+            cache = root / 'cache/mainframe/agents'
+            usage.mkdir(parents=True); cache.mkdir(parents=True)
+            for directory, ident in ((usage, 'state'), (cache, 'cache')):
+                (directory / (ident + '.json')).write_text(json.dumps({
+                    'id': ident, 'provider': 'claude',
+                    'limits': [{'percent': value} for value in values]}))
+            unchanged = '{ "id": "unchanged", "limits": [{"percent": 40}, {"percent": 0}] }'
+            (usage / 'unchanged.json').write_text(unchanged)
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'), XDG_CACHE_HOME=str(root / 'cache'))
+            def read():
+                return subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True).stdout
+            first = read()
+            self.assertEqual(first, read())
+            items = {item['file']: item for item in json.loads(first)}
+            self.assertFalse(items['state.json'].get('mainframe', False))
+            self.assertTrue(items['cache.json']['mainframe'])
+            self.assertEqual(items['unchanged.json']['raw'], unchanged)
+            for ident in ('state', 'cache'):
+                limits = json.loads(items[ident + '.json']['raw'])['limits']
+                self.assertEqual([limit.get('percent') for limit in limits], expected)
+                for limit in limits[5:]: self.assertNotIn('percent', limit)
+
+    def test_record_scale_rounding_and_invalid_percent_removal(self):
+        cases = [([0.4, 0.81, 1], [40, 81, 100]),
+                 ([1, 45], [1, 45]), ([0.8, 45], [0.8, 45]),
+                 ([150, 20], [100, 20]), ([0.29], [29])]
+        invalid = [True, False, '0.5', None, float('nan'), float('inf'), float('-inf'), -1]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            usage = root / 'state/omarchy/agents/usage'
+            usage.mkdir(parents=True)
+            for i, (values, _) in enumerate(cases):
+                (usage / f'{i}.json').write_text(json.dumps({
+                    'id': str(i), 'limits': [{'percent': value} for value in values + invalid]}))
+            env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'),
+                       XDG_CACHE_HOME=str(root / 'cache'))
+            result = subprocess.run([sys.executable, str(SCRIPT)], env=env, capture_output=True, text=True, check=True)
+            records = {record['id']: record for record in (json.loads(item['raw']) for item in json.loads(result.stdout))}
+            for i, (values, expected) in enumerate(cases):
+                with self.subTest(values=values):
+                    limits = records[str(i)]['limits']
+                    self.assertEqual([limit['percent'] for limit in limits[:len(values)]], expected)
+                    for limit in limits[len(values):]: self.assertNotIn('percent', limit)
+
     def test_nested_and_oversized_records_do_not_stop_other_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp); usage = root / 'state/omarchy/agents/usage'; usage.mkdir(parents=True)
@@ -97,7 +200,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
                 (alice_dir / 'projects').mkdir()
                 (bob_dir / 'projects').symlink_to(alice_dir / 'projects', target_is_directory=True)
                 stale = {'id': 'claude', 'name': 'Claude Code', 'updatedAt': '2026-10-29', 'data': 'stale'}
-                alice = {'id': 'claude-alice', 'name': 'Omarchy Alice', 'updatedAt': '2026-11-02T12:05:00', 'data': 'newer'}
+                alice = {'id': 'claude-alice', 'name': 'Omarchy Alice', 'updatedAt': '2026-11-02T12:05:00', 'data': 'newer', 'limits': [{'percent': 0.55}]}
                 first = [stale, alice] if stale_first else [alice, stale]
                 for record in first + [
                     {'id': 'claude-bob', 'name': 'Omarchy Bob', 'updatedAt': '2026-11-02T12:05:00'},
@@ -122,6 +225,7 @@ runpy.run_path(sys.argv[1], run_name="__main__")
                     for key in ('id', 'name', 'provider', 'dir', 'configHash'):
                         self.assertEqual(by_name[record['name']][key], record[key])
                 self.assertEqual(by_name['alice@']['data'], 'newer')
+                self.assertAlmostEqual(by_name['alice@']['limits'][0]['percent'], 55)
                 self.assertEqual(by_name['bob@']['sharedStatsWith'], 'alice@')
                 self.assertTrue(by_name['bob@']['sharedProjectsFolder'])
 
