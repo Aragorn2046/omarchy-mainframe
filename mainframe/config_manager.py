@@ -23,6 +23,7 @@ ALIAS = re.compile(r'^[A-Za-z0-9._@-]{1,64}$')
 ID = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 COLLECT_TIMEOUT = 60
 COLLECT_MAX_BYTES = 2_000_000
+UPDATER_TIMEOUT = 120
 
 
 def name_ok(value):
@@ -143,6 +144,12 @@ def config_hash(account):
     return hashlib.sha256(json.dumps(config, sort_keys=True, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()
 
 
+def resolve_omarchy_executable(exe):
+    root = os.environ.get('OMARCHY_PATH')
+    candidate = Path(root) / 'bin' / exe if root else None
+    return str(candidate) if candidate and candidate.is_file() else shutil.which(exe)
+
+
 def _collect(account):
     validate('accounts', {'accounts': [account]})
     env = os.environ.copy()
@@ -151,8 +158,7 @@ def _collect(account):
         argv = account['command']
     else:
         exe = 'omarchy-agent-usage-' + provider
-        candidate = Path(env.get('OMARCHY_PATH', '')) / 'bin' / exe if env.get('OMARCHY_PATH') else None
-        argv = [str(candidate) if candidate and candidate.is_file() else (shutil.which(exe) or exe)]
+        argv = [resolve_omarchy_executable(exe) or exe]
         env['CLAUDE_CONFIG_DIR' if provider == 'claude' else 'CODEX_HOME'] = os.path.abspath(os.path.expanduser(account['dir']))
         env['XDG_CACHE_HOME'] = str(CACHE / account['id'])
     try:
@@ -198,11 +204,106 @@ def _collect(account):
         return False
 
 
+def disabled_omarchy_agents():
+    config_home = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config')
+    try:
+        data = json.loads((config_home / 'omarchy' / 'shell.json').read_text(encoding='utf-8'))
+        plugins = data.get('plugins', [])
+        disabled = set()
+        for plugin in plugins:
+            if not isinstance(plugin, dict) or plugin.get('id') != 'omarchy.agents': continue
+            settings = plugin.get('settings', {})
+            providers = settings.get('providers', {}) if isinstance(settings, dict) else {}
+            if not isinstance(providers, dict): continue
+            disabled.update(ident for ident, value in providers.items()
+                            if isinstance(ident, str) and isinstance(value, dict) and value.get('enabled') is False)
+        return disabled
+    except (OSError, ValueError, TypeError, AttributeError, RecursionError):
+        return set()
+
+
+def refresh_omarchy(accounts, force):
+    exe = resolve_omarchy_executable('omarchy-agent-usage-update')
+    if not exe: return True
+    CACHE.mkdir(parents=True, exist_ok=True)
+    def last_attempt():
+        try:
+            data = json.loads((CACHE / '.omarchy-attempt').read_text())
+            if (not isinstance(data, dict) or not isinstance(data.get('ok'), bool)
+                    or isinstance(data.get('at'), bool) or not isinstance(data.get('at'), (int, float))
+                    or not math.isfinite(data['at'])):
+                return None
+            return data
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+            return None
+
+    with open(CACHE / '.omarchy-update.lock', 'a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            attempt = last_attempt()
+            return attempt['ok'] if attempt is not None else False
+        usage = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local' / 'state') / 'omarchy' / 'agents' / 'usage'
+        excluded = {account['provider'] for account in accounts if account['provider'] != 'command'}
+        excluded.update(disabled_omarchy_agents())
+        prefix = 'omarchy-agent-usage-'
+        try:
+            collectors = {path.name[len(prefix):] for path in Path(exe).resolve().parent.iterdir()
+                          if path.name.startswith(prefix) and path.is_file() and os.access(path, os.X_OK)}
+        except OSError:
+            return False
+        collectors.difference_update(excluded | {'update', ''})
+        if not collectors: return True
+        if not force:
+            now = time.time()
+            attempt = last_attempt()
+            if attempt is not None and 0 <= now - attempt['at'] < 60:
+                return attempt['ok']
+            try:
+                if all(0 <= now - (usage / (ident + '.json')).stat().st_mtime < 60 for ident in collectors):
+                    return True
+            except OSError:
+                pass
+        argv = [exe]
+        if force: argv.append('--force')
+        for ident in sorted(excluded):
+            if re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', ident):
+                argv.extend(['--except', ident])
+        ok = False
+        try:
+            proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+            try:
+                proc.wait(timeout=UPDATER_TIMEOUT)
+                ok = proc.returncode == 0
+            except subprocess.TimeoutExpired:
+                pass
+            finally:
+                try: os.killpg(proc.pid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError): pass
+                try: proc.wait(timeout=5)
+                except subprocess.TimeoutExpired: pass
+        except OSError:
+            pass
+        finally:
+            try:
+                fd, tmp = tempfile.mkstemp(prefix='.omarchy-attempt-', dir=CACHE)
+                try:
+                    with os.fdopen(fd, 'w') as out:
+                        json.dump({'at': time.time(), 'ok': ok}, out)
+                    os.replace(tmp, CACHE / '.omarchy-attempt')
+                finally:
+                    if os.path.exists(tmp): os.unlink(tmp)
+            except OSError: pass
+        return ok
+
+
 def refresh(force=False):
     try: os.nice(15)
     except OSError: pass
     success = True
-    for account in read('accounts')['accounts']:
+    any_account_succeeded = False
+    accounts = read('accounts')['accounts']
+    for account in accounts:
         path = CACHE / (account['id'] + '.json')
         try:
             stamp = path.stat().st_mtime
@@ -211,10 +312,14 @@ def refresh(force=False):
                 updated = cached.get('updatedAt')
             if updated:
                 stamp = datetime.datetime.fromisoformat(updated.replace('Z', '+00:00')).timestamp()
-            fresh = ('configHash' not in cached or cached['configHash'] == config_hash(account)) and 0 <= time.time() - stamp < 600
+            fresh = ('configHash' not in cached or cached['configHash'] == config_hash(account)) and 0 <= time.time() - stamp < 60
         except (OSError, ValueError, TypeError, AttributeError, RecursionError): fresh = False
-        if (force or not fresh) and not collect(account): success = False
-    return success
+        account_success = collect(account) if force or not fresh else True
+        success = success and account_success
+        any_account_succeeded = any_account_succeeded or account_success
+    updater_success = refresh_omarchy(accounts, force)
+    # Updater failure is fatal only when no Mainframe account succeeded; account failures remain failures.
+    return success and (updater_success or any_account_succeeded)
 
 
 def main():

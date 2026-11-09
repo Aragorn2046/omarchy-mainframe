@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -143,8 +144,8 @@ class V16Tests(unittest.TestCase):
             account = {'id':'user', 'name':'User', 'provider':'command', 'command':['/bin/true']}
             (config / 'accounts.json').write_text(json.dumps({'accounts':[account]}))
             path = cache / 'user.json'; path.write_text('{}')
-            os.utime(path, (time.time() - 60, time.time() - 60))
-            with patch.object(config_manager, 'CONFIG', config), patch.object(config_manager, 'CACHE', cache), patch.object(config_manager.os, 'nice'), patch.object(config_manager, 'collect') as collect:
+            os.utime(path, (time.time() - 30, time.time() - 30))
+            with patch.object(config_manager, 'CONFIG', config), patch.object(config_manager, 'CACHE', cache), patch.object(config_manager.os, 'nice'), patch.object(config_manager, 'refresh_omarchy', return_value=True), patch.object(config_manager, 'collect') as collect:
                 self.assertIs(config_manager.refresh(), True)
                 collect.assert_not_called()
 
@@ -156,7 +157,7 @@ class V16Tests(unittest.TestCase):
             (config / 'accounts.json').write_text(json.dumps({'accounts':[account]}))
             path = cache / 'user.json'; path.write_text(json.dumps({'configHash':config_manager.config_hash(old)}))
             os.utime(path, (time.time() - 60, time.time() - 60))
-            with patch.object(config_manager, 'CONFIG', config), patch.object(config_manager, 'CACHE', cache), patch.object(config_manager.os, 'nice'):
+            with patch.object(config_manager, 'CONFIG', config), patch.object(config_manager, 'CACHE', cache), patch.object(config_manager.os, 'nice'), patch.object(config_manager, 'refresh_omarchy', return_value=True):
                 self.assertIs(config_manager.refresh(), True)
                 self.assertEqual(json.loads(path.read_text())['configHash'], 'b1d5917ae869b1415b7a79cedb5f2fad6ef84080bffcd8ac0103d2e6a5e88e24')
                 with patch.object(config_manager, 'collect') as collect:
@@ -356,6 +357,294 @@ class PriceConfigTests(unittest.TestCase):
             (config / 'prices.json').write_text(json.dumps({'claude':{'models':{'custom':{'input':-1}}}}))
             run = subprocess.run([sys.executable, str(ROOT / 'config_manager.py'), 'read'], env=env, capture_output=True, text=True, check=True)
             self.assertIn('prices', json.loads(run.stdout)['errors'])
+
+
+class RefreshTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.bin = self.root / 'omarchy/bin'
+        self.bin.mkdir(parents=True)
+        self.cache = self.root / 'cache/mainframe/agents'
+        self.config = self.root / 'config/mainframe'
+        self.usage = self.root / 'state/omarchy/agents/usage'
+        self.log = self.root / 'calls'
+        self.env = dict(os.environ, HOME=str(self.root), XDG_CONFIG_HOME=str(self.root / 'config'),
+                        XDG_CACHE_HOME=str(self.root / 'cache'), XDG_STATE_HOME=str(self.root / 'state'),
+                        OMARCHY_PATH=str(self.root / 'omarchy'), TEST_LOG=str(self.log), PATH=str(self.bin))
+        self.env_patch = patch.dict(os.environ, self.env, clear=True)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+        for name, value in [('CONFIG', self.config), ('CACHE', self.cache)]:
+            item = patch.object(config_manager, name, value)
+            item.start()
+            self.addCleanup(item.stop)
+        self.nice = patch.object(config_manager.os, 'nice')
+        self.nice.start()
+        self.addCleanup(self.nice.stop)
+
+    def executable(self, name, source):
+        path = self.bin / name
+        path.write_text('#!' + sys.executable + '\n' + source, encoding='utf-8')
+        path.chmod(0o755)
+        return path
+
+    def updater(self, exit_code=0):
+        self.executable('omarchy-agent-usage-one', 'pass\n')
+        self.executable('omarchy-agent-usage-update',
+                        'import json, os, sys\n'
+                        'with open(os.environ["TEST_LOG"], "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n'
+                        f'sys.exit({exit_code})\n')
+
+    def calls(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()] if self.log.exists() else []
+
+    def accounts(self, accounts):
+        self.config.mkdir(parents=True, exist_ok=True)
+        (self.config / 'accounts.json').write_text(json.dumps({'accounts': accounts}))
+
+    def record(self, age, name='one.json'):
+        self.usage.mkdir(parents=True, exist_ok=True)
+        path = self.usage / name
+        path.write_text('{}')
+        stamp = time.time() - age
+        os.utime(path, (stamp, stamp))
+
+    def test_account_freshness_force_and_config_hash(self):
+        account = {'id': 'one', 'name': 'One', 'provider': 'command',
+                   'command': [sys.executable, '-c', 'print("{}")']}
+        self.accounts([account])
+        self.cache.mkdir(parents=True)
+        path = self.cache / 'one.json'
+        path.write_text(json.dumps({'configHash': config_manager.config_hash(account)}))
+        with patch.object(config_manager, 'collect', return_value=True) as collect:
+            os.utime(path, (time.time() - 30, time.time() - 30))
+            self.assertTrue(config_manager.refresh())
+            collect.assert_not_called()
+            os.utime(path, (time.time() - 61, time.time() - 61))
+            self.assertTrue(config_manager.refresh())
+            collect.assert_called_once_with(account)
+            collect.reset_mock()
+            os.utime(path, None)
+            self.assertTrue(config_manager.refresh(force=True))
+            collect.assert_called_once_with(account)
+            collect.reset_mock()
+            path.write_text(json.dumps({'configHash': 'wrong'}))
+            self.assertTrue(config_manager.refresh())
+            collect.assert_called_once_with(account)
+
+    def test_updater_freshness_and_force(self):
+        self.updater()
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
+        (self.cache / '.omarchy-attempt').write_text(json.dumps({'at': time.time() - 61, 'ok': True}))
+        self.record(61)
+        self.record(1, 'claude-aragorn.json')
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(len(self.calls()), 2)
+        self.record(1)
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(len(self.calls()), 2)
+        self.assertTrue(config_manager.refresh(force=True))
+        self.assertEqual(self.calls()[-1], ['--force'])
+
+    def test_failed_updater_backoff_and_force(self):
+        self.updater(exit_code=3)
+        self.assertFalse(config_manager.refresh())
+        attempt = json.loads((self.cache / '.omarchy-attempt').read_text())
+        self.assertLess(abs(time.time() - attempt['at']), 2)
+        self.assertIs(attempt['ok'], False)
+        self.assertFalse(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
+        self.assertFalse(config_manager.refresh(force=True))
+        self.assertEqual(self.calls(), [[], ['--force']])
+
+    def test_updater_backoff_stamp_boundaries_and_invalid_value(self):
+        self.updater()
+        self.cache.mkdir(parents=True)
+        stamp = self.cache / '.omarchy-attempt'
+        for value in ('invalid', '1060', json.dumps({'at': 1061, 'ok': False}),
+                      json.dumps({'at': 1000, 'ok': False})):
+            with self.subTest(value=value):
+                stamp.write_text(value)
+                with patch.object(config_manager.time, 'time', return_value=1060):
+                    self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[], [], [], []])
+
+    def test_successful_updater_cooldown_preserves_result(self):
+        self.updater()
+        self.assertTrue(config_manager.refresh_omarchy([], False))
+        self.assertTrue(config_manager.refresh_omarchy([], False))
+        self.assertIs(json.loads((self.cache / '.omarchy-attempt').read_text())['ok'], True)
+        self.assertEqual(self.calls(), [[]])
+
+    def test_update_lock_does_not_block_collector(self):
+        self.updater()
+        self.cache.mkdir(parents=True)
+        attempt = self.cache / '.omarchy-attempt'
+        account = {'id': 'example', 'name': 'Example', 'provider': 'command',
+                   'command': [sys.executable, '-c', 'print("{}")']}
+        with (self.cache / '.omarchy-update.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for ok in (False, True):
+                attempt.write_text(json.dumps({'at': time.time() - 120, 'ok': ok}))
+                script = 'import config_manager; print(config_manager.refresh_omarchy([], True))'
+                result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=self.env,
+                                        capture_output=True, text=True, timeout=3, check=True)
+                self.assertEqual(result.stdout.strip(), str(ok))
+            script = 'import config_manager, json; print(config_manager.collect(json.loads(' + repr(json.dumps(account)) + ')))'
+            result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=self.env,
+                                    capture_output=True, text=True, timeout=3, check=True)
+            self.assertEqual(result.stdout.strip(), 'True')
+        self.assertEqual(self.calls(), [])
+
+    def test_collector_lock_does_not_block_updater(self):
+        self.updater()
+        self.cache.mkdir(parents=True)
+        with (self.cache / '.collector.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            script = 'import config_manager; print(config_manager.refresh_omarchy([], True))'
+            result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=self.env,
+                                    capture_output=True, text=True, timeout=3, check=True)
+            self.assertEqual(result.stdout.strip(), 'True')
+        self.assertEqual(self.calls(), [['--force']])
+
+    def test_invalid_excluded_ids_are_not_passed_to_updater(self):
+        self.updater()
+        with patch.object(config_manager, 'disabled_omarchy_agents',
+                          return_value={'--force', 'a b', 'valid-id_2', 'Upper', 'a' * 65}):
+            self.assertTrue(config_manager.refresh_omarchy([], False))
+        self.assertEqual(self.calls(), [['--except', 'valid-id_2']])
+
+    def test_updater_oserror_backoff_and_force(self):
+        self.updater()
+        with patch.object(config_manager.subprocess, 'Popen', side_effect=OSError) as popen:
+            self.assertFalse(config_manager.refresh())
+            self.assertFalse(config_manager.refresh())
+            self.assertEqual(popen.call_count, 1)
+            self.assertFalse(config_manager.refresh(force=True))
+            self.assertEqual(popen.call_count, 2)
+
+    def test_future_record_is_stale(self):
+        self.updater()
+        self.record(-120)
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
+
+    def test_missing_collector_record_runs_updater(self):
+        self.updater()
+        self.executable('omarchy-agent-usage-two', 'pass\n')
+        self.record(1)
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
+        self.record(1, 'two.json')
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
+
+    def test_excluded_collectors_do_not_affect_freshness(self):
+        self.updater()
+        self.executable('omarchy-agent-usage-claude', 'pass\n')
+        self.executable('omarchy-agent-usage-gemini', 'pass\n')
+        self.record(1)
+        self.record(120, 'claude.json')
+        accounts = [{'provider': 'claude'}]
+        with patch.object(config_manager, 'disabled_omarchy_agents', return_value={'gemini'}):
+            self.assertTrue(config_manager.refresh_omarchy(accounts, False))
+            self.assertEqual(self.calls(), [])
+            self.record(120)
+            self.assertTrue(config_manager.refresh_omarchy(accounts, False))
+        self.assertEqual(self.calls(), [['--except', 'claude', '--except', 'gemini']])
+
+    def test_no_eligible_collectors_skips_even_when_forced(self):
+        self.updater()
+        (self.bin / 'omarchy-agent-usage-one').chmod(0o644)
+        (self.bin / 'omarchy-agent-usage-directory').mkdir()
+        self.assertTrue(config_manager.refresh(force=True))
+        self.assertEqual(self.calls(), [])
+
+    def test_excludes_distinct_providers_and_disabled_agents(self):
+        self.updater()
+        self.accounts([{'id': 'c1', 'name': 'C1', 'provider': 'claude', 'dir': '/one'},
+                       {'id': 'c2', 'name': 'C2', 'provider': 'claude', 'dir': '/two'},
+                       {'id': 'x', 'name': 'X', 'provider': 'codex', 'dir': '/three'},
+                       {'id': 'cmd', 'name': 'Cmd', 'provider': 'command', 'command': ['true']}])
+        shell = self.root / 'config/omarchy/shell.json'
+        shell.parent.mkdir(parents=True)
+        shell.write_text(json.dumps({'plugins': [{'id': 'other', 'settings': {'providers': {'wrong': {'enabled': False}}}},
+            {'id': 'omarchy.agents', 'settings': {'providers': {'gemini': {'enabled': False},
+                'codex': {'enabled': False}, 'active': {'enabled': True}, 'default': {}}}}]}))
+        with patch.object(config_manager, 'collect', return_value=True):
+            self.assertTrue(config_manager.refresh(force=True))
+        self.assertEqual(self.calls(), [['--force', '--except', 'claude', '--except', 'codex', '--except', 'gemini']])
+        shell.write_text('{broken')
+        self.assertEqual(config_manager.disabled_omarchy_agents(), set())
+
+    def test_missing_updater_is_noop(self):
+        self.assertTrue(config_manager.refresh(force=True))
+        self.assertEqual(self.calls(), [])
+
+    def test_updater_failure_and_account_failure_rules(self):
+        self.updater(exit_code=3)
+        self.assertFalse(config_manager.refresh())
+        account = {'id': 'one', 'name': 'One', 'provider': 'command', 'command': ['true']}
+        self.accounts([account])
+        with patch.object(config_manager, 'collect', return_value=True):
+            self.assertTrue(config_manager.refresh())
+        with patch.object(config_manager, 'collect', return_value=False):
+            self.assertFalse(config_manager.refresh())
+        self.updater(exit_code=0)
+        with patch.object(config_manager, 'collect', return_value=False):
+            self.assertFalse(config_manager.refresh())
+
+    def test_timeout_kills_updater_process_group(self):
+        self.executable('omarchy-agent-usage-one', 'pass\n')
+        self.executable('omarchy-agent-usage-update',
+                        'import os, subprocess, sys, time\n'
+                        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n'
+                        'with open(os.environ["TEST_LOG"], "w") as f: f.write(f"{os.getpid()} {child.pid}")\n'
+                        'time.sleep(60)\n')
+        with patch.object(config_manager, 'UPDATER_TIMEOUT', 1):
+            self.assertFalse(config_manager.refresh())
+            self.assertFalse(config_manager.refresh())
+        pids = [int(pid) for pid in self.log.read_text().split()]
+        self.assertEqual(len(pids), 2)
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            alive = []
+            for pid in pids:
+                try:
+                    state = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1][0]
+                    if state != 'Z': alive.append(pid)
+                except FileNotFoundError:
+                    pass
+            if not alive: break
+            time.sleep(.05)
+        self.assertEqual(alive, [])
+
+    def test_termination_kills_updater_process_group(self):
+        self.executable('omarchy-agent-usage-one', 'pass\n')
+        self.executable('omarchy-agent-usage-update',
+                        'import os, subprocess, sys, time\n'
+                        'child = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])\n'
+                        'with open(os.environ["TEST_LOG"], "w") as f: f.write(f"{os.getpid()} {child.pid}")\n'
+                        'time.sleep(60)\n')
+        proc = subprocess.Popen([sys.executable, str(Path(config_manager.__file__)), 'refresh'], env=self.env)
+        try:
+            deadline = time.monotonic() + 5
+            while not self.log.exists() and time.monotonic() < deadline: time.sleep(.05)
+            self.assertTrue(self.log.exists())
+            pids = [int(pid) for pid in self.log.read_text().split()]
+            self.assertEqual(len(pids), 2)
+            proc.send_signal(signal.SIGTERM)
+            self.assertEqual(proc.wait(timeout=5), 128 + signal.SIGTERM)
+            for pid in pids:
+                self.assertTrue(wait_for_exit(pid, timeout=2))
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
 
 if __name__ == '__main__':
     unittest.main()
