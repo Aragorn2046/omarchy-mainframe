@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -437,7 +438,7 @@ class RefreshTest(unittest.TestCase):
         self.updater()
         self.assertTrue(config_manager.refresh())
         self.assertEqual(self.calls(), [[]])
-        (self.cache / '.omarchy-attempt').write_text(str(time.time() - 61))
+        (self.cache / '.omarchy-attempt').write_text(json.dumps({'at': time.time() - 61, 'ok': True}))
         self.record(61)
         self.record(1, 'claude-aragorn.json')
         self.assertTrue(config_manager.refresh())
@@ -451,9 +452,10 @@ class RefreshTest(unittest.TestCase):
     def test_failed_updater_backoff_and_force(self):
         self.updater(exit_code=3)
         self.assertFalse(config_manager.refresh())
-        stamp = float((self.cache / '.omarchy-attempt').read_text())
-        self.assertLess(abs(time.time() - stamp), 2)
-        self.assertTrue(config_manager.refresh())
+        attempt = json.loads((self.cache / '.omarchy-attempt').read_text())
+        self.assertLess(abs(time.time() - attempt['at']), 2)
+        self.assertIs(attempt['ok'], False)
+        self.assertFalse(config_manager.refresh())
         self.assertEqual(self.calls(), [[]])
         self.assertFalse(config_manager.refresh(force=True))
         self.assertEqual(self.calls(), [[], ['--force']])
@@ -462,18 +464,64 @@ class RefreshTest(unittest.TestCase):
         self.updater()
         self.cache.mkdir(parents=True)
         stamp = self.cache / '.omarchy-attempt'
-        for value in ('invalid', '1061', '1000'):
+        for value in ('invalid', '1060', json.dumps({'at': 1061, 'ok': False}),
+                      json.dumps({'at': 1000, 'ok': False})):
             with self.subTest(value=value):
                 stamp.write_text(value)
                 with patch.object(config_manager.time, 'time', return_value=1060):
                     self.assertTrue(config_manager.refresh())
-        self.assertEqual(self.calls(), [[], [], []])
+        self.assertEqual(self.calls(), [[], [], [], []])
+
+    def test_successful_updater_cooldown_preserves_result(self):
+        self.updater()
+        self.assertTrue(config_manager.refresh_omarchy([], False))
+        self.assertTrue(config_manager.refresh_omarchy([], False))
+        self.assertIs(json.loads((self.cache / '.omarchy-attempt').read_text())['ok'], True)
+        self.assertEqual(self.calls(), [[]])
+
+    def test_update_lock_does_not_block_collector(self):
+        self.updater()
+        self.cache.mkdir(parents=True)
+        attempt = self.cache / '.omarchy-attempt'
+        account = {'id': 'example', 'name': 'Example', 'provider': 'command',
+                   'command': [sys.executable, '-c', 'print("{}")']}
+        with (self.cache / '.omarchy-update.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            for ok in (False, True):
+                attempt.write_text(json.dumps({'at': time.time() - 120, 'ok': ok}))
+                script = 'import config_manager; print(config_manager.refresh_omarchy([], True))'
+                result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=self.env,
+                                        capture_output=True, text=True, timeout=3, check=True)
+                self.assertEqual(result.stdout.strip(), str(ok))
+            script = 'import config_manager, json; print(config_manager.collect(json.loads(' + repr(json.dumps(account)) + ')))'
+            result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=self.env,
+                                    capture_output=True, text=True, timeout=3, check=True)
+            self.assertEqual(result.stdout.strip(), 'True')
+        self.assertEqual(self.calls(), [])
+
+    def test_collector_lock_does_not_block_updater(self):
+        self.updater()
+        self.cache.mkdir(parents=True)
+        with (self.cache / '.collector.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            script = 'import config_manager; print(config_manager.refresh_omarchy([], True))'
+            result = subprocess.run([sys.executable, '-c', script], cwd=ROOT, env=self.env,
+                                    capture_output=True, text=True, timeout=3, check=True)
+            self.assertEqual(result.stdout.strip(), 'True')
+        self.assertEqual(self.calls(), [['--force']])
+
+    def test_invalid_excluded_ids_are_not_passed_to_updater(self):
+        self.updater()
+        with patch.object(config_manager, 'disabled_omarchy_agents',
+                          return_value={'--force', 'a b', 'valid-id_2', 'Upper', 'a' * 65}):
+            self.assertTrue(config_manager.refresh_omarchy([], False))
+        self.assertEqual(self.calls(), [['--except', 'valid-id_2']])
 
     def test_updater_oserror_backoff_and_force(self):
         self.updater()
         with patch.object(config_manager.subprocess, 'Popen', side_effect=OSError) as popen:
             self.assertFalse(config_manager.refresh())
-            self.assertTrue(config_manager.refresh())
+            self.assertFalse(config_manager.refresh())
             self.assertEqual(popen.call_count, 1)
             self.assertFalse(config_manager.refresh(force=True))
             self.assertEqual(popen.call_count, 2)
@@ -558,7 +606,7 @@ class RefreshTest(unittest.TestCase):
                         'time.sleep(60)\n')
         with patch.object(config_manager, 'UPDATER_TIMEOUT', 1):
             self.assertFalse(config_manager.refresh())
-            self.assertTrue(config_manager.refresh())
+            self.assertFalse(config_manager.refresh())
         pids = [int(pid) for pid in self.log.read_text().split()]
         self.assertEqual(len(pids), 2)
         deadline = time.monotonic() + 3

@@ -226,8 +226,23 @@ def refresh_omarchy(accounts, force):
     exe = resolve_omarchy_executable('omarchy-agent-usage-update')
     if not exe: return True
     CACHE.mkdir(parents=True, exist_ok=True)
-    with open(CACHE / '.collector.lock', 'a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
+    def last_attempt():
+        try:
+            data = json.loads((CACHE / '.omarchy-attempt').read_text())
+            if (not isinstance(data, dict) or not isinstance(data.get('ok'), bool)
+                    or isinstance(data.get('at'), bool) or not isinstance(data.get('at'), (int, float))
+                    or not math.isfinite(data['at'])):
+                return None
+            return data
+        except (OSError, ValueError, TypeError, OverflowError, RecursionError):
+            return None
+
+    with open(CACHE / '.omarchy-update.lock', 'a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            attempt = last_attempt()
+            return attempt['ok'] if attempt is not None else False
         usage = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local' / 'state') / 'omarchy' / 'agents' / 'usage'
         excluded = {account['provider'] for account in accounts if account['provider'] != 'command'}
         excluded.update(disabled_omarchy_agents())
@@ -241,11 +256,9 @@ def refresh_omarchy(accounts, force):
         if not collectors: return True
         if not force:
             now = time.time()
-            try:
-                if 0 <= now - float((CACHE / '.omarchy-attempt').read_text()) < 60:
-                    return True
-            except (OSError, ValueError):
-                pass
+            attempt = last_attempt()
+            if attempt is not None and 0 <= now - attempt['at'] < 60:
+                return attempt['ok']
             try:
                 if all(0 <= now - (usage / (ident + '.json')).stat().st_mtime < 60 for ident in collectors):
                     return True
@@ -253,24 +266,35 @@ def refresh_omarchy(accounts, force):
                 pass
         argv = [exe]
         if force: argv.append('--force')
-        for ident in sorted(excluded): argv.extend(['--except', ident])
+        for ident in sorted(excluded):
+            if re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,63}', ident):
+                argv.extend(['--except', ident])
+        ok = False
         try:
             proc = subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
             try:
                 proc.wait(timeout=UPDATER_TIMEOUT)
-                return proc.returncode == 0
+                ok = proc.returncode == 0
             except subprocess.TimeoutExpired:
-                return False
+                pass
             finally:
                 try: os.killpg(proc.pid, signal.SIGKILL)
                 except (ProcessLookupError, PermissionError): pass
                 try: proc.wait(timeout=5)
                 except subprocess.TimeoutExpired: pass
         except OSError:
-            return False
+            pass
         finally:
-            try: (CACHE / '.omarchy-attempt').write_text(str(time.time()))
+            try:
+                fd, tmp = tempfile.mkstemp(prefix='.omarchy-attempt-', dir=CACHE)
+                try:
+                    with os.fdopen(fd, 'w') as out:
+                        json.dump({'at': time.time(), 'ok': ok}, out)
+                    os.replace(tmp, CACHE / '.omarchy-attempt')
+                finally:
+                    if os.path.exists(tmp): os.unlink(tmp)
             except OSError: pass
+        return ok
 
 
 def refresh(force=False):
