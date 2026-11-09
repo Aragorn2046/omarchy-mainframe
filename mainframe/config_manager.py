@@ -240,9 +240,14 @@ def refresh_omarchy(accounts, force):
         collectors.difference_update(excluded | {'update', ''})
         if not collectors: return True
         if not force:
+            now = time.time()
             try:
-                now = time.time()
-                if all(now - (usage / (ident + '.json')).stat().st_mtime < 60 for ident in collectors):
+                if 0 <= now - float((CACHE / '.omarchy-attempt').read_text()) < 60:
+                    return True
+            except (OSError, ValueError):
+                pass
+            try:
+                if all(0 <= now - (usage / (ident + '.json')).stat().st_mtime < 60 for ident in collectors):
                     return True
             except OSError:
                 pass
@@ -263,6 +268,9 @@ def refresh_omarchy(accounts, force):
                 except subprocess.TimeoutExpired: pass
         except OSError:
             return False
+        finally:
+            try: (CACHE / '.omarchy-attempt').write_text(str(time.time()))
+            except OSError: pass
 
 
 def refresh(force=False):

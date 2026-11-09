@@ -437,6 +437,7 @@ class RefreshTest(unittest.TestCase):
         self.updater()
         self.assertTrue(config_manager.refresh())
         self.assertEqual(self.calls(), [[]])
+        (self.cache / '.omarchy-attempt').write_text(str(time.time() - 61))
         self.record(61)
         self.record(1, 'claude-aragorn.json')
         self.assertTrue(config_manager.refresh())
@@ -446,6 +447,42 @@ class RefreshTest(unittest.TestCase):
         self.assertEqual(len(self.calls()), 2)
         self.assertTrue(config_manager.refresh(force=True))
         self.assertEqual(self.calls()[-1], ['--force'])
+
+    def test_failed_updater_backoff_and_force(self):
+        self.updater(exit_code=3)
+        self.assertFalse(config_manager.refresh())
+        stamp = float((self.cache / '.omarchy-attempt').read_text())
+        self.assertLess(abs(time.time() - stamp), 2)
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
+        self.assertFalse(config_manager.refresh(force=True))
+        self.assertEqual(self.calls(), [[], ['--force']])
+
+    def test_updater_backoff_stamp_boundaries_and_invalid_value(self):
+        self.updater()
+        self.cache.mkdir(parents=True)
+        stamp = self.cache / '.omarchy-attempt'
+        for value in ('invalid', '1061', '1000'):
+            with self.subTest(value=value):
+                stamp.write_text(value)
+                with patch.object(config_manager.time, 'time', return_value=1060):
+                    self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[], [], []])
+
+    def test_updater_oserror_backoff_and_force(self):
+        self.updater()
+        with patch.object(config_manager.subprocess, 'Popen', side_effect=OSError) as popen:
+            self.assertFalse(config_manager.refresh())
+            self.assertTrue(config_manager.refresh())
+            self.assertEqual(popen.call_count, 1)
+            self.assertFalse(config_manager.refresh(force=True))
+            self.assertEqual(popen.call_count, 2)
+
+    def test_future_record_is_stale(self):
+        self.updater()
+        self.record(-120)
+        self.assertTrue(config_manager.refresh())
+        self.assertEqual(self.calls(), [[]])
 
     def test_missing_collector_record_runs_updater(self):
         self.updater()
@@ -521,6 +558,7 @@ class RefreshTest(unittest.TestCase):
                         'time.sleep(60)\n')
         with patch.object(config_manager, 'UPDATER_TIMEOUT', 1):
             self.assertFalse(config_manager.refresh())
+            self.assertTrue(config_manager.refresh())
         pids = [int(pid) for pid in self.log.read_text().split()]
         self.assertEqual(len(pids), 2)
         deadline = time.monotonic() + 3
@@ -553,11 +591,7 @@ class RefreshTest(unittest.TestCase):
             proc.send_signal(signal.SIGTERM)
             self.assertEqual(proc.wait(timeout=5), 128 + signal.SIGTERM)
             for pid in pids:
-                try:
-                    state = Path(f'/proc/{pid}/stat').read_text().split(') ', 1)[1][0]
-                except FileNotFoundError:
-                    continue
-                self.assertEqual(state, 'Z')
+                self.assertTrue(wait_for_exit(pid, timeout=2))
         finally:
             if proc.poll() is None:
                 proc.kill()
