@@ -16,12 +16,52 @@ TestCase {
   function valueData(amount, hosts) {
     return {totals:{today:amount,seven:0,thirty:0}, providers:{claude:{today:amount,seven:0,thirty:0},codex:{today:0,seven:0,thirty:0}}, hosts:hosts, unpriced:[], unpricedTokens:{}, partial:false, excluded:0}
   }
+  function init() {
+    view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:0, hosts:[], accounts:[]}
+  }
   function cleanup() {
+    view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:0, hosts:[], accounts:[]}
     testCase.width = 900
     view.rows = []
     view.valueData = valueData(0, [])
     view.flick.cancelFlick()
     view.flick.contentY = 0
+  }
+  function test_live_card() {
+    compare(view.checkLayout(), 0)
+    view.rows = [{name:'Agent', category:'llm'}]
+    view.fleetLiveAgents = {total:2, reporting:1, hostsTotal:1, hosts:[{host:'laptop', count:2, cap:3, over:false, headless:0, providers:[], sessions:[], status:'reporting'}], accounts:[]}
+    compare(findChild(view, 'agents-live-total').text, '2')
+    var rows = findChild(view, 'agents-live-hosts')
+    compare(rows.count, 1)
+    compare(findChild(rows.itemAt(0), 'agents-live-host-count').text, '2 / 3')
+    tryVerify(function() { return view.checkLayout() === 0 })
+    view.fleetLiveAgents = {total:256, truncated:true, reporting:1, hostsTotal:1, hosts:[{host:'host', count:256, truncated:true, cap:256, over:true, headless:0, providers:[], sessions:[], status:'reporting'}], accounts:[]}
+    compare(findChild(view, 'agents-live-total').text, '256+')
+    compare(findChild(rows.itemAt(0), 'agents-live-host-count').text, '256+ / 256')
+    tryVerify(function() { return view.checkLayout() === 0 })
+  }
+  function test_live_not_reporting_and_layout() {
+    testCase.width = 350
+    view.rows = [{name:'Agent', category:'llm'}]
+    var empty = findChild(view, 'agents-live-empty')
+    var rows = findChild(view, 'agents-live-hosts')
+    var unavailable = {host:'A very long machine name that must fit inside this card', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], status:'not reporting'}
+    var unreachable = {host:'unreachable', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], status:'not reporting'}
+    view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:2, hosts:[unavailable, unreachable], accounts:[]}
+    compare(empty.text, 'No machine reporting')
+    compare(findChild(view, 'agents-live-total').text, '—')
+    compare(findChild(rows.itemAt(0), 'agents-live-host-count').text, 'not reporting')
+    compare(findChild(rows.itemAt(1), 'agents-live-host-count').text, 'not reporting')
+    var row = rows.itemAt(0)
+    view.fleetLiveAgents = {total:0, reporting:1, hostsTotal:2, hosts:[unavailable, {host:'unreachable', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], status:'reporting'}], accounts:[]}
+    compare(empty.text, 'No agents running')
+    compare(findChild(view, 'agents-live-total').text, '0')
+    compare(rows.itemAt(0), row)
+    tryVerify(function() { return view.checkLayout() === 0 })
+    var card = findChild(view, 'agents-cards-repeater').itemAt(0)
+    var live = findChild(view, 'agents-live-card')
+    verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.height)
   }
   function test_value_card_follows_agent_sections() {
     var rows = []

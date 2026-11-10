@@ -11,6 +11,7 @@ import "lib/hosts.js" as Hosts
 import "lib/usage_value.js" as UsageValue
 import "lib/slotbind.js" as Slotbind
 import "lib/agents.js" as Agents
+import "lib/live_agents.js" as LiveAgents
 import "lib/navigation.js" as Navigation
 
 ShellRoot {
@@ -160,6 +161,18 @@ ShellRoot {
   property var localView: Metrics.emptyView()
   property var localUsage: null
   property var remoteUsage: ({})
+  property var localLiveAgents: null
+  property var remoteLiveAgents: ({})
+  property double liveAgentsClock: Date.now()
+  Timer { interval: 5000; repeat: true; triggeredOnStart: true; running: shell.agentsVisible && !shell.quitting; onTriggered: shell.liveAgentsClock = Date.now() }
+  readonly property var fleetLiveAgents: {
+    var dependency = liveAgentsClock, hostStatus = tabs
+    var data = settingsData || {}
+    var entries = LiveAgents.buildEntries(fleet && fleet.hosts, fleet && fleet.sessions, data.hosts && data.hosts.hosts,
+                                         data.settings, localLiveAgents, remoteLiveAgents, localSilent)
+    var accountList = LiveAgents.normalizeAccounts(data.accounts && data.accounts.accounts, homeDir)
+    return LiveAgents.summarize(entries, accountList, Date.now())
+  }
   readonly property var fleetUsageValue: {
     var dependency = tabs
     var entries = [{host:"this machine", usage:localUsage}]
@@ -928,6 +941,7 @@ ShellRoot {
     if (!raw || typeof raw !== "object") return
     var now = Date.now()
     if (!Hosts.noteSample(fleet, ssh, gen, raw, now)) return
+    if (Object.prototype.hasOwnProperty.call(raw, "agents_live")) { remoteLiveAgents = LiveAgents.remember(remoteLiveAgents, ssh, raw.agents_live, now, gen) }
     if (raw.usage) { var usageMap = copyMap(remoteUsage); usageMap[ssh] = {generation:gen, usage:raw.usage}; remoteUsage = usageMap }
     setRemoteLine(ssh, now)
     var buckets = remoteBuckets || {}
@@ -964,6 +978,7 @@ ShellRoot {
       return
     }
     if (!raw || typeof raw !== "object") return
+    if (Object.prototype.hasOwnProperty.call(raw, "agents_live")) localLiveAgents = LiveAgents.remember({}, "local", raw.agents_live, Date.now()).local
     if (raw.usage) localUsage = raw.usage
     if (smokeMode) console.log("SAMPLE t=" + Date.now())
     var now = Date.now()
@@ -1980,6 +1995,7 @@ ShellRoot {
         visible: shell.agentsVisible
         rows: shell.agentRows
         valueData: shell.fleetUsageValue
+        fleetLiveAgents: shell.fleetLiveAgents
         ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent
         warning: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a")
         critical: shell.sensorColor

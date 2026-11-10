@@ -14,6 +14,7 @@ class ScannerTest(unittest.TestCase):
     def setUp(self):
         from unittest.mock import patch
         env = {k: v for k, v in os.environ.items() if k != 'MAINFRAME_USAGE_SCAN' and not k.startswith('XDG_') and k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME')}
+        env['MAINFRAME_AGENTS_SCAN'] = '0'
         env_patch = patch.dict(os.environ, env, clear=True)
         env_patch.start(); self.addCleanup(env_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()
@@ -652,7 +653,8 @@ c.usage_scan(sys.argv[2], sys.argv[3])
         from unittest.mock import patch
         for value, expected in ((None, True), ('1', True), ('0', False), ('other', True)):
             with self.subTest(value=value):
-                env = {} if value is None else {'MAINFRAME_USAGE_SCAN': value}
+                env = {'MAINFRAME_AGENTS_SCAN': '0'}
+                if value is not None: env['MAINFRAME_USAGE_SCAN'] = value
                 probe = {'storage': [], 'storage_at': 100, 'storage_busy': False,
                          'windows': None, 'windows_at': 100, 'windows_busy': False,
                          'usage': None, 'usage_at': 0, 'usage_busy': False}

@@ -3830,10 +3830,331 @@ def usage_probe():
     return json.loads(result)
 
 
+# Each rule names one CLI and its interpreter package entry points.
+AGENT_RULES = [
+    {'provider': 'claude', 'names': ('claude',), 'package': 'node_modules/@anthropic-ai/claude-code/'},
+    {'provider': 'codex', 'names': ('codex',), 'package': 'node_modules/@openai/codex/'},
+    {'provider': 'gemini', 'names': ('gemini',), 'package': 'node_modules/@google/gemini-cli/'},
+    {'provider': 'qwen', 'names': ('qwen', 'qwen-code'), 'package': 'node_modules/@qwen-code/qwen-code/'},
+    {'provider': 'grok', 'names': ('grok',), 'scripts': ('grok',)},
+    {'provider': 'cursor-agent', 'names': ('cursor-agent',), 'scripts': ('cursor-agent',)},
+    {'provider': 'opencode', 'names': ('opencode',), 'scripts': ('opencode',)},
+    {'provider': 'aider', 'names': ('aider',), 'scripts': ('aider',)},
+    {'provider': 'crush', 'names': ('crush',), 'scripts': ('crush',)},
+]
+_AGENT_INTERPRETERS = {'node', 'nodejs', 'bun', 'deno', 'python'}
+_AGENT_SHELLS = {'sh', 'bash', 'dash', 'zsh'}
+
+
+def _agent_interpreter(name):
+    return name in _AGENT_INTERPRETERS or bool(re.fullmatch(r'python3(?:\.\d+)?', name))
+_AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
+               'codex': (b'OPENAI_API_KEY', b'CODEX_API_KEY'),
+               'gemini': (b'GEMINI_API_KEY', b'GOOGLE_API_KEY'), 'grok': (b'XAI_API_KEY',),
+               'qwen': (b'OPENAI_API_KEY', b'DASHSCOPE_API_KEY', b'QWEN_API_KEY')}
+_AGENT_MULTI_KEYS = (b'ANTHROPIC_API_KEY', b'OPENAI_API_KEY', b'GEMINI_API_KEY',
+                     b'GOOGLE_API_KEY', b'XAI_API_KEY', b'OPENROUTER_API_KEY')
+for _provider in ('aider', 'opencode', 'crush'):
+    _AGENT_KEYS[_provider] = _AGENT_MULTI_KEYS
+_AGENT_DIRS = {'claude': (b'CLAUDE_CONFIG_DIR', '.claude'), 'codex': (b'CODEX_HOME', '.codex')}
+
+
+def _agent_match(comm, argv, executable='', raw_args=''):
+    if not argv:
+        return None
+    exe = os.path.basename(argv[0])
+    executable_name = os.path.basename(executable)
+    executable_lower = executable.lower()
+    if (os.path.basename(executable_lower) == 'electron' or '/electron' in executable_lower or
+            'claude-desktop' in executable_lower or '.app/contents/macos/' in executable_lower):
+        return None
+    if '.app/contents/' in argv[0].lower():
+        return None
+    if comm == 'codex-linux-sandbox' or exe == 'codex-linux-sandbox':
+        return None
+    interpreter = _agent_interpreter(comm) or _agent_interpreter(exe) or _agent_interpreter(executable_name)
+    shell = exe in _AGENT_SHELLS
+    python = any(name.startswith('python') for name in (comm, exe, executable_name))
+    node = any(name in ('node', 'nodejs') for name in (comm, exe, executable_name))
+    operands = {'-W', '-X'} if python else ({'-r', '--require', '--import', '--loader', '--experimental-loader'} if node else set())
+    claude_operands = {'-p', '--print', '--mcp-config', '--model', '--settings', '--system-prompt',
+                       '--append-system-prompt', '--permission-mode', '--output-format', '--input-format',
+                       '--allowed-tools', '--disallowed-tools', '--add-dir', '--agent', '--resume'}
+    i = 1
+    while i < len(argv) and argv[i].startswith('-'):
+        if argv[i].startswith('--type='):
+            return None
+        if argv[i] in operands or argv[i] in claude_operands:
+            if i + 1 < len(argv) and not argv[i + 1].startswith('-'):
+                break
+            i += 2
+        else:
+            i += 1
+    rule_match, script_index = None, 0
+    if interpreter:
+        if len(argv) == 1:
+            rule_match = next((r for r in AGENT_RULES if argv[0] in r['names']), None)
+        i = 1
+        subcommand = False
+        while i < len(argv):
+            arg = argv[i]
+            if arg in ('-c', '-e', '--eval', '-p', '--print'):
+                return None
+            if arg in operands:
+                i += 2
+                continue
+            if python and arg == '-m':
+                if i + 1 < len(argv) and argv[i + 1] == 'aider':
+                    rule_match, script_index = next(r for r in AGENT_RULES if r['provider'] == 'aider'), i + 1
+                break
+            if arg.startswith('-'):
+                i += 1
+                continue
+            if not subcommand and ((comm == 'bun' or exe == 'bun') and arg in ('run', 'x') or
+                                   (comm == 'deno' or exe == 'deno') and arg == 'run'):
+                subcommand = True
+                i += 1
+                continue
+            path = arg.replace('\\', '/')
+            if 'mcp-server' in path or 'mcp_server' in path:
+                return None
+            rule_match = next((r for r in AGENT_RULES if os.path.basename(path) in r.get('scripts', r['names']) or
+                               (r.get('package') and '/' + r['package'] in '/' + path) or
+                               (r['provider'] == 'cursor-agent' and '/cursor-agent/' in path)), None)
+            if not rule_match and raw_args:
+                span = arg
+                if not os.path.splitext(arg)[1]:
+                    candidate = arg
+                    for fragment in argv[i + 1:]:
+                        if fragment.startswith(('/', '-')):
+                            break
+                        candidate += ' ' + fragment
+                        if re.search(r'\.(?:mjs|cjs|js)$', fragment):
+                            span = candidate
+                            break
+                rule_match = next((r for r in AGENT_RULES if
+                                   (r.get('package') and '/' + r['package'] in span) or
+                                   (r['provider'] == 'cursor-agent' and '/cursor-agent/' in span)), None)
+            script_index = i
+            break
+        if not rule_match:
+            return None
+    if shell and not interpreter and len(argv) > 1:
+        rule_match = next((r for r in AGENT_RULES if os.path.basename(argv[1]) in r['names']), None)
+        if rule_match:
+            script_index = 1
+    args = argv[script_index + 1:] if script_index else argv[1:]
+    if args and all(arg in ('--version', '-v', '-V', 'version', '--help', '-h', 'help') for arg in args):
+        return None
+    for rule in AGENT_RULES:
+        matched = not interpreter and (comm in rule['names'] or exe in rule['names'] or rule is rule_match)
+        if interpreter:
+            matched = rule is rule_match
+        if matched:
+            if rule['provider'] == 'claude':
+                options_and_args = []
+                i = 0
+                while i < len(args):
+                    options_and_args.append(args[i])
+                    if args[i] in claude_operands and i + 1 < len(args):
+                        options_and_args.append(None)
+                        i += 2
+                    else:
+                        i += 1
+                if any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host') for arg in options_and_args):
+                    return None
+                if any(options_and_args[i] == 'mcp' and options_and_args[i + 1] == 'serve'
+                       for i in range(len(options_and_args) - 1)):
+                    return None
+                i = 0
+                while i < len(args) and args[i].startswith('-'):
+                    i += 2 if args[i] in claude_operands else 1
+                if i < len(args) and args[i] in ('mcp', 'daemon'):
+                    return None
+            elif any(arg in ('mcp-server', 'mcp_server') for arg in args):
+                return None
+            elif any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
+                return None
+            if rule['provider'] == 'codex':
+                if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or any(arg in ('app-server', 'app-server-daemon') for arg in argv):
+                    return None
+            return rule['provider']
+    return None
+
+
+def _agent_environment(path, provider, home):
+    try:
+        with open(path, 'rb') as source:
+            raw = source.read()
+    except OSError:
+        return None, None
+    wanted = set(_AGENT_KEYS.get(provider, ()))
+    directory = _AGENT_DIRS.get(provider)
+    if directory:
+        wanted.add(directory[0])
+    values = {}
+    for entry in raw.split(b'\0'):
+        key, sep, value = entry.partition(b'=')
+        if sep and key in wanted:
+            values[key] = value
+    billing = 'api' if any(values.get(key) for key in _AGENT_KEYS.get(provider, ())) else None
+    result = None
+    if directory:
+        value = (values.get(directory[0]) or b'').decode('utf-8', 'replace')
+        path = os.path.normpath(os.path.expanduser(value)) if value else os.path.join(home, directory[1])
+        if os.path.isabs(path):
+            home = os.path.normpath(home)
+            result = '~' + path[len(home):] if path == home or path.startswith(home.rstrip('/') + '/') else path
+            result = result.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
+            if len(result) > 200:
+                result = None
+    return result, billing
+
+
+def _agent_finish(processes, now):
+    matched = {pid: row for pid, row in processes.items() if row.get('provider')}
+    counted = {pid: row for pid, row in matched.items()
+               if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']}
+    sessions = []
+    for pid, row in sorted(counted.items()):
+        parent, seen = row['ppid'], {pid}
+        while parent in processes and parent not in seen and parent not in counted:
+            seen.add(parent)
+            parent = processes[parent]['ppid']
+        session = {key: row.get(key) for key in ('pid', 'provider', 'interactive', 'dir', 'billing', 'project', 'age_s', 'rss')}
+        session['parent_pid'] = parent if parent in counted and parent not in seen else None
+        sessions.append(session)
+    return {'at': int(now), 'sessions': sessions[:256], 'truncated': len(sessions) > 256, 'supported': True}
+
+
+def _agent_linux(proc_root, home, now):
+    processes = {}
+    try:
+        own_namespace = os.readlink(os.path.join(proc_root, 'self', 'ns', 'pid'))
+    except OSError:
+        own_namespace = None
+    with open(os.path.join(proc_root, 'uptime'), encoding='ascii') as source:
+        uptime = float(source.read().split()[0])
+    ticks, page = os.sysconf('SC_CLK_TCK'), os.sysconf('SC_PAGE_SIZE')
+    candidates = {name for rule in AGENT_RULES for name in rule['names']} | _AGENT_INTERPRETERS | _AGENT_SHELLS
+    with os.scandir(proc_root) as entries:
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                with open(os.path.join(entry.path, 'stat'), encoding='utf-8', errors='replace') as source:
+                    statline = source.read()
+                start, end = statline.find('('), statline.rfind(')')
+                comm, fields = statline[start + 1:end], statline[end + 2:].split()
+                pid, ppid = int(entry.name), int(fields[1])
+                row = {'pid': pid, 'ppid': ppid}
+                processes[pid] = row
+                if own_namespace is not None:
+                    try:
+                        if os.readlink(os.path.join(entry.path, 'ns', 'pid')) != own_namespace:
+                            continue
+                    except OSError:
+                        pass
+                # Some native launchers resolve to version-named binaries.
+                if comm not in candidates and not _agent_interpreter(comm) and not generic_thread_name(comm) and not (comm.startswith('node-') and generic_thread_name(comm[5:])) and not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*', comm):
+                    continue
+                try:
+                    with open(os.path.join(entry.path, 'cmdline'), 'rb') as source:
+                        argv = [os.fsdecode(x) for x in source.read().split(b'\0') if x]
+                except OSError:
+                    argv = [comm] if not _agent_interpreter(comm) else []
+                try:
+                    executable = os.readlink(os.path.join(entry.path, 'exe'))
+                except OSError:
+                    executable = ''
+                provider = _agent_match(comm, argv, executable)
+                if not provider:
+                    continue
+                row.update(provider=provider, age_s=max(0, int(uptime - int(fields[19]) / ticks)), rss=max(0, int(fields[21]) * page))
+                try:
+                    tty = os.readlink(os.path.join(entry.path, 'fd', '0'))
+                    row['interactive'] = tty.startswith('/dev/pts/') or tty.startswith('/dev/tty')
+                except OSError:
+                    row['interactive'] = None
+                try:
+                    cwd = os.readlink(os.path.join(entry.path, 'cwd'))
+                    row['project'] = os.path.basename(cwd.rstrip('/')).encode('utf-8', 'surrogateescape').decode('utf-8', 'replace') or None
+                except OSError:
+                    row['project'] = None
+                try:
+                    owned = entry.stat().st_uid == os.getuid()
+                except OSError:
+                    owned = False
+                row['dir'], row['billing'] = _agent_environment(os.path.join(entry.path, 'environ'), provider, home) if owned else (None, None)
+            except (OSError, ValueError, IndexError):
+                continue
+    return _agent_finish(processes, now)
+
+
+def _agent_elapsed(value):
+    try:
+        days, sep, rest = value.partition('-')
+        if not sep:
+            rest, days = days, '0'
+        parts = [int(part) for part in rest.split(':')]
+        if len(parts) not in (2, 3):
+            return None
+        return int(days) * 86400 + sum(part * 60 ** i for i, part in enumerate(reversed(parts)))
+    except ValueError:
+        return None
+
+
+def _agent_darwin(text, args_text, now):
+    processes = {}
+    arguments = {}
+    for line in args_text.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2 and fields[0].isdigit():
+            arguments[int(fields[0])] = fields[1]
+    for line in text.splitlines():
+        fields = line.split(None, 5)
+        if len(fields) != 6:
+            continue
+        try:
+            pid, ppid, tty, elapsed, rss, comm = fields
+            pid, ppid = int(pid), int(ppid)
+            row = {'pid': pid, 'ppid': ppid}
+            processes[pid] = row
+            raw_args = arguments.get(pid, '')
+            argv = raw_args.split() or [comm]
+            provider = _agent_match(os.path.basename(comm), argv, comm, raw_args)
+            if not provider and ' ' in comm and argv[0] != comm and not _agent_interpreter(os.path.basename(comm)):
+                provider = _agent_match(os.path.basename(comm), [comm], comm)
+            if provider:
+                row.update(provider=provider, interactive=tty != '??', dir=None, billing=None, project=None,
+                           age_s=_agent_elapsed(elapsed), rss=max(0, int(rss) * 1024))
+        except (ValueError, IndexError):
+            continue
+    return _agent_finish(processes, now)
+
+
+def agents_probe(proc_root='/proc', home=None, platform=None):
+    now = time.time()
+    failure = {'at': int(now), 'sessions': [], 'truncated': False, 'supported': False}
+    if os.environ.get('MAINFRAME_AGENTS_SCAN') == '0':
+        return failure
+    try:
+        platform = platform or sys.platform
+        if platform.startswith('linux'):
+            return _agent_linux(proc_root, home or os.path.expanduser('~'), now)
+        if platform == 'darwin':
+            output = _run_tracked(['ps', '-ww', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            args = _run_tracked(['ps', '-axww', '-o', 'pid=,args='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            return _agent_darwin(output, args, now) if output and args and output.strip() and args.strip() else failure
+    except Exception:
+        return failure
+    return failure
+
+
 # Slow host probes run independently of the one-second sampling clock.
 _probe = {"windows": None, "storage": [], "windows_at": 0.0, "storage_at": 0.0,
           "windows_busy": False, "storage_busy": False, "usage": None, "usage_at": 0.0, "usage_busy": False,
-          "usage_snapshot": (None, 0), "usage_generation": 0}
+          "usage_snapshot": (None, 0), "usage_generation": 0, "agents_live": None, "agents_live_at": 0.0, "agents_live_busy": False}
 _probe_started = time.monotonic()
 _PS_QUERY = r"""$o=Get-CimInstance Win32_OperatingSystem; $p=Get-CimInstance Win32_Processor; $d=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'; @{total=$o.TotalVisibleMemorySize;free=$o.FreePhysicalMemory;cpu=@($p | ForEach-Object {$_.LoadPercentage});disks=@($d | ForEach-Object {@{name=$_.DeviceID;size=$_.Size;free=$_.FreeSpace}})} | ConvertTo-Json -Compress -Depth 4"""
 
@@ -4035,6 +4356,8 @@ def _background_probe(name, function):
         if name == 'usage':
             previous = _probe.get(name)
             _probe[name] = dict(previous, stale=True) if isinstance(previous, dict) else {'days': {}, 'error': _error_text(exc, 'usage scan failed'), 'stale': True}
+        elif name == 'agents_live':
+            _probe[name] = {'at': int(time.time()), 'sessions': [], 'truncated': False, 'supported': False}
         else:
             _probe[name] = None if name == 'windows' else []
     finally:
@@ -4042,6 +4365,10 @@ def _background_probe(name, function):
             generation = _probe.get('usage_generation', 0) + 1
             _probe['usage_generation'] = generation
             _probe['usage_snapshot'] = (_probe[name], generation)
+        elif name == 'agents_live':
+            generation = _probe.get('agents_live_generation', 0) + 1
+            _probe['agents_live_generation'] = generation
+            _probe['agents_live_snapshot'] = (_probe[name], generation)
         _probe[name + '_busy'] = False
 
 
@@ -4067,8 +4394,8 @@ def usage_scan_enabled():
 
 def slow_probes(sample):
     now = time.monotonic()
-    for name, interval, enabled, fn in (('storage', 30, True, lambda: storage_probe(sample.get('wsl') is True)), ('windows', 15, sample.get('wsl') is True, windows_probe)):
-        if enabled and not _probe[name + '_busy'] and (not _probe[name + '_at'] or now - _probe[name + '_at'] >= interval):
+    for name, interval, enabled, fn in (('agents_live', 10, os.environ.get('MAINFRAME_AGENTS_SCAN') != '0', agents_probe), ('storage', 30, True, lambda: storage_probe(sample.get('wsl') is True)), ('windows', 15, sample.get('wsl') is True, windows_probe)):
+        if enabled and not _probe.get(name + '_busy', False) and (not _probe.get(name + '_at', 0) or now - _probe[name + '_at'] >= interval):
             _probe[name + '_busy'] = True
             _probe[name + '_at'] = now
             threading.Thread(target=_background_probe, args=(name, fn), daemon=True).start()
@@ -4077,6 +4404,9 @@ def slow_probes(sample):
         _probe['usage_at'] = now
         threading.Thread(target=_background_probe, args=('usage', usage_probe), daemon=True).start()
     usage, generation = _probe.get('usage_snapshot', (_probe.get('usage'), _probe.get('usage_generation', 0)))
+    live, live_generation = _probe.get('agents_live_snapshot', (None, 0))
+    sample['agents_live'] = live if os.environ.get('MAINFRAME_AGENTS_SCAN') != '0' else None
+    sample['_agents_live_generation'] = live_generation
     sample['usage'] = usage
     sample['_usage_generation'] = generation
     sample['windows'] = _probe['windows'] if sample.get('wsl') else None
@@ -4098,6 +4428,7 @@ def collect_sample(include_procs):
 class _UsageEmitter:
     def __init__(self):
         self.last = object()
+        self.last_live = object()
 
     def filter(self, sample):
         if not isinstance(sample, dict):
@@ -4109,6 +4440,12 @@ class _UsageEmitter:
             sample.pop('usage', None)
         else:
             self.last = generation
+        live = sample.get('agents_live')
+        generation = sample.pop('_agents_live_generation', None)
+        if live is None or generation == self.last_live:
+            sample.pop('agents_live', None)
+        else:
+            self.last_live = generation
         return sample
 
 

@@ -42,6 +42,10 @@ def validate(kind, data):
             alias = item.get('ssh')
             if not isinstance(alias, str) or not ALIAS.fullmatch(alias) or any(p.startswith('-') for p in alias.split('@')) or alias in seen: raise ValueError('Invalid or duplicate SSH alias')
             seen.add(alias)
+            if 'agentCap' in item and (type(item['agentCap']) is not int or not 0 <= item['agentCap'] <= 999): raise ValueError('Invalid agent cap')
+            if 'agentAccounts' in item:
+                mapping = item['agentAccounts']
+                if not isinstance(mapping, dict) or len(mapping) > 32 or any(not isinstance(k, str) or not (k.startswith('~/') or k.startswith('/')) or len(k) > 200 or '\x00' in k or not isinstance(v, str) or not ID.fullmatch(v) for k, v in mapping.items()): raise ValueError('Invalid agent accounts')
     elif kind == 'accounts':
         values = data.get('accounts')
         if not isinstance(values, list): raise ValueError('Expected accounts')
@@ -69,6 +73,7 @@ def validate(kind, data):
                 if not isinstance(model, str) or not model or not isinstance(rates, dict) or not rates or any(k not in fields for k in rates): raise ValueError('Invalid model price')
                 if any(isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 for v in rates.values()): raise ValueError('Invalid price rate')
     elif kind == 'settings':
+        if 'localAgentCap' in data and (type(data['localAgentCap']) is not int or not 0 <= data['localAgentCap'] <= 999): raise ValueError('Invalid local agent cap')
         if data.get('overviewView', 'systems') not in ('systems', 'storage', 'agents') or not isinstance(data.get('showUnavailable', False), bool): raise ValueError('Invalid display settings')
         if data.get('style', 'classic') not in ('classic', 'cyberpunk'): raise ValueError('Invalid style')
         cyber = data.get('cyber', {})

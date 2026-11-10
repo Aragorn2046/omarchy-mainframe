@@ -9,6 +9,9 @@ Item {
   property var cyberStyle: null
   property alias flick: scrollView
   property var rows: []
+  property var fleetLiveAgents: ({total:0, reporting:0, hostsTotal:0, hosts:[], accounts:[]})
+  function liveAge(seconds) { if (seconds == null) return '—'; var m = Math.floor(seconds / 60), h = Math.floor(m / 60); return h ? h + 'h ' + (m % 60) + 'm' : m ? m + 'm' : Math.floor(seconds) + 's' }
+  function liveMemory(bytes) { return bytes == null ? '—' : (bytes / 1048576).toFixed(0) + ' MB' }
   readonly property var sectionData: Agents.sections(rows)
   readonly property var valueTotals: [{label:'TODAY', value:valueData.totals.today}, {label:'LAST 7 DAYS', value:valueData.totals.seven}, {label:'LAST 30 DAYS', value:valueData.totals.thirty}]
   readonly property var valueRows: [{name:'Claude', totals:valueData.providers.claude}, {name:'Codex', totals:valueData.providers.codex}].concat(valueData.hosts)
@@ -40,15 +43,15 @@ Item {
     for (var i = 0; i < sectionRepeater.count; i++) {
       var section = sectionRepeater.itemAt(i)
       if (!section) continue
-      headings.push({x:section.x + section.headingItem.x, y:section.y + section.headingItem.y, width:section.headingItem.width, height:section.headingItem.height})
+      headings.push({x:section.x + section.headingItem.x, y:sections.y + section.y + section.headingItem.y, width:section.headingItem.width, height:section.headingItem.height})
       for (var j = 0; j < section.cardRepeater.count; j++) {
         var card = section.cardRepeater.itemAt(j)
-        if (card) cards.push({item:card, x:section.x + card.x, y:section.y + card.y, width:card.width, height:card.height})
+        if (card) cards.push({item:card, x:section.x + card.x, y:sections.y + section.y + card.y, width:card.width, height:card.height})
       }
     }
     function overlaps(a, b) { return a.x < b.x + b.width - 0.01 && a.x + a.width > b.x + 0.01 && a.y < b.y + b.height - 0.01 && a.y + a.height > b.y + 0.01 }
     for (i = 0; i < cards.length; i++) {
-      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight
+      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight || c.y < liveCard.y + liveCard.height - 0.01
       for (j = 0; j < cards.length; j++) if (i !== j && overlaps(c, cards[j])) failed = true
       for (j = 0; j < headings.length; j++) if (overlaps(c, headings[j])) failed = true
       if (failed) failures++
@@ -67,10 +70,83 @@ Item {
     Flickable {
       id: scrollView
       Layout.fillWidth: true; Layout.fillHeight: true; clip: true
-      contentWidth: width; contentHeight: valueCard.y + valueCard.height
+      contentWidth: width; contentHeight: sections.y + valueCard.y + valueCard.height
       onWidthChanged: root.schedulePacking()
+      Card {
+        id: liveCard; objectName: 'agents-live-card'
+        width: scrollView.width; height: liveContent.implicitHeight + 54
+        cyberStyle: root.cyberStyle; accent: root.accent; title: 'Running now'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
+        ColumnLayout {
+          id: liveContent; width: parent.width; spacing: 7
+          RowLayout {
+            Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: root.fleetLiveAgents.reporting > 0 ? String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : '') : '—'; color: root.ink; font.family: 'monospace'; font.pixelSize: 28; font.bold: true }
+            Text { textFormat: Text.PlainText; text: (root.fleetLiveAgents.reporting || 0) + ' of ' + (root.fleetLiveAgents.hostsTotal || 0) + ' machines reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; Layout.fillWidth: true }
+          }
+          Flow {
+            objectName: 'agents-live-providers'; Layout.fillWidth: true; spacing: 4
+            Repeater {
+              model: (root.fleetLiveAgents.providers || []).length
+              delegate: Rectangle {
+                required property int index
+                readonly property var providerData: root.fleetLiveAgents.providers[index]
+                width: fleetChip.implicitWidth + 10; height: fleetChip.implicitHeight + 4; radius: 4; color: root.track
+                Text { textFormat: Text.PlainText; id: fleetChip; anchors.centerIn: parent; text: parent.providerData.provider + ' ' + parent.providerData.count; color: root.ink; font.family: 'monospace'; font.pixelSize: 10 }
+              }
+            }
+          }
+          Text { textFormat: Text.PlainText; objectName: 'agents-live-empty'; visible: root.fleetLiveAgents.total === 0; text: root.fleetLiveAgents.reporting > 0 ? 'No agents running' : 'No machine reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+          Repeater {
+            objectName: 'agents-live-hosts'; model: (root.fleetLiveAgents.hosts || []).length
+            delegate: ColumnLayout {
+              id: liveHost
+              required property int index
+              property bool expanded: false
+              readonly property var modelData: root.fleetLiveAgents.hosts[index]
+              Layout.fillWidth: true; spacing: 4
+              RowLayout {
+                objectName: 'agents-live-host-row'; Layout.fillWidth: true
+                Text { textFormat: Text.PlainText; text: (liveHost.expanded ? '▾ ' : '▸ ') + liveHost.modelData.host; color: root.ink; font.family: 'monospace'; font.pixelSize: 12; Layout.preferredWidth: 160; Layout.minimumWidth: 35; elide: Text.ElideRight }
+                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: liveHost.modelData.status === 'not reporting' ? 'not reporting' : String(liveHost.modelData.count) + (liveHost.modelData.truncated ? '+' : '') + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : liveHost.modelData.status === 'not reporting' ? root.mutedInk : root.ink; font.family: 'monospace'; font.pixelSize: 12 }
+                Flow {
+                  Layout.fillWidth: true; spacing: 4
+                  Repeater {
+                    model: liveHost.modelData.providers.length
+                    delegate: Rectangle {
+                      required property int index
+                      readonly property var providerData: liveHost.modelData.providers[index]
+                      width: chip.implicitWidth + 10; height: chip.implicitHeight + 4; radius: 4; color: root.track
+                      Text { textFormat: Text.PlainText; id: chip; anchors.centerIn: parent; text: parent.providerData.provider + ' ' + parent.providerData.count; color: root.ink; font.family: 'monospace'; font.pixelSize: 10 }
+                    }
+                  }
+                }
+                Text { textFormat: Text.PlainText; visible: liveHost.modelData.headless > 0; text: liveHost.modelData.headless + ' headless'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+                TapHandler { onTapped: liveHost.expanded = !liveHost.expanded }
+              }
+              Repeater {
+                model: liveHost.expanded ? liveHost.modelData.sessions.length : 0
+                delegate: Text {
+                  required property int index
+                  readonly property var session: liveHost.modelData.sessions[index]
+                  Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
+                  text: '    ' + session.provider + ' · ' + session.account + ' · ' + (session.project || '—') + ' · ' + root.liveAge(session.age_s) + ' · ' + (session.interactive === true ? 'interactive' : session.interactive === false ? 'headless' : 'unknown') + ' · ' + root.liveMemory(session.rss)
+                  color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11
+                }
+              }
+            }
+          }
+          Repeater {
+            model: (root.fleetLiveAgents.accounts || []).length
+            delegate: Text {
+              required property int index
+              readonly property var account: root.fleetLiveAgents.accounts[index]
+              Layout.fillWidth: true; textFormat: Text.PlainText; text: account.label + ' · ' + account.provider + '  ' + account.count
+              color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight
+            }
+          }
+        }
+      }
       Item {
-        id: sections; width: scrollView.width; height: scrollView.contentHeight
+        id: sections; y: liveCard.height + 10; width: scrollView.width; height: valueCard.y + valueCard.height
         Repeater {
           id: sectionRepeater; objectName: 'agents-sections-repeater'; model: root.sectionData.length
           onItemAdded: root.schedulePacking()
