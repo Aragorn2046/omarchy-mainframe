@@ -4,6 +4,11 @@ function relativeDir(path, homeDir) {
   var home = typeof homeDir === 'string' ? homeDir.replace(/\/+$/, '') : '';
   return (home && (path === home || path.indexOf(home + '/') === 0) ? '~' + path.slice(home.length) : path).replace(/\/$/, '');
 }
+function normalizeDir(path) {
+  if (typeof path !== 'string') return null;
+  var normalized = path.replace(/\/\.(?=\/|$)/g, '').replace(/\/+$/, '');
+  return normalized || (path.charAt(0) === '/' ? '/' : '');
+}
 function buildEntries(hosts, sessions, config, settings, local, remote, localSilent) {
   hosts = Array.isArray(hosts) ? hosts : [];
   sessions = sessions || {}; config = Array.isArray(config) ? config : []; settings = settings || {}; remote = remote || {};
@@ -39,10 +44,12 @@ function summarize(entries, accounts, nowMs) {
   function stringField(value, limit) { return typeof value === 'string' && value.length <= limit ? value : null; }
   function numberField(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null; }
   function accountFor(session, entry, hostName) {
-    var map = entry.accountMap, id = session.dir && map && Object.prototype.hasOwnProperty.call(map, session.dir) ? map[session.dir] : null;
+    var map = entry.accountMap, dir = normalizeDir(session.dir);
+    var mapKey = dir && map ? Object.keys(map).find(function(key) { return normalizeDir(key) === dir; }) : null;
+    var id = mapKey != null ? map[mapKey] : null;
     var account = id == null ? null : accounts.find(function(a) { return a && a.id === id && a.provider === session.provider; });
-    if (!account && entry.local === true && session.dir) account = accounts.find(function(a) { return a && a.provider === session.provider && a.dir === session.dir; });
-    if (account && typeof account.name === 'string' && account.name) return {label:account.name, id:account.id, scope:null};
+    if (!account && entry.local === true && dir) account = accounts.find(function(a) { return a && a.provider === session.provider && normalizeDir(a.dir) === dir; });
+    if (account && typeof account.name === 'string' && account.name) return {label:account.name + (session.billing === 'api' ? ' (API key)' : ''), id:account.id, scope:null};
     if (session.billing === 'api') return {label:session.provider + ' API key', scope:null};
     return {label:(session.dir || 'unknown ' + session.provider) + ' · ' + hostName, scope:entry.alias || hostName};
   }
@@ -70,7 +77,7 @@ function summarize(entries, accounts, nowMs) {
         host.sessions.push(session);
         if (session.interactive === false) host.headless++;
         increment(hostProviders, provider, function() { return {provider:provider, count:0}; });
-        var key = account.id != null ? JSON.stringify(['account', account.id]) : JSON.stringify([provider, session.account, session.billing, account.scope]);
+        var key = account.id != null ? JSON.stringify(['account', account.id, session.billing]) : JSON.stringify([provider, session.account, session.billing, account.scope]);
         increment(hostGroups, key, function() { return {label:session.account, provider:provider, count:0, billing:session.billing}; });
         if (hostGroups[key].billing !== session.billing) hostGroups[key].billing = null;
       });

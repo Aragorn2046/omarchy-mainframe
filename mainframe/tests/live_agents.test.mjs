@@ -18,7 +18,7 @@ test('account attribution is local unless a remote override is set', () => {
   assert.deepEqual(result.hosts[3].sessions.map(x=>x.account),['unknown claude · unknown','unknown codex · unknown']);
   assert.equal(result.accounts.find(x=>x.label === 'Work').count, 2);
 });
-test('account IDs take precedence over API keys and remain distinct when names match', () => {
+test('account IDs and billing types stay distinct when names match', () => {
   const accounts = [{id:'one',name:'Shared',provider:'claude',dir:'~/.claude'},
     {id:'two',name:'Shared',provider:'claude',dir:'~/.other'},
     {id:'wrong',name:'Wrong',provider:'codex',dir:'~/.codex'}];
@@ -28,9 +28,32 @@ test('account IDs take precedence over API keys and remain distinct when names m
     entry('mismatch',[session('claude','~/.claude','api')],{accountMap:{'~/.claude':'wrong'}}),
     entry('fallback',[session('claude','~/.claude')],{local:true,accountMap:{'~/.claude':'wrong'}})
   ], accounts, now);
-  assert.deepEqual(result.hosts.map(x=>x.sessions.map(s=>s.account)), [['Shared','Shared'],['Shared'],['claude API key'],['Shared']]);
-  assert.deepEqual(result.accounts.filter(x=>x.label === 'Shared').map(x=>x.count).sort(), [2,2]);
+  assert.deepEqual(result.hosts.map(x=>x.sessions.map(s=>s.account)), [['Shared (API key)','Shared'],['Shared (API key)'],['claude API key'],['Shared']]);
+  assert.deepEqual(result.accounts.filter(x=>x.label === 'Shared').map(x=>x.count).sort(), [1,1]);
+  assert.deepEqual(result.accounts.filter(x=>x.label === 'Shared (API key)').map(x=>x.count).sort(), [1,1]);
   assert.equal(result.accounts.find(x=>x.label === 'claude API key').count, 1);
+});
+test('mapped account groups separate API billing from subscription across hosts', () => {
+  const accounts = [{id:'work',name:'Work',provider:'claude',dir:'~/.claude'}];
+  const result = summarize([
+    entry('local',[session('claude','~/.claude'),session('claude','~/.claude','api')],{local:true}),
+    entry('remote',[session('claude','~/.claude','api')],{accountMap:{'~/.claude':'work'}})
+  ],accounts,now);
+  assert.deepEqual(result.accounts, [
+    {label:'Work (API key)',provider:'claude',count:2,billing:'api'},
+    {label:'Work',provider:'claude',count:1,billing:'subscription'}
+  ]);
+});
+test('account directories and mapping keys normalize dot segments and trailing slashes', () => {
+  const accounts = [{id:'work',name:'Work',provider:'claude',dir:'~/.claude/./'}];
+  const result = summarize([
+    entry('local',[session('claude','~/.claude/')],{local:true}),
+    entry('remote',[session('claude','~/./.claude/./')],{accountMap:{'~/.claude/':'work'}}),
+    entry('other',[session('claude','~/.claude')],{accountMap:{'~/./.claude/./':'work'}})
+  ],accounts,now);
+  assert.equal(result.accounts.length,1);
+  assert.equal(result.accounts[0].count,3);
+  assert.deepEqual(result.hosts.map(x=>x.sessions[0].account),['Work','Work','Work']);
 });
 test('failed probes do not report zero and unmapped directories stay per host', () => {
   const result = summarize([entry('one',[session('claude','~/.claude')]), entry('two',[session('claude','~/.claude')]), entry('failed',[],{live:{supported:false,sessions:[]}})], [], now);

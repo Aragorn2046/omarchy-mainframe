@@ -202,6 +202,15 @@ class LiveProbe(unittest.TestCase):
         self.assertEqual([row['pid'] for row in rows], [70, 72, 73, 75, 77, 79])
         self.assertEqual(rows[-1]['parent_pid'], 77)
 
+    def test_bun_and_deno_run_subcommands(self):
+        gemini = '/x/node_modules/@google/gemini-cli/dist/index.js'
+        qwen = '/x/node_modules/@qwen-code/qwen-code/cli.js'
+        self.assertEqual(collect._agent_match('bun', ['bun', 'run', gemini]), 'gemini')
+        self.assertEqual(collect._agent_match('bun', ['bun', 'x', gemini]), 'gemini')
+        self.assertEqual(collect._agent_match('deno', ['deno', 'run', '-A', qwen]), 'qwen')
+        self.assertIsNone(collect._agent_match('deno', ['deno', 'x', qwen]))
+        self.assertIsNone(collect._agent_match('bun', ['bun', 'run', 'run', gemini]))
+
     def test_interpreter_selects_only_the_script(self):
         for pid, agent in enumerate(('claude', 'codex'), 90):
             self.proc(pid, 'python3', ['python3', '/some/path/mux-helper.py', 'mcp', '--pool', 'mcp',

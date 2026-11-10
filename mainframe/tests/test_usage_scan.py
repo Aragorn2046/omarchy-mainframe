@@ -14,6 +14,7 @@ class ScannerTest(unittest.TestCase):
     def setUp(self):
         from unittest.mock import patch
         env = {k: v for k, v in os.environ.items() if k != 'MAINFRAME_USAGE_SCAN' and not k.startswith('XDG_') and k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME')}
+        env['MAINFRAME_AGENTS_SCAN'] = '0'
         env_patch = patch.dict(os.environ, env, clear=True)
         env_patch.start(); self.addCleanup(env_patch.stop)
         self.tmp = tempfile.TemporaryDirectory()

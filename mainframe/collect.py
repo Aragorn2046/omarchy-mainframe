@@ -3870,6 +3870,7 @@ def _agent_match(comm, argv, executable='', raw_args=''):
     rule_match, script_index = None, 0
     if interpreter:
         i = 1
+        subcommand = False
         while i < len(argv):
             arg = argv[i]
             if arg in ('-c', '-e', '--eval', '-p', '--print'):
@@ -3882,6 +3883,11 @@ def _agent_match(comm, argv, executable='', raw_args=''):
                     rule_match, script_index = next(r for r in AGENT_RULES if r['provider'] == 'aider'), i + 1
                 break
             if arg.startswith('-'):
+                i += 1
+                continue
+            if not subcommand and ((comm == 'bun' or exe == 'bun') and arg in ('run', 'x') or
+                                   (comm == 'deno' or exe == 'deno') and arg == 'run'):
+                subcommand = True
                 i += 1
                 continue
             path = arg.replace('\\', '/')
