@@ -3860,9 +3860,10 @@ _AGENT_DIRS = {'claude': (b'CLAUDE_CONFIG_DIR', '.claude'), 'codex': (b'CODEX_HO
 
 
 def _agent_match(comm, argv, executable='', raw_args=''):
-    if not argv or any(arg.startswith('--type=') for arg in argv):
+    if not argv:
         return None
     exe = os.path.basename(argv[0])
+    executable_name = os.path.basename(executable)
     executable_lower = executable.lower()
     if (os.path.basename(executable_lower) == 'electron' or '/electron' in executable_lower or
             'claude-desktop' in executable_lower or '.app/contents/macos/' in executable_lower):
@@ -3871,11 +3872,24 @@ def _agent_match(comm, argv, executable='', raw_args=''):
         return None
     if comm == 'codex-linux-sandbox' or exe == 'codex-linux-sandbox':
         return None
-    interpreter = _agent_interpreter(comm) or _agent_interpreter(exe)
+    interpreter = _agent_interpreter(comm) or _agent_interpreter(exe) or _agent_interpreter(executable_name)
     shell = exe in _AGENT_SHELLS
-    python = comm.startswith('python') or exe.startswith('python')
-    node = comm in ('node', 'nodejs') or exe in ('node', 'nodejs')
+    python = any(name.startswith('python') for name in (comm, exe, executable_name))
+    node = any(name in ('node', 'nodejs') for name in (comm, exe, executable_name))
     operands = {'-W', '-X'} if python else ({'-r', '--require', '--import', '--loader', '--experimental-loader'} if node else set())
+    claude_operands = {'-p', '--print', '--mcp-config', '--model', '--settings', '--system-prompt',
+                       '--append-system-prompt', '--permission-mode', '--output-format', '--input-format',
+                       '--allowed-tools', '--disallowed-tools', '--add-dir', '--agent', '--resume'}
+    i = 1
+    while i < len(argv) and argv[i].startswith('-'):
+        if argv[i].startswith('--type='):
+            return None
+        if argv[i] in operands or argv[i] in claude_operands:
+            if i + 1 < len(argv) and not argv[i + 1].startswith('-'):
+                break
+            i += 2
+        else:
+            i += 1
     rule_match, script_index = None, 0
     if interpreter:
         if len(argv) == 1:
@@ -3902,6 +3916,8 @@ def _agent_match(comm, argv, executable='', raw_args=''):
                 i += 1
                 continue
             path = arg.replace('\\', '/')
+            if 'mcp-server' in path or 'mcp_server' in path:
+                return None
             rule_match = next((r for r in AGENT_RULES if os.path.basename(path) in r.get('scripts', r['names']) or
                                (r.get('package') and '/' + r['package'] in '/' + path) or
                                (r['provider'] == 'cursor-agent' and '/cursor-agent/' in path)), None)
@@ -3930,23 +3946,33 @@ def _agent_match(comm, argv, executable='', raw_args=''):
     args = argv[script_index + 1:] if script_index else argv[1:]
     if args and all(arg in ('--version', '-v', '-V', 'version', '--help', '-h', 'help') for arg in args):
         return None
-    if any(arg in ('mcp-server', 'mcp_server') for arg in args):
-        return None
     for rule in AGENT_RULES:
         matched = not interpreter and (comm in rule['names'] or exe in rule['names'] or rule is rule_match)
         if interpreter:
             matched = rule is rule_match
         if matched:
             if rule['provider'] == 'claude':
-                if any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host') for arg in args):
+                options_and_args = []
+                i = 0
+                while i < len(args):
+                    options_and_args.append(args[i])
+                    if args[i] in claude_operands and i + 1 < len(args):
+                        options_and_args.append(None)
+                        i += 2
+                    else:
+                        i += 1
+                if any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host') for arg in options_and_args):
                     return None
-                if any(args[i] == 'mcp' and args[i + 1] == 'serve' for i in range(len(args) - 1)):
+                if any(options_and_args[i] == 'mcp' and options_and_args[i + 1] == 'serve'
+                       for i in range(len(options_and_args) - 1)):
                     return None
                 i = 0
                 while i < len(args) and args[i].startswith('-'):
-                    i += 2 if args[i] in ('-p', '--print', '--mcp-config') else 1
+                    i += 2 if args[i] in claude_operands else 1
                 if i < len(args) and args[i] in ('mcp', 'daemon'):
                     return None
+            elif any(arg in ('mcp-server', 'mcp_server') for arg in args):
+                return None
             elif any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
                 return None
             if rule['provider'] == 'codex':
@@ -3971,8 +3997,7 @@ def _agent_environment(path, provider, home):
         key, sep, value = entry.partition(b'=')
         if sep and key in wanted:
             values[key] = value
-    billing = ('api' if any(values.get(key) for key in _AGENT_KEYS[provider]) else
-               (None if provider in ('aider', 'opencode', 'crush') else 'subscription')) if provider in _AGENT_KEYS else None
+    billing = 'api' if any(values.get(key) for key in _AGENT_KEYS.get(provider, ())) else None
     result = None
     if directory:
         value = (values.get(directory[0]) or b'').decode('utf-8', 'replace')
@@ -4004,6 +4029,10 @@ def _agent_finish(processes, now):
 
 def _agent_linux(proc_root, home, now):
     processes = {}
+    try:
+        own_namespace = os.readlink(os.path.join(proc_root, 'self', 'ns', 'pid'))
+    except OSError:
+        own_namespace = None
     with open(os.path.join(proc_root, 'uptime'), encoding='ascii') as source:
         uptime = float(source.read().split()[0])
     ticks, page = os.sysconf('SC_CLK_TCK'), os.sysconf('SC_PAGE_SIZE')
@@ -4020,8 +4049,14 @@ def _agent_linux(proc_root, home, now):
                 pid, ppid = int(entry.name), int(fields[1])
                 row = {'pid': pid, 'ppid': ppid}
                 processes[pid] = row
+                if own_namespace is not None:
+                    try:
+                        if os.readlink(os.path.join(entry.path, 'ns', 'pid')) != own_namespace:
+                            continue
+                    except OSError:
+                        pass
                 # Some native launchers resolve to version-named binaries.
-                if comm not in candidates and not _agent_interpreter(comm) and not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*', comm):
+                if comm not in candidates and not _agent_interpreter(comm) and not generic_thread_name(comm) and not (comm.startswith('node-') and generic_thread_name(comm[5:])) and not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*', comm):
                     continue
                 try:
                     with open(os.path.join(entry.path, 'cmdline'), 'rb') as source:

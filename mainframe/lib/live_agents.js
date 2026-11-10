@@ -69,7 +69,7 @@ function summarize(entries, accounts, nowMs) {
         if (!original || typeof original !== 'object' || Array.isArray(original)) { host.invalid++; return; }
         var provider = typeof original.provider === 'string' && known.indexOf(original.provider) >= 0 ? original.provider : 'unknown';
         var session = {provider:provider, dir:stringField(original.dir, 200), project:stringField(original.project, 120),
-          billing:original.billing === 'api' || original.billing === 'subscription' ? original.billing : null,
+          billing:original.billing === 'api' ? 'api' : null,
           interactive:typeof original.interactive === 'boolean' ? original.interactive : null,
           pid:numberField(original.pid), parent_pid:numberField(original.parent_pid), age_s:numberField(original.age_s), rss:numberField(original.rss)};
         var account = accountFor(session, entry, host.host);

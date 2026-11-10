@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
 const {summarize, remember, relativeDir, normalizeAccounts, buildEntries} = createRequire(import.meta.url)('../lib/live_agents.js');
 const now = 1000000;
-const session = (provider, dir, billing='subscription', interactive=true) => ({provider, dir, billing, interactive});
+const session = (provider, dir, billing=null, interactive=true) => ({provider, dir, billing, interactive});
 const entry = (host, sessions, extra={}) => ({host, receivedMs:now, live:{at:now/1000, supported:true, sessions}, ...extra});
 test('local receipt time controls freshness', () => {
   const result = summarize([entry('past', [], {live:{at:1,supported:true,sessions:[]}}), entry('future', [], {live:{at:1e15,supported:true,sessions:[]}}), entry('stale',[],{receivedMs:now-61000}), entry('offline',[],{status:'unreachable'})], [], now);
@@ -33,15 +33,15 @@ test('account IDs and billing types stay distinct when names match', () => {
   assert.deepEqual(result.accounts.filter(x=>x.label === 'Shared (API key)').map(x=>x.count).sort(), [1,1]);
   assert.equal(result.accounts.find(x=>x.label === 'claude API key').count, 1);
 });
-test('mapped account groups separate API billing from subscription across hosts', () => {
+test('mapped account groups separate API billing from unknown across hosts', () => {
   const accounts = [{id:'work',name:'Work',provider:'claude',dir:'~/.claude'}];
   const result = summarize([
     entry('local',[session('claude','~/.claude'),session('claude','~/.claude','api')],{local:true}),
-    entry('remote',[session('claude','~/.claude','api')],{accountMap:{'~/.claude':'work'}})
+    entry('remote',[session('claude','~/.claude','api'),session('claude','~/.claude','subscription')],{accountMap:{'~/.claude':'work'}})
   ],accounts,now);
   assert.deepEqual(result.accounts, [
-    {label:'Work (API key)',provider:'claude',count:2,billing:'api'},
-    {label:'Work',provider:'claude',count:1,billing:'subscription'}
+    {label:'Work',provider:'claude',count:2,billing:null},
+    {label:'Work (API key)',provider:'claude',count:2,billing:'api'}
   ]);
 });
 test('account directories and mapping keys normalize dot segments and trailing slashes', () => {

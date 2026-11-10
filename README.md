@@ -211,6 +211,8 @@ Add accounts in settings. Claude and Codex use the Omarchy collectors with the a
 
 Running now counts supported coding-agent CLI processes on each reporting machine, including separate worker sessions. The sampler checks process names, command lines, terminals, the working folder name, and only these environment variable names: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `DASHSCOPE_API_KEY`, and `QWEN_API_KEY`. Command lines and terminal identifiers are never sent. The environment is read on the machine itself, only the listed names are looked at, and no credential value is stored, shown or sent. Set `MAINFRAME_AGENTS_SCAN=0` to disable the scan. For a remote machine, passing it through SSH works only if its sshd accepts it via `AcceptEnv` or `SetEnv`. Otherwise set it in the remote user's shell startup for non-interactive sessions, or leave the scan on. Processes owned by other users appear without account details. A fresh report is sent about every 10 seconds, only when a new probe result is available. macOS does not show account, billing or project details. A different program named exactly `grok` or `crush` is also counted. Cloud agents and plain API scripts are not counted.
 
+Agents inside containers with a different PID namespace are not counted separately when both namespace links are readable. Billing shows “API key” only when a key variable is set; other sessions are not labelled.
+
 An agent started directly by an agent of the same tool counts once.
 
 Optional limits and account mapping can be added to `hosts.json` and `settings.json`:

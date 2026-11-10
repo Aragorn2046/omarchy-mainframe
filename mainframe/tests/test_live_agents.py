@@ -97,7 +97,10 @@ class LiveProbe(unittest.TestCase):
             with self.subTest(arg=arg):
                 self.assertIsNone(collect._agent_match('claude', ['claude', arg]))
                 self.assertIsNone(collect._agent_match('node', ['node', '/lib/node_modules/@anthropic-ai/claude-code/cli.js', arg]))
-        for args in (['--mcp-config', './team-mcp'], ['-p', 'mcp'], ['hello', 'daemon'], ['browser-mcp'], ['--other-mcp']):
+        for args in (['--mcp-config', './team-mcp'], ['-p', 'mcp'], ['-p', 'Explain --type=module'],
+                     ['-p', 'mcp-server'], ['-p', 'hello', '--type=module'], ['--print', 'mcp', 'serve'], ['--model', 'mcp', 'serve'],
+                     ['--settings', 'daemon'], ['-p', '--chrome-native-host'], ['hello', 'daemon'],
+                     ['browser-mcp'], ['--other-mcp']):
             with self.subTest(args=args):
                 self.assertEqual(collect._agent_match('claude', ['claude'] + args), 'claude')
         self.assertIsNone(collect._agent_match('claude', ['claude', 'mcp', 'serve']))
@@ -106,6 +109,9 @@ class LiveProbe(unittest.TestCase):
                 self.assertIsNone(collect._agent_match('claude', ['claude', option, value, 'mcp', 'serve']))
         self.assertEqual(collect._agent_match('claude', ['claude', '--mcp-config', './a-mcp']), 'claude')
         self.assertIsNone(collect._agent_match('claude', ['claude', '-p', 'hello', '--chrome-native-host']))
+        self.assertEqual(collect._agent_match('node', ['node', '/x/node_modules/@anthropic-ai/claude-code/cli.js', '-p', '--type=module']), 'claude')
+        self.assertIsNone(collect._agent_match('node', ['node', '/x/node_modules/@anthropic-ai/claude-code/mcp-server.js']))
+        self.assertIsNone(collect._agent_match('node', ['node', '--type=renderer', '/x/node_modules/@anthropic-ai/claude-code/cli.js']))
     def test_codex_remote_exec_and_children_of_server(self):
         self.proc(40, 'codex', ['codex', 'app-server'])
         self.proc(41, 'codex', ['codex', '--remote', 'unix://socket'], 40)
@@ -131,7 +137,7 @@ class LiveProbe(unittest.TestCase):
             logging.getLogger().removeHandler(handler)
         rows = result['sessions']
         self.assertEqual((rows[0]['dir'], rows[0]['billing']), ('~/.claude', 'api'))
-        self.assertEqual((rows[1]['dir'], rows[1]['billing']), ('~/.codex-work', 'subscription'))
+        self.assertEqual((rows[1]['dir'], rows[1]['billing']), ('~/.codex-work', None))
         self.assertEqual((rows[2]['dir'], rows[2]['billing'], rows[2]['interactive'], rows[2]['project']), (None, None, None, None))
         state = {'storage': [], 'windows': None, 'storage_busy': True, 'windows_busy': True,
                  'agents_live_busy': True, 'agents_live_snapshot': (result, 1)}
@@ -154,9 +160,9 @@ class LiveProbe(unittest.TestCase):
                 path.write_bytes((key + '=secret\0').encode())
                 self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, 'api'))
                 path.write_bytes((key + '=\0').encode())
-                self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, 'subscription'))
+                self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, None))
         path.write_bytes(b'')
-        self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, 'subscription'))
+        self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, None))
         self.assertEqual(collect._agent_environment(self.root / 'missing', 'qwen', self.home), (None, None))
 
     def test_multi_provider_billing(self):
@@ -193,6 +199,26 @@ class LiveProbe(unittest.TestCase):
         self.proc(17, 'node', ['claude'])
         self.proc(18, 'bun', ['codex'])
         self.assertEqual([(row['pid'], row['provider']) for row in self.scan()['sessions']], [(17, 'claude'), (18, 'codex')])
+
+    def test_generic_thread_names_use_executable_interpreter(self):
+        script = '/x/node_modules/@google/gemini-cli/dist/index.js'
+        for pid, comm in enumerate(('MainThread', 'node-MainThread', 'threadpool-worker'), 30):
+            self.proc(pid, comm, ['renamed', script])
+            (self.root / str(pid) / 'exe').symlink_to('/usr/bin/node')
+        self.assertEqual([(row['pid'], row['provider']) for row in self.scan()['sessions']],
+                         [(30, 'gemini'), (31, 'gemini'), (32, 'gemini')])
+
+    def test_other_pid_namespaces_are_skipped_when_readable(self):
+        (self.root / 'self' / 'ns').mkdir(parents=True)
+        (self.root / 'self' / 'ns' / 'pid').symlink_to('pid:[1]')
+        for pid in range(30, 33):
+            self.proc(pid, 'claude', ['claude'])
+        for pid, namespace in ((30, 'pid:[1]'), (31, 'pid:[2]')):
+            (self.root / str(pid) / 'ns').mkdir()
+            (self.root / str(pid) / 'ns' / 'pid').symlink_to(namespace)
+        self.assertEqual([row['pid'] for row in self.scan()['sessions']], [30, 32])
+        (self.root / 'self' / 'ns' / 'pid').unlink()
+        self.assertEqual([row['pid'] for row in self.scan()['sessions']], [30, 31, 32])
     def test_background_probe_is_single_flight(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
