@@ -15,8 +15,9 @@ Item {
   readonly property var sectionData: Agents.sections(rows)
   readonly property var reportingHosts: (fleetLiveAgents.hosts || []).filter(function(host) { return host.status !== 'not reporting' })
   readonly property var missingHosts: (fleetLiveAgents.hosts || []).filter(function(host) { return host.status === 'not reporting' })
-  function providerText(providers) { return (providers || []).map(function(p) { return p.provider + '\u00a0' + p.count }).join(' · ') }
-  function accountText(accounts) { return (accounts || []).map(function(a) { return a.label + '\u00a0' + a.count }).join(' · ') }
+  function unbreakable(text) { return String(text).replace(/ /g, '\u00a0') }
+  function providerText(providers) { return (providers || []).map(function(p) { return root.unbreakable(p.provider + ' ' + p.count) }).join(' · ') }
+  function accountText(accounts) { return (accounts || []).map(function(a) { return root.unbreakable(a.label + ' ' + a.count) }).join(' · ') }
   readonly property var valueTotals: [{label:'TODAY', value:valueData.totals.today}, {label:'LAST 7 DAYS', value:valueData.totals.seven}, {label:'LAST 30 DAYS', value:valueData.totals.thirty}]
   readonly property var valueRows: [{name:'Claude', totals:valueData.providers.claude}, {name:'Codex', totals:valueData.providers.codex}].concat(valueData.hosts)
   property var valueData: ({totals:{today:0,seven:0,thirty:0},providers:{claude:{},codex:{}},hosts:[],unpriced:[],partial:true,excluded:0})
@@ -96,7 +97,7 @@ Item {
               Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: root.fleetLiveAgents.reporting > 0 ? String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : '') : '—'; color: root.ink; font.family: 'monospace'; font.pixelSize: 22; font.bold: true }
               Text { textFormat: Text.PlainText; objectName: 'agents-live-reporting'; text: (root.fleetLiveAgents.reporting || 0) + '/' + (root.fleetLiveAgents.hostsTotal || 0) + (root.fleetLiveAgents.truncated ? '+' : '') + ' reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
             }
-            Text { objectName: 'agents-live-providers'; Layout.fillWidth: true; visible: root.fleetLiveAgents.reporting > 1 && text !== ''; textFormat: Text.PlainText; text: root.providerText(root.fleetLiveAgents.providers); color: root.ink; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.WordWrap }
+            Text { objectName: 'agents-live-providers'; Layout.fillWidth: true; visible: root.fleetLiveAgents.reporting > 1 && text !== ''; textFormat: Text.PlainText; text: root.providerText(root.fleetLiveAgents.providers); color: root.ink; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
             Text { textFormat: Text.PlainText; objectName: 'agents-live-empty'; Layout.fillWidth: true; visible: root.fleetLiveAgents.total === 0; text: root.fleetLiveAgents.reporting > 0 ? 'No agents running' : 'No machine reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12; elide: Text.ElideRight }
             Repeater {
               objectName: 'agents-live-hosts'; model: root.reportingHosts.length
@@ -112,7 +113,7 @@ Item {
                   Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: String(liveHost.modelData.count) + (liveHost.modelData.truncated ? '+' : '') + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : root.ink; font.family: 'monospace'; font.pixelSize: 12; font.bold: true }
                   TapHandler { onTapped: liveHost.expanded = !liveHost.expanded }
                 }
-                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-providers'; Layout.fillWidth: true; Layout.leftMargin: 18; text: root.providerText(liveHost.modelData.providers); visible: text !== ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.WordWrap }
+                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-providers'; Layout.fillWidth: true; Layout.leftMargin: 18; text: root.providerText(liveHost.modelData.providers); visible: text !== ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
                 Text { textFormat: Text.PlainText; Layout.leftMargin: 18; visible: liveHost.modelData.headless > 0; text: liveHost.modelData.headless + ' headless'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; elide: Text.ElideRight }
                 Repeater {
                   model: liveHost.expanded ? (liveHost.modelData.sessions || []).length : 0
@@ -120,15 +121,15 @@ Item {
                     objectName: 'agents-live-session'
                     required property int index
                     readonly property var session: liveHost.modelData.sessions[index]
-                    Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.WrapAnywhere
+                    Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
                     text: session.provider + ' · ' + session.account + ' · ' + (session.project || '—') + ' · ' + root.liveAge(session.age_s) + ' · ' + (session.interactive === true ? 'interactive' : session.interactive === false ? 'headless' : 'unknown') + ' · ' + root.liveMemory(session.rss)
                     color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11
                   }
                 }
               }
             }
-            Text { objectName: 'agents-live-not-reporting'; Layout.fillWidth: true; visible: root.missingHosts.length > 0; textFormat: Text.PlainText; text: 'Not reporting: ' + root.missingHosts.map(function(host) { return host.host }).join(', '); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.WordWrap }
-            Text { objectName: 'agents-live-accounts'; Layout.fillWidth: true; visible: text !== ''; textFormat: Text.PlainText; text: root.accountText(root.fleetLiveAgents.accounts); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.WordWrap }
+            Text { objectName: 'agents-live-not-reporting'; Layout.fillWidth: true; visible: root.missingHosts.length > 0; textFormat: Text.PlainText; text: 'Not reporting: ' + root.missingHosts.map(function(host) { return root.unbreakable(host.host) }).join(' · '); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+            Text { objectName: 'agents-live-accounts'; Layout.fillWidth: true; visible: text !== ''; textFormat: Text.PlainText; text: root.accountText(root.fleetLiveAgents.accounts); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
           }
         }
         Repeater {
