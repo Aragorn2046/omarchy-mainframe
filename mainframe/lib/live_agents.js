@@ -1,7 +1,28 @@
 // Pure fleet aggregation for the live process snapshots.
-function relativeDir(path) {
+function relativeDir(path, homeDir) {
   if (typeof path !== 'string') return null;
-  return path.replace(/^\/(?:home|Users)\/[^/]+(?=\/|$)/, '~').replace(/\/$/, '');
+  var home = typeof homeDir === 'string' ? homeDir.replace(/\/+$/, '') : '';
+  return (home && (path === home || path.indexOf(home + '/') === 0) ? '~' + path.slice(home.length) : path).replace(/\/$/, '');
+}
+function buildEntries(hosts, sessions, config, settings, local, remote, localSilent) {
+  hosts = Array.isArray(hosts) ? hosts : [];
+  sessions = sessions || {}; config = Array.isArray(config) ? config : []; settings = settings || {}; remote = remote || {};
+  var entries = [{host:'this machine', local:true, live:local && local.live, receivedMs:local && local.receivedMs, cap:settings.localAgentCap, status:localSilent ? 'unreachable' : ''}];
+  hosts.forEach(function(host) {
+    var session = sessions[host.ssh], report = remote[host.ssh];
+    var configured = config.find(function(item) { return item && item.ssh === host.ssh; }) || {};
+    var current = report && session && report.generation === session.generation;
+    entries.push({host:host.name, alias:host.ssh, live:current ? report.live : null, receivedMs:current ? report.receivedMs : null,
+      cap:configured.agentCap, accountMap:configured.agentAccounts, status:session ? session.phase : 'unreachable'});
+  });
+  return entries;
+}
+function normalizeAccounts(accounts, homeDir) {
+  return (Array.isArray(accounts) ? accounts : []).map(function(account) {
+    var copy = Object.assign({}, account);
+    if (typeof copy.dir === 'string') copy.dir = relativeDir(copy.dir, homeDir);
+    return copy;
+  });
 }
 function remember(store, alias, live, nowMs, generation) {
   var next = Object.assign(Object.create(null), store || {});
@@ -17,13 +38,13 @@ function summarize(entries, accounts, nowMs) {
   function increment(map, key, make) { if (!map[key]) map[key] = make(); map[key].count++; }
   function stringField(value, limit) { return typeof value === 'string' && value.length <= limit ? value : null; }
   function numberField(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null; }
-  function accountFor(session, entry) {
-    if (session.billing === 'api') return session.provider + ' API key';
+  function accountFor(session, entry, hostName) {
+    if (session.billing === 'api') return {label:session.provider + ' API key', scope:null};
     var map = entry.accountMap, id = session.dir && map && Object.prototype.hasOwnProperty.call(map, session.dir) ? map[session.dir] : null;
     var account = id == null ? null : accounts.find(function(a) { return a && a.id === id; });
-    if (!account && entry.local === true && session.dir) account = accounts.find(function(a) { return a && a.provider === session.provider && relativeDir(a.dir) === session.dir; });
-    var label = account && typeof account.name === 'string' ? account.name : session.dir;
-    return label || 'unknown ' + session.provider;
+    if (!account && entry.local === true && session.dir) account = accounts.find(function(a) { return a && a.provider === session.provider && a.dir === session.dir; });
+    if (account && typeof account.name === 'string' && account.name) return {label:account.name, scope:null};
+    return {label:(session.dir || 'unknown ' + session.provider) + ' · ' + hostName, scope:entry.alias || hostName};
   }
   function sortProviders(a, b) { return b.count - a.count || String(a.provider).localeCompare(String(b.provider)); }
   entries.forEach(function(entry) {
@@ -44,11 +65,12 @@ function summarize(entries, accounts, nowMs) {
           billing:original.billing === 'api' || original.billing === 'subscription' ? original.billing : null,
           interactive:typeof original.interactive === 'boolean' ? original.interactive : null,
           pid:numberField(original.pid), parent_pid:numberField(original.parent_pid), age_s:numberField(original.age_s), rss:numberField(original.rss)};
-        session.account = accountFor(session, entry);
+        var account = accountFor(session, entry, host.host);
+        session.account = account.label;
         host.sessions.push(session);
         if (session.interactive === false) host.headless++;
         increment(hostProviders, provider, function() { return {provider:provider, count:0}; });
-        var key = JSON.stringify([provider, session.account, session.billing]);
+        var key = JSON.stringify([provider, session.account, session.billing, account.scope]);
         increment(hostGroups, key, function() { return {label:session.account, provider:provider, count:0, billing:session.billing}; });
       });
       host.truncated = live.truncated === true || live.sessions.length > 256;
@@ -68,4 +90,4 @@ function summarize(entries, accounts, nowMs) {
   result.accounts = Object.keys(groups).map(function(k) { return groups[k]; }).sort(function(a, b) { return b.count - a.count || String(a.label).localeCompare(String(b.label)) || String(a.provider).localeCompare(String(b.provider)); });
   return result;
 }
-if (typeof module !== 'undefined') module.exports = {summarize:summarize, remember:remember};
+if (typeof module !== 'undefined') module.exports = {summarize:summarize, remember:remember, relativeDir:relativeDir, normalizeAccounts:normalizeAccounts, buildEntries:buildEntries};

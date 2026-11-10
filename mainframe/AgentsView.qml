@@ -43,15 +43,15 @@ Item {
     for (var i = 0; i < sectionRepeater.count; i++) {
       var section = sectionRepeater.itemAt(i)
       if (!section) continue
-      headings.push({x:section.x + section.headingItem.x, y:section.y + section.headingItem.y, width:section.headingItem.width, height:section.headingItem.height})
+      headings.push({x:section.x + section.headingItem.x, y:sections.y + section.y + section.headingItem.y, width:section.headingItem.width, height:section.headingItem.height})
       for (var j = 0; j < section.cardRepeater.count; j++) {
         var card = section.cardRepeater.itemAt(j)
-        if (card) cards.push({item:card, x:section.x + card.x, y:section.y + card.y, width:card.width, height:card.height})
+        if (card) cards.push({item:card, x:section.x + card.x, y:sections.y + section.y + card.y, width:card.width, height:card.height})
       }
     }
     function overlaps(a, b) { return a.x < b.x + b.width - 0.01 && a.x + a.width > b.x + 0.01 && a.y < b.y + b.height - 0.01 && a.y + a.height > b.y + 0.01 }
     for (i = 0; i < cards.length; i++) {
-      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight
+      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight || c.y < liveCard.y + liveCard.height - 0.01
       for (j = 0; j < cards.length; j++) if (i !== j && overlaps(c, cards[j])) failed = true
       for (j = 0; j < headings.length; j++) if (overlaps(c, headings[j])) failed = true
       if (failed) failures++
@@ -79,7 +79,7 @@ Item {
         ColumnLayout {
           id: liveContent; width: parent.width; spacing: 7
           RowLayout {
-            Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 28; font.bold: true }
+            Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: root.fleetLiveAgents.reporting > 0 ? String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : '') : '—'; color: root.ink; font.family: 'monospace'; font.pixelSize: 28; font.bold: true }
             Text { textFormat: Text.PlainText; text: (root.fleetLiveAgents.reporting || 0) + ' of ' + (root.fleetLiveAgents.hostsTotal || 0) + ' machines reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; Layout.fillWidth: true }
           }
           Flow {
@@ -94,7 +94,7 @@ Item {
               }
             }
           }
-          Text { textFormat: Text.PlainText; visible: root.fleetLiveAgents.total === 0; text: 'No agents running'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
+          Text { textFormat: Text.PlainText; objectName: 'agents-live-empty'; visible: root.fleetLiveAgents.total === 0; text: root.fleetLiveAgents.reporting > 0 ? 'No agents running' : 'No machine reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
           Repeater {
             objectName: 'agents-live-hosts'; model: (root.fleetLiveAgents.hosts || []).length
             delegate: ColumnLayout {
@@ -105,7 +105,7 @@ Item {
               Layout.fillWidth: true; spacing: 4
               RowLayout {
                 objectName: 'agents-live-host-row'; Layout.fillWidth: true
-                Text { textFormat: Text.PlainText; text: (liveHost.expanded ? '▾ ' : '▸ ') + liveHost.modelData.host; color: root.ink; font.family: 'monospace'; font.pixelSize: 12; Layout.preferredWidth: 160; elide: Text.ElideRight }
+                Text { textFormat: Text.PlainText; text: (liveHost.expanded ? '▾ ' : '▸ ') + liveHost.modelData.host; color: root.ink; font.family: 'monospace'; font.pixelSize: 12; Layout.preferredWidth: 160; Layout.minimumWidth: 35; elide: Text.ElideRight }
                 Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: liveHost.modelData.status === 'not reporting' ? 'not reporting' : String(liveHost.modelData.count) + (liveHost.modelData.truncated ? '+' : '') + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : liveHost.modelData.status === 'not reporting' ? root.mutedInk : root.ink; font.family: 'monospace'; font.pixelSize: 12 }
                 Flow {
                   Layout.fillWidth: true; spacing: 4

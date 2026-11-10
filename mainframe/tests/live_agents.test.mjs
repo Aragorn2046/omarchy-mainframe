@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {createRequire} from 'node:module';
-const {summarize, remember} = createRequire(import.meta.url)('../lib/live_agents.js');
+const {summarize, remember, relativeDir, normalizeAccounts, buildEntries} = createRequire(import.meta.url)('../lib/live_agents.js');
 const now = 1000000;
 const session = (provider, dir, billing='subscription', interactive=true) => ({provider, dir, billing, interactive});
 const entry = (host, sessions, extra={}) => ({host, receivedMs:now, live:{at:now/1000, supported:true, sessions}, ...extra});
@@ -13,9 +13,33 @@ test('account attribution is local unless a remote override is set', () => {
   const accounts = [{id:'work',name:'Work',provider:'claude',dir:'~/.claude'}];
   const result = summarize([entry('local',[session('claude','~/.claude')],{local:true}), entry('remote',[session('claude','~/.claude')]), entry('mapped',[session('claude','~/.claude')],{accountMap:{'~/.claude':'work'}}), entry('unknown',[session('claude',null),session('codex',null)])],accounts,now);
   assert.equal(result.hosts[0].sessions[0].account,'Work');
-  assert.equal(result.hosts[1].sessions[0].account,'~/.claude');
+  assert.equal(result.hosts[1].sessions[0].account,'~/.claude · remote');
   assert.equal(result.hosts[2].sessions[0].account,'Work');
-  assert.deepEqual(result.hosts[3].sessions.map(x=>x.account),['unknown claude','unknown codex']);
+  assert.deepEqual(result.hosts[3].sessions.map(x=>x.account),['unknown claude · unknown','unknown codex · unknown']);
+  assert.equal(result.accounts.find(x=>x.label === 'Work').count, 2);
+});
+test('failed probes do not report zero and unmapped directories stay per host', () => {
+  const result = summarize([entry('one',[session('claude','~/.claude')]), entry('two',[session('claude','~/.claude')]), entry('failed',[],{live:{supported:false,sessions:[]}})], [], now);
+  assert.equal(result.reporting,2); assert.equal(result.total,2);
+  assert.equal(result.hosts[2].status,'not reporting');
+  assert.deepEqual(result.accounts.map(x=>x.label),['~/.claude · one','~/.claude · two']);
+  const sameName = summarize([entry('Laptop',[session('claude','~/.claude')],{alias:'one'}), entry('Laptop',[session('claude','~/.claude')],{alias:'two'})], [], now);
+  assert.equal(sameName.accounts.length,2);
+});
+test('wiring uses current generation, configured hosts, local status and actual home', () => {
+  assert.equal(relativeDir('/srv/person/.claude','/srv/person'), '~/.claude');
+  assert.equal(relativeDir('/home/other/.claude','/srv/person'), '/home/other/.claude');
+  assert.equal(relativeDir('/srv/person2/.claude','/srv/person'), '/srv/person2/.claude');
+  const accounts = normalizeAccounts([{dir:'/srv/person/.claude'}], '/srv/person');
+  assert.equal(accounts[0].dir, '~/.claude');
+  const hosts = [{name:'Laptop',ssh:'a'}, {name:'Offline',ssh:'b'}];
+  const report = {generation:2, receivedMs:now, live:{supported:true,sessions:[]}};
+  let entries = buildEntries(hosts, {a:{generation:3,phase:'ready'}}, [{ssh:'a',agentCap:4,agentAccounts:{'~/.claude':'work'}}], null, report, {a:report}, true);
+  assert.equal(entries[0].status,'unreachable'); assert.equal(entries[0].cap,undefined);
+  assert.equal(entries[1].live,null); assert.equal(entries[1].cap,4); assert.equal(entries[1].accountMap['~/.claude'],'work');
+  assert.equal(entries[2].status,'unreachable');
+  entries = buildEntries(hosts, {a:{generation:2,phase:'ready'}}, [], {localAgentCap:2}, report, {a:report}, false);
+  assert.equal(entries[1].live,report.live); assert.equal(entries[0].status,''); assert.equal(entries[0].cap,2);
 });
 test('untrusted sessions cannot corrupt aggregation', () => {
   const rows = [session('__proto__',{},123,{}), session('constructor',42,{},2), {provider:'claude',project:{},rss:-1,age_s:Infinity,pid:'2'}];

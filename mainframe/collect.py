@@ -3842,7 +3842,12 @@ AGENT_RULES = [
     {'provider': 'aider', 'names': ('aider',), 'scripts': ('aider',)},
     {'provider': 'crush', 'names': ('crush',), 'scripts': ('crush',)},
 ]
-_AGENT_INTERPRETERS = {'node', 'bun', 'deno', 'python', 'python3'}
+_AGENT_INTERPRETERS = {'node', 'nodejs', 'bun', 'deno', 'python'}
+_AGENT_SHELLS = {'sh', 'bash', 'dash', 'zsh'}
+
+
+def _agent_interpreter(name):
+    return name in _AGENT_INTERPRETERS or bool(re.fullmatch(r'python3(?:\.\d+)?', name))
 _AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
                'codex': (b'OPENAI_API_KEY', b'CODEX_API_KEY'),
                'gemini': (b'GEMINI_API_KEY', b'GOOGLE_API_KEY'), 'grok': (b'XAI_API_KEY',)}
@@ -3857,31 +3862,51 @@ def _agent_match(comm, argv, executable=''):
         return None
     if comm == 'codex-linux-sandbox' or exe == 'codex-linux-sandbox':
         return None
-    interpreter = comm in _AGENT_INTERPRETERS or exe in _AGENT_INTERPRETERS
-    # Interpreter options may precede the script; do not inspect arbitrary arguments.
-    module_index = next((i for i, arg in enumerate(argv[1:], 1) if arg == '-m'), -1) if interpreter and (comm.startswith('python') or exe.startswith('python')) else -1
-    module = module_index > 0 and module_index + 1 < len(argv) and argv[module_index + 1] == 'aider' and all(arg.startswith('-') and arg != '-c' for arg in argv[1:module_index])
-    script = ('aider' if module else next((arg for arg in argv[1:] if not arg.startswith('-')), '')) if interpreter else ''
-    if interpreter and (not script or (not module and any(arg in ('-c', '-m') for arg in argv[1:argv.index(script)]))):
-        return None
-    args = argv[module_index + 2:] if module else argv[argv.index(script) + 1:] if interpreter else argv[1:]
+    interpreter = _agent_interpreter(comm) or _agent_interpreter(exe)
+    shell = exe in _AGENT_SHELLS
+    python = comm.startswith('python') or exe.startswith('python')
+    node = comm in ('node', 'nodejs') or exe in ('node', 'nodejs')
+    operands = {'-W', '-X'} if python else ({'-r', '--require', '--import', '--loader', '--experimental-loader'} if node else set())
+    rule_match, script_index = None, 0
+    if interpreter:
+        i = 1
+        while i < len(argv):
+            arg = argv[i]
+            if arg in ('-c', '-e', '--eval', '-p', '--print'):
+                return None
+            if arg in operands:
+                i += 2
+                continue
+            if python and arg == '-m':
+                if i + 1 < len(argv) and argv[i + 1] == 'aider':
+                    rule_match, script_index = next(r for r in AGENT_RULES if r['provider'] == 'aider'), i + 1
+                break
+            if arg.startswith('-'):
+                i += 1
+                continue
+            path = arg.replace('\\', '/')
+            rule_match = next((r for r in AGENT_RULES if os.path.basename(path) in r.get('scripts', r['names']) or
+                               (r.get('package') and '/' + r['package'] in '/' + path)), None)
+            script_index = i
+            break
+        if not rule_match:
+            return None
+    if shell and not interpreter and len(argv) > 1:
+        rule_match = next((r for r in AGENT_RULES if os.path.basename(argv[1]) in r['names']), None)
+        if rule_match:
+            script_index = 1
+    args = argv[script_index + 1:] if script_index else argv[1:]
     if args and all(arg in ('--version', '-v', '-V', 'version', '--help', '-h', 'help') for arg in args):
         return None
     if any(arg in ('mcp-server', 'mcp_server') for arg in args) or any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
         return None
     for rule in AGENT_RULES:
-        matched = not interpreter and (comm in rule['names'] or exe in rule['names'])
+        matched = not interpreter and (comm in rule['names'] or exe in rule['names'] or rule is rule_match)
         if interpreter:
-            path = script.replace('\\', '/')
-            package = rule.get('package')
-            matched = os.path.basename(path) in rule['names'] or bool(package and ('/' + package) in ('/' + path))
-            if module:
-                matched = rule['provider'] == 'aider'
+            matched = rule is rule_match
         if matched:
             if rule['provider'] == 'codex':
-                command_args = args
-                first_arg = next((arg for arg in command_args if not arg.startswith('-')), '')
-                if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or first_arg in ('app-server', 'app-server-daemon'):
+                if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or any(arg in ('app-server', 'app-server-daemon') for arg in argv):
                     return None
             return rule['provider']
     return None
@@ -3905,11 +3930,12 @@ def _agent_environment(path, provider, home):
     billing = ('api' if any(values.get(key) for key in _AGENT_KEYS[provider]) else 'subscription') if provider in _AGENT_KEYS else None
     result = None
     if directory:
-        value = os.fsdecode(values.get(directory[0]) or b'')
+        value = (values.get(directory[0]) or b'').decode('utf-8', 'replace')
         path = os.path.normpath(os.path.expanduser(value)) if value else os.path.join(home, directory[1])
         if os.path.isabs(path):
             home = os.path.normpath(home)
             result = '~' + path[len(home):] if path == home or path.startswith(home.rstrip('/') + '/') else path
+            result = result.encode('utf-8', 'surrogateescape').decode('utf-8', 'replace')
             if len(result) > 200:
                 result = None
     return result, billing
@@ -3919,7 +3945,12 @@ def _agent_finish(processes, now):
     matched = {pid: row for pid, row in processes.items() if row.get('provider')}
     counted = {pid: row for pid, row in matched.items()
                if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']
-               or not matched[row['ppid']].get('interpreter')}
+               or not matched[row['ppid']].get('launcher') or row.get('interpreter')}
+    # A shell shim followed by an interpreter represents the interpreter session.
+    for pid, row in list(counted.items()):
+        parent = matched.get(row['ppid'])
+        if row.get('interpreter') and parent and parent.get('shell') and parent['provider'] == row['provider']:
+            counted.pop(row['ppid'], None)
     sessions = []
     for pid, row in sorted(counted.items()):
         parent, seen = row['ppid'], {pid}
@@ -3937,7 +3968,7 @@ def _agent_linux(proc_root, home, now):
     with open(os.path.join(proc_root, 'uptime'), encoding='ascii') as source:
         uptime = float(source.read().split()[0])
     ticks, page = os.sysconf('SC_CLK_TCK'), os.sysconf('SC_PAGE_SIZE')
-    candidates = {name for rule in AGENT_RULES for name in rule['names']} | _AGENT_INTERPRETERS
+    candidates = {name for rule in AGENT_RULES for name in rule['names']} | _AGENT_INTERPRETERS | _AGENT_SHELLS
     with os.scandir(proc_root) as entries:
         for entry in entries:
             if not entry.name.isdigit():
@@ -3951,13 +3982,13 @@ def _agent_linux(proc_root, home, now):
                 row = {'pid': pid, 'ppid': ppid}
                 processes[pid] = row
                 # Some native launchers resolve to version-named binaries.
-                if comm not in candidates and not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*', comm):
+                if comm not in candidates and not _agent_interpreter(comm) and not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*', comm):
                     continue
                 try:
                     with open(os.path.join(entry.path, 'cmdline'), 'rb') as source:
                         argv = [os.fsdecode(x) for x in source.read().split(b'\0') if x]
                 except OSError:
-                    argv = [comm] if comm not in _AGENT_INTERPRETERS else []
+                    argv = [comm] if not _agent_interpreter(comm) else []
                 try:
                     executable = os.readlink(os.path.join(entry.path, 'exe'))
                 except OSError:
@@ -3966,7 +3997,10 @@ def _agent_linux(proc_root, home, now):
                 if not provider:
                     continue
                 row.update(provider=provider, age_s=max(0, int(uptime - int(fields[19]) / ticks)), rss=max(0, int(fields[21]) * page))
-                row['interpreter'] = comm in _AGENT_INTERPRETERS or os.path.basename(argv[0]) in _AGENT_INTERPRETERS
+                argv0 = os.path.basename(argv[0])
+                row['interpreter'] = _agent_interpreter(comm) or _agent_interpreter(argv0)
+                row['shell'] = argv0 in _AGENT_SHELLS
+                row['launcher'] = row['interpreter'] or row['shell']
                 try:
                     tty = os.readlink(os.path.join(entry.path, 'fd', '0'))
                     row['interactive'] = tty.startswith('/dev/pts/') or tty.startswith('/dev/tty')
@@ -3974,7 +4008,7 @@ def _agent_linux(proc_root, home, now):
                     row['interactive'] = None
                 try:
                     cwd = os.readlink(os.path.join(entry.path, 'cwd'))
-                    row['project'] = os.path.basename(cwd.rstrip('/')) or None
+                    row['project'] = os.path.basename(cwd.rstrip('/')).encode('utf-8', 'surrogateescape').decode('utf-8', 'replace') or None
                 except OSError:
                     row['project'] = None
                 try:
@@ -4018,12 +4052,14 @@ def _agent_darwin(text, args_text, now):
             processes[pid] = row
             argv = arguments.get(pid) or [comm]
             provider = _agent_match(os.path.basename(comm), argv, comm)
-            if not provider and ' ' in comm and argv[0] != comm and os.path.basename(comm) not in _AGENT_INTERPRETERS:
+            if not provider and ' ' in comm and argv[0] != comm and not _agent_interpreter(os.path.basename(comm)):
                 provider = _agent_match(os.path.basename(comm), [comm], comm)
             if provider:
+                interpreter = _agent_interpreter(os.path.basename(comm)) or _agent_interpreter(os.path.basename(argv[0]))
+                shell = os.path.basename(argv[0]) in _AGENT_SHELLS
                 row.update(provider=provider, interactive=tty != '??', dir=None, billing=None, project=None,
                            age_s=_agent_elapsed(elapsed), rss=max(0, int(rss) * 1024),
-                           interpreter=os.path.basename(comm) in _AGENT_INTERPRETERS or os.path.basename(argv[0]) in _AGENT_INTERPRETERS)
+                           interpreter=interpreter, shell=shell, launcher=interpreter or shell)
         except (ValueError, IndexError):
             continue
     return _agent_finish(processes, now)
@@ -4039,12 +4075,11 @@ def agents_probe(proc_root='/proc', home=None, platform=None):
         if platform.startswith('linux'):
             return _agent_linux(proc_root, home or os.path.expanduser('~'), now)
         if platform == 'darwin':
-            output = _run_text(['ps', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='], 4)
-            args = _run_text(['ps', '-axo', 'pid=,args='], 4)
-            return _agent_darwin(output, args, now) if output.strip() and args.strip() else _agent_finish({}, now)
-    except (OSError, ValueError, OverflowError):
-        if platform == 'darwin':
-            return _agent_finish({}, now)
+            output = _run_tracked(['ps', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            args = _run_tracked(['ps', '-axo', 'pid=,args='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            return _agent_darwin(output, args, now) if output and args and output.strip() and args.strip() else failure
+    except Exception:
+        return failure
     return failure
 
 

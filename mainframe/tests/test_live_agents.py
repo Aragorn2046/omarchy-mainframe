@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import subprocess
 from pathlib import Path
 import tempfile
 import threading
@@ -102,7 +103,7 @@ class LiveProbe(unittest.TestCase):
     def test_darwin(self):
         text = '10 1 ttys001 1-01:02:03 123 /usr/bin/claude\n11 10 ?? 02:10 42 /usr/bin/grok\ngarbage\n12 1 ?? 01:00 1 /Applications/A Path/claude\n'
         args = "10 claude ask user's question\n11 grok 'unbalanced\n12 /Applications/A Path/claude prompt\n"
-        with mock.patch.object(collect, '_run_text', side_effect=[text, args]):
+        with mock.patch.object(collect, '_run_tracked', side_effect=[text, args]):
             rows = collect.agents_probe(home=self.home, platform='darwin')['sessions']
         self.assertEqual(rows[0]['age_s'], 90123); self.assertEqual(rows[0]['rss'], 123 * 1024)
         self.assertFalse(rows[1]['interactive']); self.assertEqual(rows[1]['parent_pid'], 10)
@@ -114,7 +115,13 @@ class LiveProbe(unittest.TestCase):
             calls.append(1); entered.set(); release.wait(2)
             return {'at': 1, 'sessions': [], 'truncated': False, 'supported': True}
         state = {'storage': [], 'storage_busy': True, 'windows': None}
-        with mock.patch.object(collect, '_probe', state), mock.patch.object(collect, 'agents_probe', probe), mock.patch.object(collect, 'storage_probe'), mock.patch.object(collect, 'windows_probe'), mock.patch.dict(os.environ, {'MAINFRAME_AGENTS_SCAN':'1', 'MAINFRAME_USAGE_SCAN':'0'}):
+        threads = []
+        real_thread = threading.Thread
+        def capture_thread(*args, **kwargs):
+            thread = real_thread(*args, **kwargs)
+            threads.append(thread)
+            return thread
+        with mock.patch.object(collect, '_probe', state), mock.patch.object(collect, 'agents_probe', probe), mock.patch.object(collect, 'storage_probe'), mock.patch.object(collect, 'windows_probe'), mock.patch.object(collect.threading, 'Thread', side_effect=capture_thread), mock.patch.dict(os.environ, {'MAINFRAME_AGENTS_SCAN':'1', 'MAINFRAME_USAGE_SCAN':'0'}):
             try:
                 collect.slow_probes({})
                 self.assertTrue(entered.wait(1))
@@ -122,9 +129,9 @@ class LiveProbe(unittest.TestCase):
                 self.assertEqual(len(calls), 1)
             finally:
                 release.set()
-                for thread in threading.enumerate():
-                    if thread is not threading.current_thread() and thread.daemon:
-                        thread.join(0.1)
+                self.assertEqual(len(threads), 1)
+                threads[0].join(3)
+                self.assertFalse(threads[0].is_alive())
         self.assertTrue(state['agents_live']['supported'])
     def test_interpreter_paths_and_native_parent(self):
         for path in ('/x/codex/node_modules/.bin/vitest', '/x/aider/bench/run.py', '/x/claude/mcp/server.js'):
@@ -160,11 +167,52 @@ class LiveProbe(unittest.TestCase):
         self.assertEqual((row['dir'], row['billing']), (None, None))
 
     def test_darwin_empty_and_failure(self):
-        for side_effect in (['', ''], ['1 0 ?? 01:00 1 claude', ''], OSError('ps failed')):
-            with mock.patch.object(collect, '_run_text', side_effect=side_effect):
+        for side_effect in (['', ''], ['1 0 ?? 01:00 1 claude', ''], OSError('ps failed'), subprocess.TimeoutExpired('ps', 4), subprocess.CalledProcessError(1, 'ps'), RuntimeError('unexpected')):
+            with mock.patch.object(collect, '_run_tracked', side_effect=side_effect):
                 result = collect.agents_probe(home=self.home, platform='darwin')
-            self.assertTrue(result['supported'])
+            self.assertFalse(result['supported'])
             self.assertEqual(result['sessions'], [])
+
+    def test_options_interpreters_and_launchers(self):
+        gemini = '/x/node_modules/@google/gemini-cli/dist/index.js'
+        self.assertEqual(collect._agent_match('node', ['node', '--require', '/tmp/pre.cjs', gemini]), 'gemini')
+        self.assertIsNone(collect._agent_match('node', ['node', '--require', gemini, 'other.js']))
+        self.assertIsNone(collect._agent_match('python3.12', ['python3.12', '-W', 'aider', '-X', 'aider', '-c', 'aider']))
+        self.assertIsNone(collect._agent_match('codex', ['codex', '-c', 'model=x', 'app-server']))
+        self.proc(70, 'nodejs', ['nodejs', gemini])
+        self.proc(71, 'node', ['node', gemini], 70)
+        self.proc(72, 'python3.12', ['python3.12', '-X', 'dev', '-m', 'aider'])
+        self.proc(73, 'claude', ['/bin/sh', '/bin/claude'])
+        self.proc(74, 'claude', ['claude'], 73)
+        self.proc(75, 'sh', ['/bin/sh', '/bin/claude'])
+        self.proc(76, 'node', ['node', '/x/node_modules/@anthropic-ai/claude-code/cli.js'], 75)
+        self.assertEqual([row['pid'] for row in self.scan()['sessions']], [70, 71, 72, 73, 76])
+
+    def test_interpreter_selects_only_the_script(self):
+        for pid, agent in enumerate(('claude', 'codex'), 90):
+            self.proc(pid, 'python3', ['python3', '/some/path/mux-helper.py', 'mcp', '--pool', 'mcp',
+                                       '--host', 'remote', '--', '/remote/path/relay-server.py', agent])
+        self.proc(92, 'node', ['node', 'script.js', '--agent', 'claude'])
+        self.proc(93, 'python3', ['python3', '-m', 'aider'])
+        self.assertEqual([(row['pid'], row['provider']) for row in self.scan()['sessions']], [(93, 'aider')])
+        gemini = '/x/node_modules/@google/gemini-cli/dist/index.js'
+        for option in ('-r', '--require', '--import', '--loader', '--experimental-loader'):
+            with self.subTest(option=option):
+                self.assertEqual(collect._agent_match('node', ['node', option, '/tmp/pre.cjs', gemini]), 'gemini')
+                self.assertIsNone(collect._agent_match('node', ['node', option, gemini, 'script.js']))
+        for option in ('-c', '-e', '--eval', '-p', '--print'):
+            with self.subTest(option=option):
+                self.assertIsNone(collect._agent_match('node', ['node', option, gemini]))
+        self.assertIsNone(collect._agent_match('python3', ['python3', '-m', 'other', 'aider']))
+        self.assertIsNone(collect._agent_match('python3', ['python3', '-m']))
+
+    def test_undecodable_paths_are_utf8(self):
+        self.proc(80, 'claude', ['claude'], env=b'CLAUDE_CONFIG_DIR=/home/example/.claude-\xff\0', cwd=None)
+        os.symlink(b'/work/project-\xff', os.fsencode(self.root / '80' / 'cwd'))
+        row = self.scan()['sessions'][0]
+        self.assertEqual(row['dir'], '~/.claude-\ufffd')
+        self.assertEqual(row['project'], 'project-\ufffd')
+        json.dumps(row, ensure_ascii=False).encode('utf-8')
 
     def test_live_emitter_only_emits_new_generation(self):
         emitter = collect._UsageEmitter()
@@ -180,6 +228,14 @@ class LiveProbe(unittest.TestCase):
                 self.assertFalse(collect.agents_probe(str(self.root), self.home)['supported'])
                 self.assertNotIn('agents_live', collect._UsageEmitter().filter(collect.slow_probes({})))
         self.assertFalse(collect.agents_probe(str(self.root / 'missing'), self.home, platform='linux')['supported'])
+        with mock.patch.object(collect.os, 'scandir', side_effect=PermissionError('unreadable')):
+            result = self.scan()
+        self.assertFalse(result['supported'])
+        self.assertEqual(result['sessions'], [])
+        with mock.patch.object(collect, '_agent_linux', side_effect=RuntimeError('unexpected')):
+            result = self.scan()
+        self.assertFalse(result['supported'])
+        self.assertEqual(result['sessions'], [])
 
 class Config(unittest.TestCase):
     def test_caps(self):
