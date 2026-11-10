@@ -62,7 +62,11 @@ TestCase {
     verify(missing.visible)
     verify(!findChild(view, 'agents-live-providers').visible)
     compare(findChild(view, 'agents-live-reporting').text, '1/4 reporting')
-    verify(live.x < card.mapToItem(view.flick.contentItem, 0, 0).x)
+    var livePosition = live.mapToItem(view.flick.contentItem, 0, 0)
+    var cardPosition = card.mapToItem(view.flick.contentItem, 0, 0)
+    verify(Math.abs(livePosition.y - cardPosition.y) <= 1 ||
+           (cardPosition.y >= livePosition.y && cardPosition.y <= livePosition.y + live.height))
+    verify(livePosition.x + live.width <= cardPosition.x + 1)
     testCase.width = 350
     tryVerify(function() { return live.width === view.flick.width && card.width === live.width && view.checkLayout() === 0 })
     verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.mapToItem(view.flick.contentItem, 0, 0).y + live.height)
@@ -98,6 +102,7 @@ TestCase {
     verify(detail.text.indexOf('codex · ') === 0 && detail.text.indexOf('headless · 1 MB') >= 0)
     compare(detail.wrapMode, Text.Wrap)
     var accounts = findChild(view, 'agents-live-accounts')
+    // A single unbreakable over-long account label must wrap rather than clip.
     verify(accounts.lineCount > 1)
     function verifyTextGeometry(item) {
       if (item.visible && typeof item.paintedWidth === 'number') {
