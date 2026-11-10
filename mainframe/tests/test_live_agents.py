@@ -75,6 +75,12 @@ class LiveProbe(unittest.TestCase):
         self.assertIsNone(collect._agent_match('codex', ['codex', '--quiet', 'app-server-daemon']))
         self.assertIsNone(collect._agent_match('codex', ['codex', '--quiet', 'app-server']))
         self.assertIsNone(collect._agent_match('node', ['node', '/lib/@openai/codex/cli.js', 'app-server']))
+    def test_claude_helper_modes_are_not_sessions(self):
+        for arg in ('--claude-in-chrome-mcp', '--chrome-native-host', 'browser-mcp', '--other-mcp', 'mcp', 'daemon'):
+            with self.subTest(arg=arg):
+                self.assertIsNone(collect._agent_match('claude', ['claude', arg]))
+                self.assertIsNone(collect._agent_match('node', ['node', '/lib/node_modules/@anthropic-ai/claude-code/cli.js', arg]))
+        self.assertEqual(collect._agent_match('claude', ['claude', 'hello']), 'claude')
     def test_codex_remote_exec_and_children_of_server(self):
         self.proc(40, 'codex', ['codex', 'app-server'])
         self.proc(41, 'codex', ['codex', '--remote', 'unix://socket'], 40)
@@ -101,13 +107,16 @@ class LiveProbe(unittest.TestCase):
         result = self.scan()
         self.assertEqual(len(result['sessions']), 256); self.assertTrue(result['truncated'])
     def test_darwin(self):
-        text = '10 1 ttys001 1-01:02:03 123 /usr/bin/claude\n11 10 ?? 02:10 42 /usr/bin/grok\ngarbage\n12 1 ?? 01:00 1 /Applications/A Path/claude\n'
-        args = "10 claude ask user's question\n11 grok 'unbalanced\n12 /Applications/A Path/claude prompt\n"
+        text = '10 1 ttys001 1-01:02:03 123 /usr/bin/claude\n11 10 ?? 02:10 42 /usr/bin/grok\ngarbage\n12 1 ?? 01:00 1 /Applications/A Path/claude\n13 1 ?? 00:20 2 /usr/bin/node\n14 1 ?? 00:10 3 /usr/bin/node\n'
+        args = "10 claude ask user's question\n11 grok 'unbalanced\n12 /Applications/A Path/claude prompt\n13 node /Users/u/Agent Tools/node_modules/@google/gemini-cli/dist/index.js\n14 node /Users/u/Agent Tools/cursor-agent/versions/v1/index.js\ngarbage\n"
         with mock.patch.object(collect, '_run_tracked', side_effect=[text, args]):
             rows = collect.agents_probe(home=self.home, platform='darwin')['sessions']
-        self.assertEqual(rows[0]['age_s'], 90123); self.assertEqual(rows[0]['rss'], 123 * 1024)
-        self.assertFalse(rows[1]['interactive']); self.assertEqual(rows[1]['parent_pid'], 10)
-        self.assertIsNone(rows[0]['dir'])
+        def expected(pid, provider, interactive, age, rss, parent=None):
+            return {'pid':pid, 'provider':provider, 'interactive':interactive, 'dir':None, 'billing':None,
+                    'project':None, 'age_s':age, 'rss':rss * 1024, 'parent_pid':parent}
+        self.assertEqual(rows, [expected(10, 'claude', True, 90123, 123), expected(11, 'grok', False, 130, 42, 10),
+                                expected(12, 'claude', False, 60, 1), expected(13, 'gemini', False, 20, 2),
+                                expected(14, 'cursor-agent', False, 10, 3)])
     def test_background_probe_is_single_flight(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
@@ -139,6 +148,7 @@ class LiveProbe(unittest.TestCase):
         self.assertIsNone(collect._agent_match('python3', ['python3', '/x/aider/bench/run.py']))
         for package, provider in (('@anthropic-ai/claude-code', 'claude'), ('@openai/codex', 'codex'), ('@google/gemini-cli', 'gemini'), ('@qwen-code/qwen-code', 'qwen')):
             self.assertEqual(collect._agent_match('node', ['node', '/x/node_modules/' + package + '/cli.js']), provider)
+        self.assertEqual(collect._agent_match('node', ['node', '/x/cursor-agent/versions/v1/index.js']), 'cursor-agent')
         self.assertIsNone(collect._agent_match('amp', ['amp']))
         self.assertEqual(collect._agent_match('python3', ['python3', '-m', 'aider']), 'aider')
         self.assertEqual(collect._agent_match('python3', ['python3', '-u', '-m', 'aider']), 'aider')
@@ -147,8 +157,7 @@ class LiveProbe(unittest.TestCase):
         self.proc(52, 'codex', ['codex'])
         self.proc(53, 'codex', ['codex'], 52)
         rows = self.scan()['sessions']
-        self.assertEqual([row['pid'] for row in rows], [50, 52, 53])
-        self.assertEqual(rows[-1]['parent_pid'], 52)
+        self.assertEqual([row['pid'] for row in rows], [50, 52])
 
     def test_denied_details_and_other_uid(self):
         self.proc(60, 'claude', ['claude'])
@@ -186,7 +195,12 @@ class LiveProbe(unittest.TestCase):
         self.proc(74, 'claude', ['claude'], 73)
         self.proc(75, 'sh', ['/bin/sh', '/bin/claude'])
         self.proc(76, 'node', ['node', '/x/node_modules/@anthropic-ai/claude-code/cli.js'], 75)
-        self.assertEqual([row['pid'] for row in self.scan()['sessions']], [70, 71, 72, 73, 76])
+        self.proc(77, 'claude', ['claude'])
+        self.proc(78, 'bash', ['bash'], 77)
+        self.proc(79, 'claude', ['claude'], 78)
+        rows = self.scan()['sessions']
+        self.assertEqual([row['pid'] for row in rows], [70, 72, 73, 75, 77, 79])
+        self.assertEqual(rows[-1]['parent_pid'], 77)
 
     def test_interpreter_selects_only_the_script(self):
         for pid, agent in enumerate(('claude', 'codex'), 90):

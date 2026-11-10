@@ -18,6 +18,20 @@ test('account attribution is local unless a remote override is set', () => {
   assert.deepEqual(result.hosts[3].sessions.map(x=>x.account),['unknown claude · unknown','unknown codex · unknown']);
   assert.equal(result.accounts.find(x=>x.label === 'Work').count, 2);
 });
+test('account IDs take precedence over API keys and remain distinct when names match', () => {
+  const accounts = [{id:'one',name:'Shared',provider:'claude',dir:'~/.claude'},
+    {id:'two',name:'Shared',provider:'claude',dir:'~/.other'},
+    {id:'wrong',name:'Wrong',provider:'codex',dir:'~/.codex'}];
+  const result = summarize([
+    entry('local',[session('claude','~/.claude','api'), session('claude','~/.other')],{local:true}),
+    entry('override',[session('claude','~/.claude','api')],{local:true,accountMap:{'~/.claude':'two'}}),
+    entry('mismatch',[session('claude','~/.claude','api')],{accountMap:{'~/.claude':'wrong'}}),
+    entry('fallback',[session('claude','~/.claude')],{local:true,accountMap:{'~/.claude':'wrong'}})
+  ], accounts, now);
+  assert.deepEqual(result.hosts.map(x=>x.sessions.map(s=>s.account)), [['Shared','Shared'],['Shared'],['claude API key'],['Shared']]);
+  assert.deepEqual(result.accounts.filter(x=>x.label === 'Shared').map(x=>x.count).sort(), [2,2]);
+  assert.equal(result.accounts.find(x=>x.label === 'claude API key').count, 1);
+});
 test('failed probes do not report zero and unmapped directories stay per host', () => {
   const result = summarize([entry('one',[session('claude','~/.claude')]), entry('two',[session('claude','~/.claude')]), entry('failed',[],{live:{supported:false,sessions:[]}})], [], now);
   assert.equal(result.reporting,2); assert.equal(result.total,2);
@@ -43,9 +57,10 @@ test('wiring uses current generation, configured hosts, local status and actual 
 });
 test('untrusted sessions cannot corrupt aggregation', () => {
   const rows = [session('__proto__',{},123,{}), session('constructor',42,{},2), {provider:'claude',project:{},rss:-1,age_s:Infinity,pid:'2'}];
-  const result = summarize([entry('host',rows), entry('bad',[],{live:'bad'}), entry('malformed',[null])],[],now);
-  assert.equal(result.reporting,1); assert.equal(result.total,3); assert.equal(result.hosts[1].status,'not reporting');
-  assert.equal(result.hosts[2].status,'not reporting'); assert.equal(result.hosts[0].sessions[0].provider,'unknown');
+  const result = summarize([entry('host',rows), entry('bad',[],{live:'bad'}), entry('malformed',[null, session('claude',null), []])],[],now);
+  assert.equal(result.reporting,2); assert.equal(result.total,4); assert.equal(result.hosts[1].status,'not reporting');
+  assert.equal(result.hosts[2].status,'reporting'); assert.equal(result.hosts[2].invalid,2); assert.equal(result.hosts[2].count,1);
+  assert.equal(result.hosts[0].sessions[0].provider,'unknown');
   assert.equal(result.hosts[0].sessions[0].dir,null); assert.equal(result.hosts[0].sessions[2].rss,null);
   assert.equal(Object.prototype.count,undefined);
 });

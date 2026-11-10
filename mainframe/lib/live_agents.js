@@ -39,16 +39,16 @@ function summarize(entries, accounts, nowMs) {
   function stringField(value, limit) { return typeof value === 'string' && value.length <= limit ? value : null; }
   function numberField(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null; }
   function accountFor(session, entry, hostName) {
-    if (session.billing === 'api') return {label:session.provider + ' API key', scope:null};
     var map = entry.accountMap, id = session.dir && map && Object.prototype.hasOwnProperty.call(map, session.dir) ? map[session.dir] : null;
-    var account = id == null ? null : accounts.find(function(a) { return a && a.id === id; });
+    var account = id == null ? null : accounts.find(function(a) { return a && a.id === id && a.provider === session.provider; });
     if (!account && entry.local === true && session.dir) account = accounts.find(function(a) { return a && a.provider === session.provider && a.dir === session.dir; });
-    if (account && typeof account.name === 'string' && account.name) return {label:account.name, scope:null};
+    if (account && typeof account.name === 'string' && account.name) return {label:account.name, id:account.id, scope:null};
+    if (session.billing === 'api') return {label:session.provider + ' API key', scope:null};
     return {label:(session.dir || 'unknown ' + session.provider) + ' · ' + hostName, scope:entry.alias || hostName};
   }
   function sortProviders(a, b) { return b.count - a.count || String(a.provider).localeCompare(String(b.provider)); }
   entries.forEach(function(entry) {
-    var host = {host:'unknown', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], truncated:false, status:'not reporting'};
+    var host = {host:'unknown', count:0, invalid:0, cap:null, over:false, headless:0, providers:[], sessions:[], truncated:false, status:'not reporting'};
     try {
       if (!entry || typeof entry !== 'object') throw new Error('invalid host');
       host.host = typeof entry.host === 'string' ? entry.host : 'unknown';
@@ -59,7 +59,7 @@ function summarize(entries, accounts, nowMs) {
           ['unreachable', 'error', 'offline'].indexOf(status) >= 0) throw new Error('not reporting');
       var hostProviders = Object.create(null), hostGroups = Object.create(null);
       live.sessions.slice(0, 256).forEach(function(original) {
-        if (!original || typeof original !== 'object' || Array.isArray(original)) throw new Error('invalid session');
+        if (!original || typeof original !== 'object' || Array.isArray(original)) { host.invalid++; return; }
         var provider = typeof original.provider === 'string' && known.indexOf(original.provider) >= 0 ? original.provider : 'unknown';
         var session = {provider:provider, dir:stringField(original.dir, 200), project:stringField(original.project, 120),
           billing:original.billing === 'api' || original.billing === 'subscription' ? original.billing : null,
@@ -70,17 +70,18 @@ function summarize(entries, accounts, nowMs) {
         host.sessions.push(session);
         if (session.interactive === false) host.headless++;
         increment(hostProviders, provider, function() { return {provider:provider, count:0}; });
-        var key = JSON.stringify([provider, session.account, session.billing, account.scope]);
+        var key = account.id != null ? JSON.stringify(['account', account.id]) : JSON.stringify([provider, session.account, session.billing, account.scope]);
         increment(hostGroups, key, function() { return {label:session.account, provider:provider, count:0, billing:session.billing}; });
+        if (hostGroups[key].billing !== session.billing) hostGroups[key].billing = null;
       });
       host.truncated = live.truncated === true || live.sessions.length > 256;
-      host.count = host.truncated ? 256 : host.sessions.length;
+      host.count = host.sessions.length;
       host.providers = Object.keys(hostProviders).map(function(k) { return hostProviders[k]; }).sort(sortProviders);
       host.over = host.cap !== null && (host.truncated ? host.count >= host.cap : host.count > host.cap);
       host.status = 'reporting';
       result.reporting++; result.total += host.count; result.truncated = result.truncated || host.truncated;
       Object.keys(hostProviders).forEach(function(k) { if (!providers[k]) providers[k] = {provider:k, count:0}; providers[k].count += hostProviders[k].count; });
-      Object.keys(hostGroups).forEach(function(k) { if (!groups[k]) groups[k] = hostGroups[k]; else groups[k].count += hostGroups[k].count; });
+      Object.keys(hostGroups).forEach(function(k) { if (!groups[k]) groups[k] = hostGroups[k]; else { groups[k].count += hostGroups[k].count; if (groups[k].billing !== hostGroups[k].billing) groups[k].billing = null; } });
     } catch (err) {
       host.count = 0; host.over = false; host.headless = 0; host.providers = []; host.sessions = []; host.truncated = false; host.status = 'not reporting';
     }

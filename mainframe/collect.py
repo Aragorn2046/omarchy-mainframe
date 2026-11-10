@@ -3854,7 +3854,7 @@ _AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
 _AGENT_DIRS = {'claude': (b'CLAUDE_CONFIG_DIR', '.claude'), 'codex': (b'CODEX_HOME', '.codex')}
 
 
-def _agent_match(comm, argv, executable=''):
+def _agent_match(comm, argv, executable='', raw_args=''):
     if not argv or any(arg.startswith('--type=') for arg in argv):
         return None
     exe = os.path.basename(argv[0])
@@ -3886,7 +3886,12 @@ def _agent_match(comm, argv, executable=''):
                 continue
             path = arg.replace('\\', '/')
             rule_match = next((r for r in AGENT_RULES if os.path.basename(path) in r.get('scripts', r['names']) or
-                               (r.get('package') and '/' + r['package'] in '/' + path)), None)
+                               (r.get('package') and '/' + r['package'] in '/' + path) or
+                               (r['provider'] == 'cursor-agent' and '/cursor-agent/' in path)), None)
+            if not rule_match and raw_args:
+                rule_match = next((r for r in AGENT_RULES if
+                                   (r.get('package') and '/' + r['package'] in raw_args) or
+                                   (r['provider'] == 'cursor-agent' and '/cursor-agent/' in raw_args)), None)
             script_index = i
             break
         if not rule_match:
@@ -3905,6 +3910,8 @@ def _agent_match(comm, argv, executable=''):
         if interpreter:
             matched = rule is rule_match
         if matched:
+            if rule['provider'] == 'claude' and any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host', 'mcp', 'daemon') or arg.endswith('-mcp') for arg in args):
+                return None
             if rule['provider'] == 'codex':
                 if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or any(arg in ('app-server', 'app-server-daemon') for arg in argv):
                     return None
@@ -3944,13 +3951,7 @@ def _agent_environment(path, provider, home):
 def _agent_finish(processes, now):
     matched = {pid: row for pid, row in processes.items() if row.get('provider')}
     counted = {pid: row for pid, row in matched.items()
-               if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']
-               or not matched[row['ppid']].get('launcher') or row.get('interpreter')}
-    # A shell shim followed by an interpreter represents the interpreter session.
-    for pid, row in list(counted.items()):
-        parent = matched.get(row['ppid'])
-        if row.get('interpreter') and parent and parent.get('shell') and parent['provider'] == row['provider']:
-            counted.pop(row['ppid'], None)
+               if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']}
     sessions = []
     for pid, row in sorted(counted.items()):
         parent, seen = row['ppid'], {pid}
@@ -3997,10 +3998,6 @@ def _agent_linux(proc_root, home, now):
                 if not provider:
                     continue
                 row.update(provider=provider, age_s=max(0, int(uptime - int(fields[19]) / ticks)), rss=max(0, int(fields[21]) * page))
-                argv0 = os.path.basename(argv[0])
-                row['interpreter'] = _agent_interpreter(comm) or _agent_interpreter(argv0)
-                row['shell'] = argv0 in _AGENT_SHELLS
-                row['launcher'] = row['interpreter'] or row['shell']
                 try:
                     tty = os.readlink(os.path.join(entry.path, 'fd', '0'))
                     row['interactive'] = tty.startswith('/dev/pts/') or tty.startswith('/dev/tty')
@@ -4040,7 +4037,7 @@ def _agent_darwin(text, args_text, now):
     for line in args_text.splitlines():
         fields = line.split(None, 1)
         if len(fields) == 2 and fields[0].isdigit():
-            arguments[int(fields[0])] = fields[1].split()
+            arguments[int(fields[0])] = fields[1]
     for line in text.splitlines():
         fields = line.split(None, 5)
         if len(fields) != 6:
@@ -4050,16 +4047,14 @@ def _agent_darwin(text, args_text, now):
             pid, ppid = int(pid), int(ppid)
             row = {'pid': pid, 'ppid': ppid}
             processes[pid] = row
-            argv = arguments.get(pid) or [comm]
-            provider = _agent_match(os.path.basename(comm), argv, comm)
+            raw_args = arguments.get(pid, '')
+            argv = raw_args.split() or [comm]
+            provider = _agent_match(os.path.basename(comm), argv, comm, raw_args)
             if not provider and ' ' in comm and argv[0] != comm and not _agent_interpreter(os.path.basename(comm)):
                 provider = _agent_match(os.path.basename(comm), [comm], comm)
             if provider:
-                interpreter = _agent_interpreter(os.path.basename(comm)) or _agent_interpreter(os.path.basename(argv[0]))
-                shell = os.path.basename(argv[0]) in _AGENT_SHELLS
                 row.update(provider=provider, interactive=tty != '??', dir=None, billing=None, project=None,
-                           age_s=_agent_elapsed(elapsed), rss=max(0, int(rss) * 1024),
-                           interpreter=interpreter, shell=shell, launcher=interpreter or shell)
+                           age_s=_agent_elapsed(elapsed), rss=max(0, int(rss) * 1024))
         except (ValueError, IndexError):
             continue
     return _agent_finish(processes, now)

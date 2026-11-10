@@ -164,7 +164,7 @@ ShellRoot {
   property var localLiveAgents: null
   property var remoteLiveAgents: ({})
   property double liveAgentsClock: Date.now()
-  Timer { interval: 5000; repeat: true; running: shell.agentsVisible && !shell.quitting; onTriggered: shell.liveAgentsClock = Date.now() }
+  Timer { interval: 5000; repeat: true; triggeredOnStart: true; running: shell.agentsVisible && !shell.quitting; onTriggered: shell.liveAgentsClock = Date.now() }
   readonly property var fleetLiveAgents: {
     var dependency = liveAgentsClock, hostStatus = tabs
     var data = settingsData || {}
