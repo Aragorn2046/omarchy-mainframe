@@ -3841,7 +3841,6 @@ AGENT_RULES = [
     {'provider': 'opencode', 'names': ('opencode',), 'scripts': ('opencode',)},
     {'provider': 'aider', 'names': ('aider',), 'scripts': ('aider',)},
     {'provider': 'crush', 'names': ('crush',), 'scripts': ('crush',)},
-    {'provider': 'amp', 'names': (), 'package': 'node_modules/@sourcegraph/amp/'},
 ]
 _AGENT_INTERPRETERS = {'node', 'bun', 'deno', 'python', 'python3'}
 _AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),

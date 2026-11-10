@@ -50,6 +50,7 @@ class LiveProbe(unittest.TestCase):
         self.proc(18, 'codex', ['codex', 'mcp-server'])
         self.proc(19, 'claude', ['claude', 'mcp', 'serve'])
         self.proc(23, '2.1.76', ['/usr/local/bin/claude'])
+        self.proc(24, 'amp', ['amp'])
         sessions = self.scan()['sessions']
         self.assertEqual([s['pid'] for s in sessions], [10, 13, 14, 23])
         self.assertEqual(sessions[1]['parent_pid'], 10)
@@ -59,9 +60,9 @@ class LiveProbe(unittest.TestCase):
         examples = [('claude', ['claude']), ('node', ['node', '/lib/node_modules/@anthropic-ai/claude-code/cli.js']),
                     ('node', ['node', '/lib/node_modules/@google/gemini-cli/index.js']), ('node', ['node', '/lib/node_modules/@qwen-code/qwen-code/cli.js']),
                     ('grok', ['grok']), ('cursor-agent', ['cursor-agent']), ('opencode', ['opencode']),
-                    ('aider', ['aider']), ('crush', ['crush']), ('node', ['node', '/lib/node_modules/@sourcegraph/amp/cli.js'])]
+                    ('aider', ['aider']), ('crush', ['crush'])]
         self.assertEqual([collect._agent_match(*args) for args in examples],
-                         ['claude', 'claude', 'gemini', 'qwen', 'grok', 'cursor-agent', 'opencode', 'aider', 'crush', 'amp'])
+                         ['claude', 'claude', 'gemini', 'qwen', 'grok', 'cursor-agent', 'opencode', 'aider', 'crush'])
         self.assertIsNone(collect._agent_match('node', ['node', '/lib/@openai/codex/cli.js', '--help']))
         self.assertIsNone(collect._agent_match('claude', ['/Applications/Claude.app/Contents/MacOS/claude']))
     def test_codex_app_server_is_not_a_session(self):
@@ -129,7 +130,7 @@ class LiveProbe(unittest.TestCase):
         for path in ('/x/codex/node_modules/.bin/vitest', '/x/aider/bench/run.py', '/x/claude/mcp/server.js'):
             self.assertIsNone(collect._agent_match('node', ['node', path]))
         self.assertIsNone(collect._agent_match('python3', ['python3', '/x/aider/bench/run.py']))
-        for package, provider in (('@anthropic-ai/claude-code', 'claude'), ('@openai/codex', 'codex'), ('@google/gemini-cli', 'gemini'), ('@qwen-code/qwen-code', 'qwen'), ('@sourcegraph/amp', 'amp')):
+        for package, provider in (('@anthropic-ai/claude-code', 'claude'), ('@openai/codex', 'codex'), ('@google/gemini-cli', 'gemini'), ('@qwen-code/qwen-code', 'qwen')):
             self.assertEqual(collect._agent_match('node', ['node', '/x/node_modules/' + package + '/cli.js']), provider)
         self.assertIsNone(collect._agent_match('amp', ['amp']))
         self.assertEqual(collect._agent_match('python3', ['python3', '-m', 'aider']), 'aider')

@@ -13,7 +13,7 @@ function summarize(entries, accounts, nowMs) {
   accounts = Array.isArray(accounts) ? accounts : (accounts && Array.isArray(accounts.accounts) ? accounts.accounts : []);
   var result = {total:0, truncated:false, reporting:0, hostsTotal:entries.length, hosts:[], providers:[], accounts:[]};
   var providers = Object.create(null), groups = Object.create(null);
-  var known = ['claude', 'codex', 'gemini', 'qwen', 'grok', 'cursor-agent', 'opencode', 'aider', 'crush', 'amp'];
+  var known = ['claude', 'codex', 'gemini', 'qwen', 'grok', 'cursor-agent', 'opencode', 'aider', 'crush'];
   function increment(map, key, make) { if (!map[key]) map[key] = make(); map[key].count++; }
   function stringField(value, limit) { return typeof value === 'string' && value.length <= limit ? value : null; }
   function numberField(value) { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null; }
