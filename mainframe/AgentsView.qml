@@ -13,6 +13,23 @@ Item {
   function liveAge(seconds) { if (seconds == null) return '—'; var m = Math.floor(seconds / 60), h = Math.floor(m / 60); return h ? h + 'h ' + (m % 60) + 'm' : m ? m + 'm' : Math.floor(seconds) + 's' }
   function liveMemory(bytes) { return bytes == null ? '—' : (bytes / 1048576).toFixed(0) + ' MB' }
   readonly property var sectionData: Agents.sections(rows)
+  readonly property var reportingHosts: (fleetLiveAgents.hosts || []).filter(function(host) { return host.status === 'reporting' })
+  readonly property var missingHosts: (fleetLiveAgents.hosts || []).filter(function(host) { return host.status !== 'reporting' })
+  function unbreakable(text) { return String(text).replace(/ /g, '\u00a0') }
+  function providerText(providers) { return (providers || []).map(function(p) { return root.unbreakable(p.provider + ' ' + p.count) }).join(' · ') }
+  function accountText(accounts) {
+    accounts = accounts || []
+    return accounts.map(function(a) {
+      var duplicate = accounts.some(function(b) { return b !== a && b.label === a.label })
+      return root.unbreakable(a.label + (duplicate ? ' (' + a.provider + ')' : '') + ' ' + a.count)
+    }).join(' · ')
+  }
+  property var expandedHosts: Object.create(null)
+  function toggleHost(host) {
+    var next = Object.assign(Object.create(null), expandedHosts)
+    next[host] = !next[host]
+    expandedHosts = next
+  }
   readonly property var valueTotals: [{label:'TODAY', value:valueData.totals.today}, {label:'LAST 7 DAYS', value:valueData.totals.seven}, {label:'LAST 30 DAYS', value:valueData.totals.thirty}]
   readonly property var valueRows: [{name:'Claude', totals:valueData.providers.claude}, {name:'Codex', totals:valueData.providers.codex}].concat(valueData.hosts)
   property var valueData: ({totals:{today:0,seven:0,thirty:0},providers:{claude:{},codex:{}},hosts:[],unpriced:[],partial:true,excluded:0})
@@ -24,7 +41,7 @@ Item {
   property var packed: Agents.pack([], 0)
   function schedulePacking() { Qt.callLater(updatePacking) }
   function updatePacking() {
-    var blocks = []
+    var blocks = [{key:"live", headingHeight:0, noHeading:true, cardHeights:[liveCard.contentHeight]}]
     for (var i = 0; i < sectionRepeater.count; i++) {
       var section = sectionRepeater.itemAt(i)
       if (!section) continue
@@ -33,13 +50,13 @@ Item {
         var card = section.cardRepeater.itemAt(j)
         heights.push(card ? card.contentHeight : 0)
       }
-      blocks.push({key:section.modelData.key, headingHeight:section.headingItem.implicitHeight, cardHeights:heights})
+      blocks.push({key:section.modelData.key, headingHeight:section.headingItem.implicitHeight, cardHeights:heights, flowAround:i === 0})
     }
     packed = Agents.pack(blocks, scrollView.width)
   }
   onSectionDataChanged: schedulePacking()
   function checkLayout() {
-    var failures = 0, cards = [], headings = []
+    var failures = 0, cards = [{item:liveCard, x:liveCard.x, y:sections.y + liveCard.y, width:liveCard.width, height:liveCard.height}], headings = []
     for (var i = 0; i < sectionRepeater.count; i++) {
       var section = sectionRepeater.itemAt(i)
       if (!section) continue
@@ -51,7 +68,7 @@ Item {
     }
     function overlaps(a, b) { return a.x < b.x + b.width - 0.01 && a.x + a.width > b.x + 0.01 && a.y < b.y + b.height - 0.01 && a.y + a.height > b.y + 0.01 }
     for (i = 0; i < cards.length; i++) {
-      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight || c.y < liveCard.y + liveCard.height - 0.01
+      var c = cards[i], failed = c.x < -0.01 || c.x + c.width > scrollView.width + 0.01 || c.height + 0.01 < c.item.contentHeight
       for (j = 0; j < cards.length; j++) if (i !== j && overlaps(c, cards[j])) failed = true
       for (j = 0; j < headings.length; j++) if (overlaps(c, headings[j])) failed = true
       if (failed) failures++
@@ -72,81 +89,59 @@ Item {
       Layout.fillWidth: true; Layout.fillHeight: true; clip: true
       contentWidth: width; contentHeight: sections.y + valueCard.y + valueCard.height
       onWidthChanged: root.schedulePacking()
-      Card {
-        id: liveCard; objectName: 'agents-live-card'
-        width: scrollView.width; height: liveContent.implicitHeight + 54
-        cyberStyle: root.cyberStyle; accent: root.accent; title: 'Running now'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
-        ColumnLayout {
-          id: liveContent; width: parent.width; spacing: 7
-          RowLayout {
-            Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: root.fleetLiveAgents.reporting > 0 ? String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : '') : '—'; color: root.ink; font.family: 'monospace'; font.pixelSize: 28; font.bold: true }
-            Text { textFormat: Text.PlainText; text: (root.fleetLiveAgents.reporting || 0) + ' of ' + (root.fleetLiveAgents.hostsTotal || 0) + ' machines reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; Layout.fillWidth: true }
-          }
-          Flow {
-            objectName: 'agents-live-providers'; Layout.fillWidth: true; spacing: 4
-            Repeater {
-              model: (root.fleetLiveAgents.providers || []).length
-              delegate: Rectangle {
-                required property int index
-                readonly property var providerData: root.fleetLiveAgents.providers[index]
-                width: fleetChip.implicitWidth + 10; height: fleetChip.implicitHeight + 4; radius: 4; color: root.track
-                Text { textFormat: Text.PlainText; id: fleetChip; anchors.centerIn: parent; text: parent.providerData.provider + ' ' + parent.providerData.count; color: root.ink; font.family: 'monospace'; font.pixelSize: 10 }
-              }
+      Item {
+        id: sections; width: scrollView.width; height: valueCard.y + valueCard.height
+        Rectangle {
+          id: liveCard; objectName: 'agents-live-card'
+          readonly property var placement: root.packed.blocks.length ? root.packed.blocks[0].cards[0] : null
+          readonly property real contentHeight: liveContent.implicitHeight + 24
+          x: placement ? placement.x : 0; y: placement ? placement.y : 0
+          width: placement ? placement.width : root.packed.columnWidth; height: placement ? placement.height : contentHeight
+          onContentHeightChanged: root.schedulePacking()
+          radius: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 10; color: root.cardColor; border.width: root.cyberStyle && root.cyberStyle.hudFrames ? 0 : 1; border.color: root.borderColor; clip: true
+          Loader { objectName: 'cyber-hud-loader'; anchors.fill: parent; active: root.cyberStyle && root.cyberStyle.hudFrames; sourceComponent: Cyber.HudFrame { accent: root.accent } }
+          ColumnLayout {
+            id: liveContent; anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top; anchors.margins: 12; spacing: 7
+            RowLayout {
+              Layout.fillWidth: true; spacing: 6
+              Text { textFormat: Text.PlainText; text: 'Running now'; color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 15; font.bold: true; elide: Text.ElideRight; Layout.fillWidth: true; Layout.minimumWidth: 0 }
+              Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: root.fleetLiveAgents.reporting > 0 ? String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : '') : '—'; color: root.ink; font.family: 'monospace'; font.pixelSize: 22; font.bold: true }
+              Text { textFormat: Text.PlainText; objectName: 'agents-live-reporting'; text: (root.fleetLiveAgents.reporting || 0) + '/' + (root.fleetLiveAgents.hostsTotal || 0) + ' reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
             }
-          }
-          Text { textFormat: Text.PlainText; objectName: 'agents-live-empty'; visible: root.fleetLiveAgents.total === 0; text: root.fleetLiveAgents.reporting > 0 ? 'No agents running' : 'No machine reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12 }
-          Repeater {
-            objectName: 'agents-live-hosts'; model: (root.fleetLiveAgents.hosts || []).length
-            delegate: ColumnLayout {
-              id: liveHost
-              required property int index
-              property bool expanded: false
-              readonly property var modelData: root.fleetLiveAgents.hosts[index]
-              Layout.fillWidth: true; spacing: 4
-              RowLayout {
-                objectName: 'agents-live-host-row'; Layout.fillWidth: true
-                Text { textFormat: Text.PlainText; text: (liveHost.expanded ? '▾ ' : '▸ ') + liveHost.modelData.host; color: root.ink; font.family: 'monospace'; font.pixelSize: 12; Layout.preferredWidth: 160; Layout.minimumWidth: 35; elide: Text.ElideRight }
-                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: liveHost.modelData.status === 'not reporting' ? 'not reporting' : String(liveHost.modelData.count) + (liveHost.modelData.truncated ? '+' : '') + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : liveHost.modelData.status === 'not reporting' ? root.mutedInk : root.ink; font.family: 'monospace'; font.pixelSize: 12 }
-                Flow {
-                  Layout.fillWidth: true; spacing: 4
-                  Repeater {
-                    model: liveHost.modelData.providers.length
-                    delegate: Rectangle {
-                      required property int index
-                      readonly property var providerData: liveHost.modelData.providers[index]
-                      width: chip.implicitWidth + 10; height: chip.implicitHeight + 4; radius: 4; color: root.track
-                      Text { textFormat: Text.PlainText; id: chip; anchors.centerIn: parent; text: parent.providerData.provider + ' ' + parent.providerData.count; color: root.ink; font.family: 'monospace'; font.pixelSize: 10 }
-                    }
+            Text { objectName: 'agents-live-providers'; Layout.fillWidth: true; visible: root.fleetLiveAgents.reporting > 1 && text !== ''; textFormat: Text.PlainText; text: root.providerText(root.fleetLiveAgents.providers); color: root.ink; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+            Text { textFormat: Text.PlainText; objectName: 'agents-live-empty'; Layout.fillWidth: true; visible: root.fleetLiveAgents.total === 0; text: root.fleetLiveAgents.reporting > 0 ? 'No agents running' : 'No machine reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 12; elide: Text.ElideRight }
+            Repeater {
+              objectName: 'agents-live-hosts'; model: root.reportingHosts
+              delegate: ColumnLayout {
+                id: liveHost
+                required property var modelData
+                readonly property bool expanded: root.expandedHosts[modelData.host] === true
+                Layout.fillWidth: true; spacing: 4
+                RowLayout {
+                  id: hostLine; objectName: 'agents-live-host-row'; Layout.fillWidth: true; spacing: 5
+                  Text { textFormat: Text.PlainText; objectName: 'agents-live-host-name'; text: (liveHost.expanded ? '▾ ' : '▸ ') + liveHost.modelData.host; color: root.ink; font.family: 'monospace'; font.pixelSize: 12; Layout.fillWidth: true; Layout.minimumWidth: 0; elide: Text.ElideRight }
+                  Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: String(liveHost.modelData.count) + (liveHost.modelData.truncated ? '+' : '') + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : root.ink; font.family: 'monospace'; font.pixelSize: 12; font.bold: true }
+                  TapHandler { onTapped: root.toggleHost(liveHost.modelData.host) }
+                }
+                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-providers'; Layout.fillWidth: true; Layout.leftMargin: 18; text: root.providerText(liveHost.modelData.providers); visible: text !== ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+                Text { textFormat: Text.PlainText; Layout.leftMargin: 18; visible: liveHost.modelData.headless > 0; text: liveHost.modelData.headless + ' headless'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; elide: Text.ElideRight }
+                Repeater {
+                  model: liveHost.expanded ? (liveHost.modelData.sessions || []).length : 0
+                  delegate: Text {
+                    objectName: 'agents-live-session'
+                    required property int index
+                    readonly property var session: liveHost.modelData.sessions[index]
+                    Layout.fillWidth: true; Layout.leftMargin: 18; textFormat: Text.PlainText; wrapMode: Text.Wrap
+                    text: session.provider + ' · ' + session.account + ' · ' + (session.project || '—') + ' · ' + root.liveAge(session.age_s) + ' · ' + (session.interactive === true ? 'interactive' : session.interactive === false ? 'headless' : 'unknown') + ' · ' + root.liveMemory(session.rss)
+                    color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11
                   }
                 }
-                Text { textFormat: Text.PlainText; visible: liveHost.modelData.headless > 0; text: liveHost.modelData.headless + ' headless'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
-                TapHandler { onTapped: liveHost.expanded = !liveHost.expanded }
-              }
-              Repeater {
-                model: liveHost.expanded ? liveHost.modelData.sessions.length : 0
-                delegate: Text {
-                  required property int index
-                  readonly property var session: liveHost.modelData.sessions[index]
-                  Layout.fillWidth: true; textFormat: Text.PlainText; wrapMode: Text.Wrap
-                  text: '    ' + session.provider + ' · ' + session.account + ' · ' + (session.project || '—') + ' · ' + root.liveAge(session.age_s) + ' · ' + (session.interactive === true ? 'interactive' : session.interactive === false ? 'headless' : 'unknown') + ' · ' + root.liveMemory(session.rss)
-                  color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11
-                }
               }
             }
-          }
-          Repeater {
-            model: (root.fleetLiveAgents.accounts || []).length
-            delegate: Text {
-              required property int index
-              readonly property var account: root.fleetLiveAgents.accounts[index]
-              Layout.fillWidth: true; textFormat: Text.PlainText; text: account.label + ' · ' + account.provider + '  ' + account.count
-              color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; elide: Text.ElideRight
-            }
+            Text { objectName: 'agents-live-not-reporting'; Layout.fillWidth: true; visible: root.missingHosts.length > 0; textFormat: Text.PlainText; text: 'Not reporting: ' + root.missingHosts.map(function(host) { return root.unbreakable(host.host) }).join(' · '); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
+            Text { objectName: 'agents-live-accounts'; Layout.fillWidth: true; visible: text !== ''; textFormat: Text.PlainText; text: root.accountText(root.fleetLiveAgents.accounts); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }
           }
         }
-      }
-      Item {
-        id: sections; y: liveCard.height + 10; width: scrollView.width; height: valueCard.y + valueCard.height
         Repeater {
           id: sectionRepeater; objectName: 'agents-sections-repeater'; model: root.sectionData.length
           onItemAdded: root.schedulePacking()
@@ -156,7 +151,7 @@ Item {
             required property int index
             readonly property var modelData: root.sectionData[index] || ({heading:'', cards:[]})
             readonly property var cards: modelData.cards || []
-            readonly property var placement: root.packed.blocks[index] || ({x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]})
+            readonly property var placement: root.packed.blocks[index + 1] || ({x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]})
             property alias cardRepeater: repeater
             property alias headingItem: heading
             x: placement.x; y: placement.y; width: placement.width
@@ -241,7 +236,7 @@ Item {
         }
         Card {
           id: valueCard; objectName: 'agents-value-card'
-          x: 0; y: root.packed.height + (root.sectionData.length ? 10 : 0); width: sections.width; height: valueContent.implicitHeight + 54
+          x: 0; y: root.packed.height + 10; width: sections.width; height: valueContent.implicitHeight + 54
           cyberStyle: root.cyberStyle; accent: root.accent; title: 'VALUE AT API PRICES'; color: root.cardColor; borderColor: root.borderColor; labelColor: root.mutedInk
           ColumnLayout {
             id: valueContent; width: parent.width; spacing: 6

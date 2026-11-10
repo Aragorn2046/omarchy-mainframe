@@ -128,7 +128,7 @@ function pack(blocks, width, options) {
     nextX += widths[i] + pixelGap;
   }
   blocks.forEach(function(block) {
-    var count = block.cardHeights.length, span = Math.min(count, columns);
+    var count = block.cardHeights.length, span = Math.min(count, columns, block.flowAround ? 1 : (block.maxSpan === undefined ? columns : Math.max(1, block.maxSpan)));
     if (!span) { result.push({key:block.key, x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]}); return; }
     var start = 0, top = Infinity, c, j;
     for (c = 0; c <= columns - span; c++) {
@@ -139,16 +139,17 @@ function pack(blocks, width, options) {
     var x = starts[start], last = start + span - 1;
     var blockWidth = starts[last] + widths[last] - x;
     var heading = {x:x, y:top, width:blockWidth}, cards = [];
-    var cardTop = top + block.headingHeight + gap;
-    for (j = start; j < start + span; j++) skyline[j] = cardTop;
+    var cardTop = block.noHeading ? top : top + block.headingHeight + gap;
+    var cardStart = block.flowAround ? 0 : start, cardEnd = block.flowAround ? columns : start + span;
+    for (j = cardStart; j < cardEnd; j++) skyline[j] = Math.max(skyline[j], cardTop);
     block.cardHeights.forEach(function(height) {
-      var chosen = start;
-      for (var k = start + 1; k < start + span; k++) if (skyline[k] < skyline[chosen]) chosen = k;
+      var chosen = cardStart;
+      for (var k = cardStart + 1; k < cardEnd; k++) if (skyline[k] < skyline[chosen]) chosen = k;
       cards.push({x:starts[chosen], y:skyline[chosen], width:widths[chosen], height:height});
       bottom = Math.max(bottom, skyline[chosen] + height);
       skyline[chosen] += height + gap;
     });
-    result.push({key:block.key, x:x, y:top, width:blockWidth, heading:heading, cards:cards});
+    result.push({key:block.key, x:block.flowAround ? 0 : x, y:top, width:block.flowAround ? width : blockWidth, heading:heading, cards:cards});
   });
   return {columns:columns, columnWidth:columnWidth, height:bottom, blocks:result};
 }

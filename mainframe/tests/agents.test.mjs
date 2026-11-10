@@ -257,3 +257,26 @@ test('packing distributes whole pixels across columns', () => {
   assert.equal(Math.max(...cards.map(card => card.x + card.width)), 1476);
   assert.equal(cards[0].y, 25.5);
 });
+
+test('usage flows around the live card and recovers every column', () => {
+  const blocks = [
+    {key:'live', headingHeight:0, noHeading:true, cardHeights:[120]},
+    {key:'usage', headingHeight:15, cardHeights:Array(6).fill(100), flowAround:true},
+  ];
+  for (const width of [350, 900, 1600]) {
+    const packed = A.pack(blocks, width);
+    const live = packed.blocks[0].cards[0], usage = packed.blocks[1].cards;
+    assert.equal(live.y, 0);
+    if (packed.columns === 2) {
+      assert.equal(new Set(usage.map(card => card.x)).size, 2);
+      assert.ok(Math.max(...usage.map(card => card.y + card.height)) <= 4 * 110 + 25);
+    }
+    if (packed.columns === 4) {
+      assert.ok(usage[0].x > live.x);
+      assert.ok(usage[0].y < live.y + live.height);
+    }
+    const rects = [live, {...packed.blocks[1].heading, height:15}, ...usage];
+    for (const [i, a] of rects.entries()) for (const b of rects.slice(i + 1))
+      assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y);
+  }
+});

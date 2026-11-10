@@ -3,6 +3,7 @@ import QtTest
 import ".."
 import "../lib/navigation.js" as Navigation
 import "../lib/agents.js" as Agents
+import "../lib/live_agents.js" as LiveAgents
 
 TestCase {
   id: testCase
@@ -18,12 +19,18 @@ TestCase {
   }
   function init() {
     view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:0, hosts:[], accounts:[]}
+    view.cyberStyle = null
+    view.expandedHosts = ({})
+    view.rows = []
+    view.valueData = valueData(0, [])
+    testCase.width = 900
   }
   function cleanup() {
     view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:0, hosts:[], accounts:[]}
     testCase.width = 900
     view.rows = []
     view.valueData = valueData(0, [])
+    view.cyberStyle = null
     view.flick.cancelFlick()
     view.flick.contentY = 0
   }
@@ -42,26 +49,188 @@ TestCase {
     tryVerify(function() { return view.checkLayout() === 0 })
   }
   function test_live_not_reporting_and_layout() {
-    testCase.width = 350
+    testCase.width = 1600
     view.rows = [{name:'Agent', category:'llm'}]
+    var live = findChild(view, 'agents-live-card')
+    var card = findChild(view, 'agents-cards-repeater').itemAt(0)
     var empty = findChild(view, 'agents-live-empty')
-    var rows = findChild(view, 'agents-live-hosts')
-    var unavailable = {host:'A very long machine name that must fit inside this card', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], status:'not reporting'}
-    var unreachable = {host:'unreachable', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], status:'not reporting'}
-    view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:2, hosts:[unavailable, unreachable], accounts:[]}
+    var missing = findChild(view, 'agents-live-not-reporting')
+    var host = {host:'A long reporting machine name that must fit inside this card', count:1, cap:2, over:false, headless:1, providers:[{provider:'codex', count:1}], sessions:[], status:'reporting'}
+    var unavailable = function(name) { return {host:name, status:'not reporting'} }
+    view.fleetLiveAgents = {total:1, reporting:1, hostsTotal:4, providers:[{provider:'codex', count:1}], hosts:[host, unavailable('Host A'), unavailable('Host B'), unavailable('Host C')], accounts:[{label:'An unusually long account label that must wrap inside the card', count:1}]}
+    tryVerify(function() { return live.width === card.width && live.width < view.flick.width && view.checkLayout() === 0 })
+    compare(findChild(view, 'agents-live-hosts').count, 1)
+    compare(missing.text, 'Not reporting: Host\u00a0A · Host\u00a0B · Host\u00a0C')
+    verify(missing.visible)
+    verify(!findChild(view, 'agents-live-providers').visible)
+    compare(findChild(view, 'agents-live-reporting').text, '1/4 reporting')
+    var livePosition = live.mapToItem(view.flick.contentItem, 0, 0)
+    var cardPosition = card.mapToItem(view.flick.contentItem, 0, 0)
+    verify(Math.abs(livePosition.y - cardPosition.y) <= 1 ||
+           (cardPosition.y >= livePosition.y && cardPosition.y <= livePosition.y + live.height))
+    verify(livePosition.x + live.width <= cardPosition.x + 1)
+    testCase.width = 350
+    tryVerify(function() { return live.width === view.flick.width && card.width === live.width && view.checkLayout() === 0 })
+    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, 0)
+    verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.mapToItem(view.flick.contentItem, 0, 0).y + live.height)
+    view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:3, hosts:[unavailable('Host A'), unavailable('Host B'), unavailable('Host C')], accounts:[]}
     compare(empty.text, 'No machine reporting')
     compare(findChild(view, 'agents-live-total').text, '—')
-    compare(findChild(rows.itemAt(0), 'agents-live-host-count').text, 'not reporting')
-    compare(findChild(rows.itemAt(1), 'agents-live-host-count').text, 'not reporting')
-    var row = rows.itemAt(0)
-    view.fleetLiveAgents = {total:0, reporting:1, hostsTotal:2, hosts:[unavailable, {host:'unreachable', count:0, cap:null, over:false, headless:0, providers:[], sessions:[], status:'reporting'}], accounts:[]}
-    compare(empty.text, 'No agents running')
-    compare(findChild(view, 'agents-live-total').text, '0')
-    compare(rows.itemAt(0), row)
+    compare(findChild(view, 'agents-live-hosts').count, 0)
+    compare(findChild(view, 'agents-live-reporting').text, '0/3 reporting')
     tryVerify(function() { return view.checkLayout() === 0 })
-    var card = findChild(view, 'agents-cards-repeater').itemAt(0)
+    view.fleetLiveAgents = {total:0, reporting:1, hostsTotal:1, hosts:[Object.assign({}, host, {count:0, headless:0})], accounts:[]}
+    compare(empty.text, 'No agents running')
+    compare(findChild(view, 'agents-live-reporting').text, '1/1 reporting')
+    tryVerify(function() { return view.checkLayout() === 0 })
+  }
+  function test_live_expansion_and_wrapping() {
+    testCase.width = 350
+    var session = {provider:'codex', account:'x'.repeat(100), project:'project', age_s:90, interactive:false, rss:1048576}
+    var providers = [{provider:'p'.repeat(100), count:1}]
+    var host = {host:'A long reporting host name ' + 'h'.repeat(100), count:1, cap:0, over:true, headless:1, providers:providers, sessions:[session], status:'reporting'}
+    view.fleetLiveAgents = {total:1, truncated:true, reporting:2, hostsTotal:3, providers:providers, hosts:[host, Object.assign({}, host, {host:'other'}), {host:'A long missing host name ' + 'm'.repeat(100), status:'not reporting'}], accounts:[{label:session.account, count:1}]}
     var live = findChild(view, 'agents-live-card')
-    verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.height)
+    var rows = findChild(view, 'agents-live-hosts')
+    var line = findChild(rows.itemAt(0), 'agents-live-host-row')
+    tryVerify(function() { return view.checkLayout() === 0 && line.width > 0 })
+    verify(findChild(view, 'agents-live-providers').visible)
+    compare(findChild(view, 'agents-live-reporting').text, '2/3 reporting')
+    compare(findChild(rows.itemAt(0), 'agents-live-host-count').color, view.critical)
+    var oldHeight = live.height
+    var oldContentHeight = view.flick.contentHeight
+    mouseClick(line, 5, 5)
+    tryVerify(function() { return findChild(rows.itemAt(0), 'agents-live-session') !== null && live.height > oldHeight && view.flick.contentHeight > oldContentHeight && view.checkLayout() === 0 })
+    var detail = findChild(rows.itemAt(0), 'agents-live-session')
+    verify(detail.text.indexOf('codex · ') === 0 && detail.text.indexOf('headless · 1 MB') >= 0)
+    compare(detail.wrapMode, Text.Wrap)
+    compare(detail.x, findChild(rows.itemAt(0), 'agents-live-host-providers').x)
+    var accounts = findChild(view, 'agents-live-accounts')
+    // A single unbreakable over-long account label must wrap rather than clip.
+    verify(accounts.lineCount > 1)
+    function verifyTextGeometry(item) {
+      if (item.visible && typeof item.paintedWidth === 'number') {
+        verify(item.width > 0, 'Text has no width: ' + item.text)
+        verify(item.paintedWidth <= item.width + 0.5, 'Text paints outside its width: ' + item.text)
+      }
+      for (var i = 0; i < item.children.length; i++) verifyTextGeometry(item.children[i])
+    }
+    verifyTextGeometry(live)
+  }
+  function test_live_host_rows_and_word_wrapping() {
+    testCase.width = 1600
+    var providers = [{provider:'claude', count:13}, {provider:'codex', count:1}, {provider:'grok', count:1}, {provider:'another-provider', count:2}, {provider:'one more provider', count:3}]
+    var host = {host:'this machine', count:17, cap:20, over:false, headless:0, providers:providers, sessions:[], status:'reporting'}
+    view.fleetLiveAgents = {total:17, reporting:2, hostsTotal:3, providers:providers, hosts:[host, Object.assign({}, host, {host:'another machine'}), {host:'A machine that is not reporting', status:'not reporting'}], accounts:[{label:'first account',count:13}, {label:'second account on this machine',count:1}]}
+    var live = findChild(view, 'agents-live-card')
+    var rows = findChild(view, 'agents-live-hosts')
+    var row = findChild(rows.itemAt(0), 'agents-live-host-row')
+    var name = findChild(rows.itemAt(0), 'agents-live-host-name')
+    var count = findChild(rows.itemAt(0), 'agents-live-host-count')
+    var hostProviders = findChild(rows.itemAt(0), 'agents-live-host-providers')
+    var accounts = findChild(view, 'agents-live-accounts')
+    var missing = findChild(view, 'agents-live-not-reporting')
+    var fleetProviders = findChild(view, 'agents-live-providers')
+    tryVerify(function() { return view.checkLayout() === 0 && row.width > 0 && hostProviders.lineCount > 1 })
+    compare(count.text, '17 / 20')
+    compare(count.color, findChild(view, 'agents-live-total').color)
+    verify(count.font.bold)
+    verify(Math.abs(count.x + count.width - row.width) < 1)
+    verify(name.x + name.width <= count.x)
+    verify(hostProviders.y >= row.y + row.height)
+    compare(hostProviders.color, view.mutedInk)
+    verify(hostProviders.x + hostProviders.width <= live.width - 12)
+    compare(hostProviders.text, 'claude\u00a013 · codex\u00a01 · grok\u00a01 · another-provider\u00a02 · one\u00a0more\u00a0provider\u00a03')
+    compare(fleetProviders.text, hostProviders.text)
+    compare(accounts.text, 'first\u00a0account\u00a013 · second\u00a0account\u00a0on\u00a0this\u00a0machine\u00a01')
+    var pairs = accounts.text.split(' · ')
+    for (var i = 0; i < pairs.length; i++) compare(pairs[i].indexOf(' '), -1)
+    testCase.width = 350
+    tryVerify(function() { return live.width === view.flick.width && view.checkLayout() === 0 })
+    var measure = Qt.createQmlObject('import QtQuick; Text {}', testCase)
+    measure.font = accounts.font
+    for (i = 0; i < pairs.length; i++) {
+      measure.text = pairs[i]
+      verify(measure.implicitWidth <= accounts.width)
+    }
+    measure.text = accounts.text
+    verify(measure.implicitWidth > accounts.width)
+    compare(accounts.lineCount, pairs.length)
+    measure.destroy()
+    compare(accounts.wrapMode, Text.Wrap)
+    compare(missing.wrapMode, Text.Wrap)
+    compare(hostProviders.wrapMode, Text.Wrap)
+    compare(fleetProviders.wrapMode, Text.Wrap)
+  }
+  function test_live_cyber_style() {
+    var style = Qt.createQmlObject('import QtQuick; QtObject { property bool hudFrames: true; property bool displayFont: true; property string fontFamily: "monospace" }', testCase)
+    view.cyberStyle = style
+    view.rows = [{name:'Agent', category:'llm'}]
+    view.fleetLiveAgents = {total:1, reporting:1, hostsTotal:1, hosts:[{host:'host', count:1, cap:null, over:false, headless:0, providers:[{provider:'codex',count:1}], sessions:[], status:'reporting'}], accounts:[]}
+    var live = findChild(view, 'agents-live-card')
+    tryVerify(function() { return findChild(live, 'cyber-hud-loader').active && live.height === live.contentHeight && view.checkLayout() === 0 })
+    view.cyberStyle = null
+    tryVerify(function() { return !findChild(live, 'cyber-hud-loader').active })
+    style.destroy()
+  }
+  function test_live_leaves_columns_for_usage() {
+    testCase.width = 1600
+    var rows = []
+    for (var i = 0; i < 5; i++) rows.push({name:'Agent ' + i, category:'llm'})
+    view.rows = rows
+    tryVerify(function() { return view.packed.columns === 4 && view.packed.blocks.length === 2 && view.checkLayout() === 0 })
+    var live = view.packed.blocks[0].cards[0]
+    var usage = view.packed.blocks[1].cards[0]
+    verify(usage.x > live.x)
+    verify(usage.y >= live.y && usage.y < live.y + live.height)
+  }
+  function test_live_two_column_packing() {
+    testCase.width = 900
+    var rows = []
+    for (var i = 0; i < 6; i++) rows.push({name:'Agent ' + i, category:'llm'})
+    view.rows = rows
+    tryVerify(function() { return view.packed.columns === 2 && view.packed.blocks.length === 2 && view.checkLayout() === 0 })
+    var cards = view.packed.blocks[1].cards
+    verify(cards.some(function(card) { return card.x === 0 }))
+    verify(cards.some(function(card) { return card.x > 0 }))
+    var height = cards[0].height
+    verify(cards.every(function(card) { return card.height === height }))
+    verify(Math.max.apply(null, cards.map(function(card) { return card.y + card.height })) <= 4 * (height + 10) + 30)
+  }
+  function test_host_expansion_survives_refresh_and_missing_host() {
+    var session = {provider:'codex', account:'account', project:'project'}
+    function entry(name, valid) {
+      return {host:name, live:valid ? {supported:true, sessions:[session]} : null, receivedMs:1000}
+    }
+    function refresh(first, second, third) {
+      view.fleetLiveAgents = LiveAgents.summarize([entry('first', first), entry('second', second), entry('constructor', third)], [], 1000)
+    }
+    refresh(true, true, true)
+    var rows = findChild(view, 'agents-live-hosts')
+    compare(rows.count, view.fleetLiveAgents.reporting)
+    var row = findChild(rows.itemAt(1), 'agents-live-host-row')
+    tryVerify(function() { return row.width > 0 && rows.itemAt(1).y >= rows.itemAt(0).y + rows.itemAt(0).height && view.checkLayout() === 0 })
+    mouseClick(row, 5, 5)
+    tryVerify(function() { return rows.itemAt(1).expanded && findChild(rows.itemAt(1), 'agents-live-session') !== null })
+    refresh(true, true, true)
+    compare(rows.count, view.fleetLiveAgents.reporting)
+    tryVerify(function() { return rows.itemAt(1).expanded && findChild(rows.itemAt(1), 'agents-live-session') !== null })
+    verify(!rows.itemAt(0).expanded)
+    verify(!rows.itemAt(2).expanded)
+    refresh(false, true, true)
+    compare(rows.count, view.fleetLiveAgents.reporting)
+    compare(findChild(view, 'agents-live-reporting').text, '2/3 reporting')
+    compare(rows.itemAt(0).modelData.host, 'second')
+    tryVerify(function() { return rows.itemAt(0).expanded && findChild(rows.itemAt(0), 'agents-live-session') !== null })
+    verify(!rows.itemAt(1).expanded)
+    tryVerify(function() { return view.checkLayout() === 0 })
+  }
+  function test_duplicate_account_labels() {
+    view.fleetLiveAgents = {total:4, reporting:1, hostsTotal:1, hosts:[], accounts:[
+      {label:'personal', provider:'claude', count:2}, {label:'personal', provider:'codex', count:1},
+      {label:'work', provider:'codex', count:1}]}
+    compare(findChild(view, 'agents-live-accounts').text,
+            'personal\u00a0(claude)\u00a02 · personal\u00a0(codex)\u00a01 · work\u00a01')
   }
   function test_value_card_follows_agent_sections() {
     var rows = []
@@ -75,7 +244,7 @@ TestCase {
     var valueCard = findChild(view, 'agents-value-card')
     compare(sections.count, 5)
     tryVerify(function() {
-      return view.packed.blocks.length === 5 && view.packed.height > 0 && valueCard.y === view.packed.height + 10 && view.checkLayout() === 0
+      return view.packed.blocks.length === 6 && view.packed.height > 0 && valueCard.y === view.packed.height + 10 && view.checkLayout() === 0
     })
     compare(view.checkLayout(), 0)
     verify(view.flick.contentHeight > view.flick.height)
@@ -94,9 +263,9 @@ TestCase {
     rows.push({name:'Higgsfield', category:'video', age:''})
     rows.push({name:'ElevenLabs', category:'voice', age:''})
     view.rows = rows
-    tryVerify(function() { return view.packed.columns === 5 && view.packed.blocks.length === 3 && view.checkLayout() === 0 })
-    var video = view.packed.blocks[1].cards[0]
-    var voice = view.packed.blocks[2].cards[0]
+    tryVerify(function() { return view.packed.columns === 5 && view.packed.blocks.length === 4 && view.checkLayout() === 0 })
+    var video = view.packed.blocks[2].cards[0]
+    var voice = view.packed.blocks[3].cards[0]
     verify(video.x !== voice.x)
     verify(Math.abs(video.y - voice.y) <= 1)
   }
@@ -105,7 +274,7 @@ TestCase {
     view.rows = [{name:'Agent', category:'other', age:'', limits:[]}]
     var section = findChild(view, 'agents-sections-repeater').itemAt(0)
     var card = findChild(section, 'agents-cards-repeater').itemAt(0)
-    tryVerify(function() { return view.packed.blocks.length === 1 && card.height === card.contentHeight })
+    tryVerify(function() { return view.packed.blocks.length === 2 && card.height === card.contentHeight })
     var oldHeight = card.height
     view.rows = [{name:'Agent', category:'other', age:'', limits:[{label:'Limit', percent:50}]}]
     tryVerify(function() { return card.height > oldHeight && card.height === card.contentHeight && view.checkLayout() === 0 })
