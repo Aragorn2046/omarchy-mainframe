@@ -209,7 +209,7 @@ Add accounts in settings. Claude and Codex use the Omarchy collectors with the a
 
 #### Running now
 
-Running now counts supported coding-agent CLI processes on each reporting machine, including separate worker sessions. The sampler checks process names, the working folder name, and only these environment variable names: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and `XAI_API_KEY`. Key values are never read out or sent. Set `MAINFRAME_AGENTS_SCAN=0` to disable the scan. macOS does not show accounts. Cloud agents and plain API scripts are not counted.
+Running now counts supported coding-agent CLI processes on each reporting machine, including separate worker sessions. The sampler checks process names, the working folder name, and only these environment variable names: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and `XAI_API_KEY`. Key values are never read out or sent. Set `MAINFRAME_AGENTS_SCAN=0` to disable the scan. Set `MAINFRAME_AGENTS_SCAN=0` in a remote machine's SSH environment to disable its scan. Processes owned by other users appear without account details. A fresh report is sent about every 10 seconds, only when a new probe result is available. macOS does not show accounts. A different program named exactly `grok` or `crush` is also counted. Cloud agents and plain API scripts are not counted.
 
 Optional limits and account mapping can be added to `hosts.json` and `settings.json`:
 
@@ -222,6 +222,8 @@ Optional limits and account mapping can be added to `hosts.json` and `settings.j
 ```
 
 The mapping value is an account ID from `accounts.json`. A machine stops contributing to the total when its report is over 60 seconds old or it is unreachable.
+
+Write directories inside the home directory as `~/...` in `agentAccounts`. Remote directories use their host override and do not use local account mappings.
 
 A usage JSON file can set `category` to `llm`, `video`, `image`, `voice`, or `other` to choose its section in Agents. The value is case-insensitive; without it, Mainframe infers the section from the provider, ID, or name.
 

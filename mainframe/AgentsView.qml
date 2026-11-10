@@ -79,7 +79,7 @@ Item {
         ColumnLayout {
           id: liveContent; width: parent.width; spacing: 7
           RowLayout {
-            Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: String(root.fleetLiveAgents.total || 0); color: root.ink; font.family: 'monospace'; font.pixelSize: 28; font.bold: true }
+            Text { textFormat: Text.PlainText; objectName: 'agents-live-total'; text: String(root.fleetLiveAgents.total || 0) + (root.fleetLiveAgents.truncated ? '+' : ''); color: root.ink; font.family: 'monospace'; font.pixelSize: 28; font.bold: true }
             Text { textFormat: Text.PlainText; text: (root.fleetLiveAgents.reporting || 0) + ' of ' + (root.fleetLiveAgents.hostsTotal || 0) + ' machines reporting'; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; Layout.fillWidth: true }
           }
           Flow {
@@ -106,7 +106,7 @@ Item {
               RowLayout {
                 objectName: 'agents-live-host-row'; Layout.fillWidth: true
                 Text { textFormat: Text.PlainText; text: (liveHost.expanded ? '▾ ' : '▸ ') + liveHost.modelData.host; color: root.ink; font.family: 'monospace'; font.pixelSize: 12; Layout.preferredWidth: 160; elide: Text.ElideRight }
-                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: liveHost.modelData.status === 'not reporting' ? 'not reporting' : String(liveHost.modelData.count) + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : liveHost.modelData.status === 'not reporting' ? root.mutedInk : root.ink; font.family: 'monospace'; font.pixelSize: 12 }
+                Text { textFormat: Text.PlainText; objectName: 'agents-live-host-count'; text: liveHost.modelData.status === 'not reporting' ? 'not reporting' : String(liveHost.modelData.count) + (liveHost.modelData.truncated ? '+' : '') + (liveHost.modelData.cap == null ? '' : ' / ' + liveHost.modelData.cap); color: liveHost.modelData.over ? root.critical : liveHost.modelData.status === 'not reporting' ? root.mutedInk : root.ink; font.family: 'monospace'; font.pixelSize: 12 }
                 Flow {
                   Layout.fillWidth: true; spacing: 4
                   Repeater {

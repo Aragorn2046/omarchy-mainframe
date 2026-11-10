@@ -45,7 +45,7 @@ def validate(kind, data):
             if 'agentCap' in item and (type(item['agentCap']) is not int or not 0 <= item['agentCap'] <= 999): raise ValueError('Invalid agent cap')
             if 'agentAccounts' in item:
                 mapping = item['agentAccounts']
-                if not isinstance(mapping, dict) or len(mapping) > 32 or any(not isinstance(k, str) or not (k == '~' or k.startswith('~/') or k.startswith('/')) or len(k) > 200 or '\x00' in k or not isinstance(v, str) or not ID.fullmatch(v) for k, v in mapping.items()): raise ValueError('Invalid agent accounts')
+                if not isinstance(mapping, dict) or len(mapping) > 32 or any(not isinstance(k, str) or not (k.startswith('~/') or k.startswith('/')) or len(k) > 200 or '\x00' in k or not isinstance(v, str) or not ID.fullmatch(v) for k, v in mapping.items()): raise ValueError('Invalid agent accounts')
     elif kind == 'accounts':
         values = data.get('accounts')
         if not isinstance(values, list): raise ValueError('Expected accounts')

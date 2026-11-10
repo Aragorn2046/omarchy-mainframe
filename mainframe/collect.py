@@ -3832,16 +3832,16 @@ def usage_probe():
 
 # Each rule names one CLI and its interpreter package entry points.
 AGENT_RULES = [
-    {'provider': 'claude', 'names': ('claude',), 'scripts': ('claude', '@anthropic-ai/claude-code')},
-    {'provider': 'codex', 'names': ('codex',), 'scripts': ('codex', '@openai/codex')},
-    {'provider': 'gemini', 'names': ('gemini',), 'scripts': ('gemini', '@google/gemini-cli')},
-    {'provider': 'qwen', 'names': ('qwen', 'qwen-code'), 'scripts': ('qwen', 'qwen-code', '@qwen-code')},
+    {'provider': 'claude', 'names': ('claude',), 'package': 'node_modules/@anthropic-ai/claude-code/'},
+    {'provider': 'codex', 'names': ('codex',), 'package': 'node_modules/@openai/codex/'},
+    {'provider': 'gemini', 'names': ('gemini',), 'package': 'node_modules/@google/gemini-cli/'},
+    {'provider': 'qwen', 'names': ('qwen', 'qwen-code'), 'package': 'node_modules/@qwen-code/qwen-code/'},
     {'provider': 'grok', 'names': ('grok',), 'scripts': ('grok',)},
     {'provider': 'cursor-agent', 'names': ('cursor-agent',), 'scripts': ('cursor-agent',)},
     {'provider': 'opencode', 'names': ('opencode',), 'scripts': ('opencode',)},
-    {'provider': 'aider', 'names': ('aider',), 'scripts': ('aider', 'aider.py')},
+    {'provider': 'aider', 'names': ('aider',), 'scripts': ('aider',)},
     {'provider': 'crush', 'names': ('crush',), 'scripts': ('crush',)},
-    {'provider': 'amp', 'names': ('amp',), 'scripts': ('amp',)},
+    {'provider': 'amp', 'names': (), 'package': 'node_modules/@sourcegraph/amp/'},
 ]
 _AGENT_INTERPRETERS = {'node', 'bun', 'deno', 'python', 'python3'}
 _AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
@@ -3860,10 +3860,12 @@ def _agent_match(comm, argv, executable=''):
         return None
     interpreter = comm in _AGENT_INTERPRETERS or exe in _AGENT_INTERPRETERS
     # Interpreter options may precede the script; do not inspect arbitrary arguments.
-    script = next((arg for arg in argv[1:] if not arg.startswith('-')), '') if interpreter else ''
-    if interpreter and (not script or script in ('-c', '-m')):
+    module_index = next((i for i, arg in enumerate(argv[1:], 1) if arg == '-m'), -1) if interpreter and (comm.startswith('python') or exe.startswith('python')) else -1
+    module = module_index > 0 and module_index + 1 < len(argv) and argv[module_index + 1] == 'aider' and all(arg.startswith('-') and arg != '-c' for arg in argv[1:module_index])
+    script = ('aider' if module else next((arg for arg in argv[1:] if not arg.startswith('-')), '')) if interpreter else ''
+    if interpreter and (not script or (not module and any(arg in ('-c', '-m') for arg in argv[1:argv.index(script)]))):
         return None
-    args = argv[2:] if interpreter else argv[1:]
+    args = argv[module_index + 2:] if module else argv[argv.index(script) + 1:] if interpreter else argv[1:]
     if args and all(arg in ('--version', '-v', '-V', 'version', '--help', '-h', 'help') for arg in args):
         return None
     if any(arg in ('mcp-server', 'mcp_server') for arg in args) or any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
@@ -3872,10 +3874,13 @@ def _agent_match(comm, argv, executable=''):
         matched = not interpreter and (comm in rule['names'] or exe in rule['names'])
         if interpreter:
             path = script.replace('\\', '/')
-            matched = any(os.path.basename(path) == name or ('/' + name + '/') in ('/' + path + '/') or path.endswith('/' + name) for name in rule['scripts'])
+            package = rule.get('package')
+            matched = os.path.basename(path) in rule['names'] or bool(package and ('/' + package) in ('/' + path))
+            if module:
+                matched = rule['provider'] == 'aider'
         if matched:
             if rule['provider'] == 'codex':
-                command_args = argv[argv.index(script) + 1:] if interpreter else argv[1:]
+                command_args = args
                 first_arg = next((arg for arg in command_args if not arg.startswith('-')), '')
                 if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or first_arg in ('app-server', 'app-server-daemon'):
                     return None
@@ -3914,7 +3919,8 @@ def _agent_environment(path, provider, home):
 def _agent_finish(processes, now):
     matched = {pid: row for pid, row in processes.items() if row.get('provider')}
     counted = {pid: row for pid, row in matched.items()
-               if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']}
+               if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']
+               or not matched[row['ppid']].get('interpreter')}
     sessions = []
     for pid, row in sorted(counted.items()):
         parent, seen = row['ppid'], {pid}
@@ -3961,6 +3967,7 @@ def _agent_linux(proc_root, home, now):
                 if not provider:
                     continue
                 row.update(provider=provider, age_s=max(0, int(uptime - int(fields[19]) / ticks)), rss=max(0, int(fields[21]) * page))
+                row['interpreter'] = comm in _AGENT_INTERPRETERS or os.path.basename(argv[0]) in _AGENT_INTERPRETERS
                 try:
                     tty = os.readlink(os.path.join(entry.path, 'fd', '0'))
                     row['interactive'] = tty.startswith('/dev/pts/') or tty.startswith('/dev/tty')
@@ -3971,7 +3978,11 @@ def _agent_linux(proc_root, home, now):
                     row['project'] = os.path.basename(cwd.rstrip('/')) or None
                 except OSError:
                     row['project'] = None
-                row['dir'], row['billing'] = _agent_environment(os.path.join(entry.path, 'environ'), provider, home)
+                try:
+                    owned = entry.stat().st_uid == os.getuid()
+                except OSError:
+                    owned = False
+                row['dir'], row['billing'] = _agent_environment(os.path.join(entry.path, 'environ'), provider, home) if owned else (None, None)
             except (OSError, ValueError, IndexError):
                 continue
     return _agent_finish(processes, now)
@@ -3990,23 +4001,30 @@ def _agent_elapsed(value):
         return None
 
 
-def _agent_darwin(text, now):
-    import shlex
+def _agent_darwin(text, args_text, now):
     processes = {}
+    arguments = {}
+    for line in args_text.splitlines():
+        fields = line.split(None, 1)
+        if len(fields) == 2 and fields[0].isdigit():
+            arguments[int(fields[0])] = fields[1].split()
     for line in text.splitlines():
-        fields = line.split(None, 6)
-        if len(fields) != 7:
+        fields = line.split(None, 5)
+        if len(fields) != 6:
             continue
         try:
-            pid, ppid, tty, elapsed, rss, comm, args = fields
+            pid, ppid, tty, elapsed, rss, comm = fields
             pid, ppid = int(pid), int(ppid)
             row = {'pid': pid, 'ppid': ppid}
             processes[pid] = row
-            argv = shlex.split(args)
+            argv = arguments.get(pid) or [comm]
             provider = _agent_match(os.path.basename(comm), argv, comm)
+            if not provider and ' ' in comm and argv[0] != comm and os.path.basename(comm) not in _AGENT_INTERPRETERS:
+                provider = _agent_match(os.path.basename(comm), [comm], comm)
             if provider:
                 row.update(provider=provider, interactive=tty != '??', dir=None, billing=None, project=None,
-                           age_s=_agent_elapsed(elapsed), rss=int(rss) * 1024)
+                           age_s=_agent_elapsed(elapsed), rss=max(0, int(rss) * 1024),
+                           interpreter=os.path.basename(comm) in _AGENT_INTERPRETERS or os.path.basename(argv[0]) in _AGENT_INTERPRETERS)
         except (ValueError, IndexError):
             continue
     return _agent_finish(processes, now)
@@ -4022,10 +4040,12 @@ def agents_probe(proc_root='/proc', home=None, platform=None):
         if platform.startswith('linux'):
             return _agent_linux(proc_root, home or os.path.expanduser('~'), now)
         if platform == 'darwin':
-            output = _run_text(['ps', '-axo', 'pid=,ppid=,tty=,etime=,rss=,comm=,args='], 4)
-            return _agent_darwin(output, now) if output.strip() else failure
+            output = _run_text(['ps', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='], 4)
+            args = _run_text(['ps', '-axo', 'pid=,args='], 4)
+            return _agent_darwin(output, args, now) if output.strip() and args.strip() else _agent_finish({}, now)
     except (OSError, ValueError, OverflowError):
-        pass
+        if platform == 'darwin':
+            return _agent_finish({}, now)
     return failure
 
 
@@ -4243,6 +4263,10 @@ def _background_probe(name, function):
             generation = _probe.get('usage_generation', 0) + 1
             _probe['usage_generation'] = generation
             _probe['usage_snapshot'] = (_probe[name], generation)
+        elif name == 'agents_live':
+            generation = _probe.get('agents_live_generation', 0) + 1
+            _probe['agents_live_generation'] = generation
+            _probe['agents_live_snapshot'] = (_probe[name], generation)
         _probe[name + '_busy'] = False
 
 
@@ -4278,7 +4302,9 @@ def slow_probes(sample):
         _probe['usage_at'] = now
         threading.Thread(target=_background_probe, args=('usage', usage_probe), daemon=True).start()
     usage, generation = _probe.get('usage_snapshot', (_probe.get('usage'), _probe.get('usage_generation', 0)))
-    sample['agents_live'] = _probe.get('agents_live') if os.environ.get('MAINFRAME_AGENTS_SCAN') != '0' else None
+    live, live_generation = _probe.get('agents_live_snapshot', (None, 0))
+    sample['agents_live'] = live if os.environ.get('MAINFRAME_AGENTS_SCAN') != '0' else None
+    sample['_agents_live_generation'] = live_generation
     sample['usage'] = usage
     sample['_usage_generation'] = generation
     sample['windows'] = _probe['windows'] if sample.get('wsl') else None
@@ -4300,6 +4326,7 @@ def collect_sample(include_procs):
 class _UsageEmitter:
     def __init__(self):
         self.last = object()
+        self.last_live = object()
 
     def filter(self, sample):
         if not isinstance(sample, dict):
@@ -4311,6 +4338,12 @@ class _UsageEmitter:
             sample.pop('usage', None)
         else:
             self.last = generation
+        live = sample.get('agents_live')
+        generation = sample.pop('_agents_live_generation', None)
+        if live is None or generation == self.last_live:
+            sample.pop('agents_live', None)
+        else:
+            self.last_live = generation
         return sample
 
 

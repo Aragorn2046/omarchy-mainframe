@@ -163,23 +163,25 @@ ShellRoot {
   property var remoteUsage: ({})
   property var localLiveAgents: null
   property var remoteLiveAgents: ({})
+  property double liveAgentsClock: Date.now()
+  Timer { interval: 1000; repeat: true; running: true; onTriggered: shell.liveAgentsClock = Date.now() }
   readonly property var fleetLiveAgents: {
     var dependency = tabs
     var cfg = settingsData.hosts && settingsData.hosts.hosts || []
-    var entries = [{host:"this machine", alias:null, live:localLiveAgents, cap:settingsData.settings.localAgentCap, accountMap:null, status:localSilent ? "unreachable" : ""}]
+    var entries = [{host:"this machine", alias:null, local:true, live:localLiveAgents && localLiveAgents.live, receivedMs:localLiveAgents && localLiveAgents.receivedMs, cap:settingsData.settings.localAgentCap, accountMap:null, status:localSilent ? "unreachable" : ""}]
     var all = fleet && fleet.hosts ? fleet.hosts : []
     for (var i = 0; i < all.length; i++) {
       var h = all[i], session = fleet.sessions[h.ssh], report = remoteLiveAgents[h.ssh]
       var configured = cfg.find(function(item) { return item.ssh === h.ssh }) || {}
       entries.push({host:h.name, alias:h.ssh, live:report && session && report.generation === session.generation ? report.live : null,
-                    cap:configured.agentCap, accountMap:configured.agentAccounts, status:session ? session.phase : "unreachable"})
+                    receivedMs:report && session && report.generation === session.generation ? report.receivedMs : null, cap:configured.agentCap, accountMap:configured.agentAccounts, status:session ? session.phase : "unreachable"})
     }
     var accountList = (settingsData.accounts && settingsData.accounts.accounts || []).map(function(account) {
       var copy = Object.assign({}, account), home = shell.homeDir.replace(/\/$/, "")
       if (home && typeof copy.dir === "string" && (copy.dir === home || copy.dir.indexOf(home + "/") === 0)) copy.dir = "~" + copy.dir.slice(home.length)
       return copy
     })
-    return LiveAgents.summarize(entries, accountList, Date.now())
+    return LiveAgents.summarize(entries, accountList, liveAgentsClock)
   }
   readonly property var fleetUsageValue: {
     var dependency = tabs
@@ -949,7 +951,7 @@ ShellRoot {
     if (!raw || typeof raw !== "object") return
     var now = Date.now()
     if (!Hosts.noteSample(fleet, ssh, gen, raw, now)) return
-    if (Object.prototype.hasOwnProperty.call(raw, "agents_live")) { var liveMap = copyMap(remoteLiveAgents); liveMap[ssh] = {generation:gen, live:raw.agents_live}; remoteLiveAgents = liveMap }
+    if (Object.prototype.hasOwnProperty.call(raw, "agents_live")) { remoteLiveAgents = LiveAgents.remember(remoteLiveAgents, ssh, raw.agents_live, now, gen) }
     if (raw.usage) { var usageMap = copyMap(remoteUsage); usageMap[ssh] = {generation:gen, usage:raw.usage}; remoteUsage = usageMap }
     setRemoteLine(ssh, now)
     var buckets = remoteBuckets || {}
@@ -986,7 +988,7 @@ ShellRoot {
       return
     }
     if (!raw || typeof raw !== "object") return
-    localLiveAgents = raw.agents_live || null
+    if (Object.prototype.hasOwnProperty.call(raw, "agents_live")) localLiveAgents = LiveAgents.remember({}, "local", raw.agents_live, Date.now()).local
     if (raw.usage) localUsage = raw.usage
     if (smokeMode) console.log("SAMPLE t=" + Date.now())
     var now = Date.now()
