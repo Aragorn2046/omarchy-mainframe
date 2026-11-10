@@ -78,6 +78,20 @@ class LiveProbe(unittest.TestCase):
         self.assertIsNone(collect._agent_match('codex', ['codex', '--quiet', 'app-server-daemon']))
         self.assertIsNone(collect._agent_match('codex', ['codex', '--quiet', 'app-server']))
         self.assertIsNone(collect._agent_match('node', ['node', '/lib/@openai/codex/cli.js', 'app-server']))
+    def test_desktop_executables_are_not_sessions(self):
+        paths = ('/usr/lib/electron/electron', '/opt/claude-desktop/claude',
+                 '/opt/electron-app/claude', '/home/example/bin/claude')
+        for pid, path in enumerate(paths, 30):
+            self.proc(pid, 'claude', ['claude'])
+            (self.root / str(pid) / 'exe').symlink_to(path)
+        self.assertEqual([row['pid'] for row in self.scan()['sessions']], [33])
+
+        text = ('40 1 ?? 00:10 1 /Applications/Claude.app/Contents/MacOS/Claude\n'
+                '41 1 ?? 00:10 1 /usr/lib/electron/electron\n'
+                '42 1 ?? 00:10 1 /opt/claude-desktop/claude\n'
+                '43 1 ?? 00:10 1 /home/example/bin/claude')
+        args = '\n'.join(f'{pid} claude' for pid in range(40, 44))
+        self.assertEqual([row['pid'] for row in collect._agent_darwin(text, args, 0)['sessions']], [43])
     def test_claude_helper_modes_are_not_sessions(self):
         for arg in ('--claude-in-chrome-mcp', '--chrome-native-host', 'mcp', 'daemon'):
             with self.subTest(arg=arg):
@@ -162,8 +176,12 @@ class LiveProbe(unittest.TestCase):
     def test_darwin(self):
         text = '10 1 ttys001 1-01:02:03 123 /usr/bin/claude\n11 10 ?? 02:10 42 /usr/bin/grok\ngarbage\n12 1 ?? 01:00 1 /Applications/A Path/claude\n13 1 ?? 00:20 2 /usr/bin/node\n14 1 ?? 00:10 3 /usr/bin/node\n15 1 ?? 00:10 3 /usr/bin/node\n16 1 ?? 00:10 3 /usr/bin/node\n'
         args = "10 claude ask user's question\n11 grok 'unbalanced\n12 /Applications/A Path/claude prompt\n13 node /Users/u/Agent Tools/node_modules/@google/gemini-cli/dist/index.js\n14 node /Users/u/Agent Tools/cursor-agent/versions/v1/index.js\n15 node /tmp/mcp.js --root /opt/node_modules/@openai/codex/\n16 claude\ngarbage\n"
-        with mock.patch.object(collect, '_run_tracked', side_effect=[text, args]):
+        with mock.patch.object(collect, '_run_tracked', side_effect=[text, args]) as run:
             rows = collect.agents_probe(home=self.home, platform='darwin')['sessions']
+        self.assertEqual([call.args[0] for call in run.call_args_list], [
+            ['ps', '-ww', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='],
+            ['ps', '-axww', '-o', 'pid=,args='],
+        ])
         def expected(pid, provider, interactive, age, rss, parent=None):
             return {'pid':pid, 'provider':provider, 'interactive':interactive, 'dir':None, 'billing':None,
                     'project':None, 'age_s':age, 'rss':rss * 1024, 'parent_pid':parent}

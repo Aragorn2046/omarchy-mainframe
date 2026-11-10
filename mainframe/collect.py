@@ -3863,6 +3863,10 @@ def _agent_match(comm, argv, executable='', raw_args=''):
     if not argv or any(arg.startswith('--type=') for arg in argv):
         return None
     exe = os.path.basename(argv[0])
+    executable_lower = executable.lower()
+    if (os.path.basename(executable_lower) == 'electron' or '/electron' in executable_lower or
+            'claude-desktop' in executable_lower or '.app/contents/macos/' in executable_lower):
+        return None
     if '.app/contents/' in argv[0].lower():
         return None
     if comm == 'codex-linux-sandbox' or exe == 'codex-linux-sandbox':
@@ -4104,8 +4108,8 @@ def agents_probe(proc_root='/proc', home=None, platform=None):
         if platform.startswith('linux'):
             return _agent_linux(proc_root, home or os.path.expanduser('~'), now)
         if platform == 'darwin':
-            output = _run_tracked(['ps', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
-            args = _run_tracked(['ps', '-axo', 'pid=,args='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            output = _run_tracked(['ps', '-ww', '-axo', 'pid=,ppid=,tty=,etime=,rss=,ucomm='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
+            args = _run_tracked(['ps', '-axww', '-o', 'pid=,args='], 4, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace')
             return _agent_darwin(output, args, now) if output and args and output.strip() and args.strip() else failure
     except Exception:
         return failure
