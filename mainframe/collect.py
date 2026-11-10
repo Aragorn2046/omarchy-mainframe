@@ -3902,9 +3902,16 @@ def _agent_match(comm, argv, executable='', raw_args=''):
                                (r.get('package') and '/' + r['package'] in '/' + path) or
                                (r['provider'] == 'cursor-agent' and '/cursor-agent/' in path)), None)
             if not rule_match and raw_args:
-                remainder = raw_args.split(None, 1)[1] if len(raw_args.split(None, 1)) > 1 else ''
-                end = re.search(r'\.(?:mjs|cjs|js)(?=\s|$)', remainder)
-                span = remainder[:end.end()] if end else (remainder.split(None, 1)[0] if remainder else '')
+                span = arg
+                if not os.path.splitext(arg)[1]:
+                    candidate = arg
+                    for fragment in argv[i + 1:]:
+                        if fragment.startswith(('/', '-')):
+                            break
+                        candidate += ' ' + fragment
+                        if re.search(r'\.(?:mjs|cjs|js)$', fragment):
+                            span = candidate
+                            break
                 rule_match = next((r for r in AGENT_RULES if
                                    (r.get('package') and '/' + r['package'] in span) or
                                    (r['provider'] == 'cursor-agent' and '/cursor-agent/' in span)), None)

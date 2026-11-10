@@ -240,6 +240,25 @@ class LiveProbe(unittest.TestCase):
             self.assertFalse(result['supported'])
             self.assertEqual(result['sessions'], [])
 
+    def test_darwin_matches_only_script_operand(self):
+        gemini = '/Users/u/Agent Tools/node_modules/@google/gemini-cli/dist/index.js'
+        codex = '/opt/node_modules/@openai/codex/bin/codex.js'
+        cases = (
+            ('node /opt/mcp-host ' + codex, None),
+            ('node /opt/mcp.js ' + codex, None),
+            ('node /opt/mcp.py ' + codex, None),
+            ('node /opt/mcp-host --root ' + codex, None),
+            ('node --require ' + codex + ' /opt/mcp-host', None),
+            ('node --require /tmp/pre.cjs ' + gemini, 'gemini'),
+            ('node ' + gemini, 'gemini'),
+            ('node /opt/mcp-host /prefix node_modules/@google/gemini-cli/index.js', None),
+        )
+        for raw_args, expected in cases:
+            with self.subTest(raw_args=raw_args):
+                rows = collect._agent_darwin('1 0 ?? 00:10 1 /usr/bin/node',
+                                             '1 ' + raw_args, 0)['sessions']
+                self.assertEqual([row['provider'] for row in rows], [expected] if expected else [])
+
     def test_options_interpreters_and_launchers(self):
         gemini = '/x/node_modules/@google/gemini-cli/dist/index.js'
         self.assertEqual(collect._agent_match('node', ['node', '--require', '/tmp/pre.cjs', gemini]), 'gemini')
