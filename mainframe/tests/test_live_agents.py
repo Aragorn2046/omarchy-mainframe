@@ -1,5 +1,8 @@
 import importlib.util
+import contextlib
+import io
 import json
+import logging
 import os
 import subprocess
 from pathlib import Path
@@ -76,11 +79,15 @@ class LiveProbe(unittest.TestCase):
         self.assertIsNone(collect._agent_match('codex', ['codex', '--quiet', 'app-server']))
         self.assertIsNone(collect._agent_match('node', ['node', '/lib/@openai/codex/cli.js', 'app-server']))
     def test_claude_helper_modes_are_not_sessions(self):
-        for arg in ('--claude-in-chrome-mcp', '--chrome-native-host', 'browser-mcp', '--other-mcp', 'mcp', 'daemon'):
+        for arg in ('--claude-in-chrome-mcp', '--chrome-native-host', 'mcp', 'daemon'):
             with self.subTest(arg=arg):
                 self.assertIsNone(collect._agent_match('claude', ['claude', arg]))
                 self.assertIsNone(collect._agent_match('node', ['node', '/lib/node_modules/@anthropic-ai/claude-code/cli.js', arg]))
-        self.assertEqual(collect._agent_match('claude', ['claude', 'hello']), 'claude')
+        for args in (['--mcp-config', './team-mcp'], ['-p', 'mcp'], ['hello', 'daemon'], ['browser-mcp'], ['--other-mcp']):
+            with self.subTest(args=args):
+                self.assertEqual(collect._agent_match('claude', ['claude'] + args), 'claude')
+        self.assertIsNone(collect._agent_match('claude', ['claude', 'mcp', 'serve']))
+        self.assertIsNone(collect._agent_match('claude', ['claude', '-p', 'hello', '--chrome-native-host']))
     def test_codex_remote_exec_and_children_of_server(self):
         self.proc(40, 'codex', ['codex', 'app-server'])
         self.proc(41, 'codex', ['codex', '--remote', 'unix://socket'], 40)
@@ -96,19 +103,49 @@ class LiveProbe(unittest.TestCase):
         self.proc(20, 'claude', ['claude'], env=b'ANTHROPIC_API_KEY=never-emit-this\0OTHER=also-private\0')
         self.proc(21, 'codex', ['codex'], env=b'CODEX_HOME=/home/example/.codex-work\0')
         self.proc(22, 'claude', ['claude'], env=None, tty=None, cwd=None)
-        rows = self.scan()['sessions']
+        stderr, logs = io.StringIO(), io.StringIO()
+        handler = logging.StreamHandler(logs)
+        logging.getLogger().addHandler(handler)
+        try:
+            with contextlib.redirect_stderr(stderr):
+                result = self.scan()
+        finally:
+            logging.getLogger().removeHandler(handler)
+        rows = result['sessions']
         self.assertEqual((rows[0]['dir'], rows[0]['billing']), ('~/.claude', 'api'))
         self.assertEqual((rows[1]['dir'], rows[1]['billing']), ('~/.codex-work', 'subscription'))
         self.assertEqual((rows[2]['dir'], rows[2]['billing'], rows[2]['interactive'], rows[2]['project']), (None, None, None, None))
-        result = json.dumps(rows)
-        self.assertNotIn('never-emit-this', result); self.assertNotIn('also-private', result)
+        state = {'storage': [], 'windows': None, 'storage_busy': True, 'windows_busy': True,
+                 'agents_live_busy': True, 'agents_live_snapshot': (result, 1)}
+        base = {'t_ms': 1, 'mono_ms': 1, 'cpu': None, 'mem': None, 'disk': None, 'net': None,
+                'gpu': None, 'temps': None, 'battery': None, 'procs': None}
+        with mock.patch.object(collect, '_probe', state), mock.patch.object(collect, 'collect_linux', return_value=base), mock.patch.object(collect.sys, 'platform', 'linux'):
+            sample = collect.safe_sample(False)
+        emitted = io.StringIO()
+        with contextlib.redirect_stdout(emitted):
+            collect.emit_sample(collect._UsageEmitter().filter(sample))
+        self.assertEqual(json.loads(emitted.getvalue())['agents_live'], result)
+        for secret in ('never-emit-this', 'also-private'):
+            for output in (json.dumps(result), emitted.getvalue(), stderr.getvalue(), logs.getvalue()):
+                self.assertNotIn(secret, output)
+
+    def test_multi_provider_billing(self):
+        keys = ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'XAI_API_KEY', 'OPENROUTER_API_KEY')
+        for provider in ('aider', 'opencode', 'crush'):
+            for key in keys:
+                with self.subTest(provider=provider, key=key):
+                    path = self.root / 'environment'
+                    path.write_bytes((key + '=secret\0').encode())
+                    self.assertEqual(collect._agent_environment(path, provider, self.home), (None, 'api'))
+                    path.write_bytes((key + '=\0').encode())
+                    self.assertEqual(collect._agent_environment(path, provider, self.home), (None, None))
     def test_cap(self):
         for pid in range(100, 357): self.proc(pid, 'grok', ['grok'])
         result = self.scan()
         self.assertEqual(len(result['sessions']), 256); self.assertTrue(result['truncated'])
     def test_darwin(self):
-        text = '10 1 ttys001 1-01:02:03 123 /usr/bin/claude\n11 10 ?? 02:10 42 /usr/bin/grok\ngarbage\n12 1 ?? 01:00 1 /Applications/A Path/claude\n13 1 ?? 00:20 2 /usr/bin/node\n14 1 ?? 00:10 3 /usr/bin/node\n'
-        args = "10 claude ask user's question\n11 grok 'unbalanced\n12 /Applications/A Path/claude prompt\n13 node /Users/u/Agent Tools/node_modules/@google/gemini-cli/dist/index.js\n14 node /Users/u/Agent Tools/cursor-agent/versions/v1/index.js\ngarbage\n"
+        text = '10 1 ttys001 1-01:02:03 123 /usr/bin/claude\n11 10 ?? 02:10 42 /usr/bin/grok\ngarbage\n12 1 ?? 01:00 1 /Applications/A Path/claude\n13 1 ?? 00:20 2 /usr/bin/node\n14 1 ?? 00:10 3 /usr/bin/node\n15 1 ?? 00:10 3 /usr/bin/node\n16 1 ?? 00:10 3 /usr/bin/node\n'
+        args = "10 claude ask user's question\n11 grok 'unbalanced\n12 /Applications/A Path/claude prompt\n13 node /Users/u/Agent Tools/node_modules/@google/gemini-cli/dist/index.js\n14 node /Users/u/Agent Tools/cursor-agent/versions/v1/index.js\n15 node /tmp/mcp.js --root /opt/node_modules/@openai/codex/\n16 claude\ngarbage\n"
         with mock.patch.object(collect, '_run_tracked', side_effect=[text, args]):
             rows = collect.agents_probe(home=self.home, platform='darwin')['sessions']
         def expected(pid, provider, interactive, age, rss, parent=None):
@@ -116,7 +153,12 @@ class LiveProbe(unittest.TestCase):
                     'project':None, 'age_s':age, 'rss':rss * 1024, 'parent_pid':parent}
         self.assertEqual(rows, [expected(10, 'claude', True, 90123, 123), expected(11, 'grok', False, 130, 42, 10),
                                 expected(12, 'claude', False, 60, 1), expected(13, 'gemini', False, 20, 2),
-                                expected(14, 'cursor-agent', False, 10, 3)])
+                                expected(14, 'cursor-agent', False, 10, 3), expected(16, 'claude', False, 10, 3)])
+
+    def test_interpreter_process_title_linux(self):
+        self.proc(17, 'node', ['claude'])
+        self.proc(18, 'bun', ['codex'])
+        self.assertEqual([(row['pid'], row['provider']) for row in self.scan()['sessions']], [(17, 'claude'), (18, 'codex')])
     def test_background_probe_is_single_flight(self):
         entered, release = threading.Event(), threading.Event()
         calls = []

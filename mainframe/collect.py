@@ -3851,6 +3851,10 @@ def _agent_interpreter(name):
 _AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
                'codex': (b'OPENAI_API_KEY', b'CODEX_API_KEY'),
                'gemini': (b'GEMINI_API_KEY', b'GOOGLE_API_KEY'), 'grok': (b'XAI_API_KEY',)}
+_AGENT_MULTI_KEYS = (b'ANTHROPIC_API_KEY', b'OPENAI_API_KEY', b'GEMINI_API_KEY',
+                     b'GOOGLE_API_KEY', b'XAI_API_KEY', b'OPENROUTER_API_KEY')
+for _provider in ('aider', 'opencode', 'crush'):
+    _AGENT_KEYS[_provider] = _AGENT_MULTI_KEYS
 _AGENT_DIRS = {'claude': (b'CLAUDE_CONFIG_DIR', '.claude'), 'codex': (b'CODEX_HOME', '.codex')}
 
 
@@ -3869,6 +3873,8 @@ def _agent_match(comm, argv, executable='', raw_args=''):
     operands = {'-W', '-X'} if python else ({'-r', '--require', '--import', '--loader', '--experimental-loader'} if node else set())
     rule_match, script_index = None, 0
     if interpreter:
+        if len(argv) == 1:
+            rule_match = next((r for r in AGENT_RULES if argv[0] in r['names']), None)
         i = 1
         subcommand = False
         while i < len(argv):
@@ -3895,9 +3901,12 @@ def _agent_match(comm, argv, executable='', raw_args=''):
                                (r.get('package') and '/' + r['package'] in '/' + path) or
                                (r['provider'] == 'cursor-agent' and '/cursor-agent/' in path)), None)
             if not rule_match and raw_args:
+                remainder = raw_args.split(None, 1)[1] if len(raw_args.split(None, 1)) > 1 else ''
+                end = re.search(r'\.(?:mjs|cjs|js)(?=\s|$)', remainder)
+                span = remainder[:end.end()] if end else (remainder.split(None, 1)[0] if remainder else '')
                 rule_match = next((r for r in AGENT_RULES if
-                                   (r.get('package') and '/' + r['package'] in raw_args) or
-                                   (r['provider'] == 'cursor-agent' and '/cursor-agent/' in raw_args)), None)
+                                   (r.get('package') and '/' + r['package'] in span) or
+                                   (r['provider'] == 'cursor-agent' and '/cursor-agent/' in span)), None)
             script_index = i
             break
         if not rule_match:
@@ -3909,14 +3918,22 @@ def _agent_match(comm, argv, executable='', raw_args=''):
     args = argv[script_index + 1:] if script_index else argv[1:]
     if args and all(arg in ('--version', '-v', '-V', 'version', '--help', '-h', 'help') for arg in args):
         return None
-    if any(arg in ('mcp-server', 'mcp_server') for arg in args) or any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
+    if any(arg in ('mcp-server', 'mcp_server') for arg in args):
         return None
     for rule in AGENT_RULES:
         matched = not interpreter and (comm in rule['names'] or exe in rule['names'] or rule is rule_match)
         if interpreter:
             matched = rule is rule_match
         if matched:
-            if rule['provider'] == 'claude' and any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host', 'mcp', 'daemon') or arg.endswith('-mcp') for arg in args):
+            if rule['provider'] == 'claude':
+                if any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host') for arg in args):
+                    return None
+                i = 0
+                while i < len(args) and args[i].startswith('-'):
+                    i += 2 if args[i] in ('-p', '--print', '--mcp-config') else 1
+                if i < len(args) and args[i] in ('mcp', 'daemon'):
+                    return None
+            elif any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
                 return None
             if rule['provider'] == 'codex':
                 if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or any(arg in ('app-server', 'app-server-daemon') for arg in argv):
@@ -3940,7 +3957,8 @@ def _agent_environment(path, provider, home):
         key, sep, value = entry.partition(b'=')
         if sep and key in wanted:
             values[key] = value
-    billing = ('api' if any(values.get(key) for key in _AGENT_KEYS[provider]) else 'subscription') if provider in _AGENT_KEYS else None
+    billing = ('api' if any(values.get(key) for key in _AGENT_KEYS[provider]) else
+               (None if provider in ('aider', 'opencode', 'crush') else 'subscription')) if provider in _AGENT_KEYS else None
     result = None
     if directory:
         value = (values.get(directory[0]) or b'').decode('utf-8', 'replace')
