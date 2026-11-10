@@ -63,6 +63,15 @@ test('failed probes do not report zero and unmapped directories stay per host', 
   const sameName = summarize([entry('Laptop',[session('claude','~/.claude')],{alias:'one'}), entry('Laptop',[session('claude','~/.claude')],{alias:'two'})], [], now);
   assert.equal(sameName.accounts.length,2);
 });
+test('unmapped local sessions use provider labels and remote labels stay unchanged', () => {
+  const result = summarize([
+    entry('this machine', [session('grok', null), session('codex', '~/.unmapped'), session('claude', null, 'api')], {local:true}),
+    entry('remote', [session('grok', null), session('codex', '~/.unmapped')])
+  ], [], now);
+  assert.deepEqual(result.hosts[0].sessions.map(x => x.account), ['grok (no account)', 'codex (no account)', 'claude API key']);
+  assert.deepEqual(result.hosts[1].sessions.map(x => x.account), ['unknown grok · remote', '~/.unmapped · remote']);
+  assert.equal(result.accounts.find(x => x.label === 'grok (no account)').count, 1);
+});
 test('wiring uses current generation, configured hosts, local status and actual home', () => {
   assert.equal(relativeDir('/srv/person/.claude','/srv/person'), '~/.claude');
   assert.equal(relativeDir('/home/other/.claude','/srv/person'), '/home/other/.claude');

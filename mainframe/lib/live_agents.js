@@ -51,6 +51,7 @@ function summarize(entries, accounts, nowMs) {
     if (!account && entry.local === true && dir) account = accounts.find(function(a) { return a && a.provider === session.provider && normalizeDir(a.dir) === dir; });
     if (account && typeof account.name === 'string' && account.name) return {label:account.name + (session.billing === 'api' ? ' (API key)' : ''), id:account.id, scope:null};
     if (session.billing === 'api') return {label:session.provider + ' API key', scope:null};
+    if (entry.local === true) return {label:session.provider + ' (no account)', scope:entry.alias || hostName};
     return {label:(session.dir || 'unknown ' + session.provider) + ' · ' + hostName, scope:entry.alias || hostName};
   }
   function sortProviders(a, b) { return b.count - a.count || String(a.provider).localeCompare(String(b.provider)); }

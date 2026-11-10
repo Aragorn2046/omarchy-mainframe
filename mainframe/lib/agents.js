@@ -128,7 +128,7 @@ function pack(blocks, width, options) {
     nextX += widths[i] + pixelGap;
   }
   blocks.forEach(function(block) {
-    var count = block.cardHeights.length, span = Math.min(count, columns);
+    var count = block.cardHeights.length, span = Math.min(count, columns, block.maxSpan === undefined ? columns : Math.max(1, block.maxSpan));
     if (!span) { result.push({key:block.key, x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]}); return; }
     var start = 0, top = Infinity, c, j;
     for (c = 0; c <= columns - span; c++) {

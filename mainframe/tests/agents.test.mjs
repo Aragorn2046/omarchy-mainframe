@@ -257,3 +257,19 @@ test('packing distributes whole pixels across columns', () => {
   assert.equal(Math.max(...cards.map(card => card.x + card.width)), 1476);
   assert.equal(cards[0].y, 25.5);
 });
+
+test('a span limit leaves room for the live card', () => {
+  const blocks = [
+    {key:'live', headingHeight:15, cardHeights:[120]},
+    {key:'usage', headingHeight:15, cardHeights:[100, 100, 100, 100, 100], maxSpan:3},
+  ];
+  const wide = A.pack(blocks, 1600);
+  assert.equal(wide.columns, 4);
+  assert.equal(wide.blocks[0].cards[0].y, wide.blocks[1].cards[0].y);
+  assert.ok(wide.blocks[1].cards[0].x > wide.blocks[0].cards[0].x);
+  assert.equal(wide.blocks[1].cards[3].y, wide.blocks[1].cards[0].y + 110);
+  const narrow = A.pack(blocks, 350);
+  assert.equal(narrow.columns, 1);
+  assert.equal(narrow.blocks[1].cards[0].width, 350);
+  assert.ok(narrow.blocks[1].cards[0].y >= narrow.blocks[0].cards[0].y + 120);
+});
