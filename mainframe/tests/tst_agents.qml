@@ -3,6 +3,7 @@ import QtTest
 import ".."
 import "../lib/navigation.js" as Navigation
 import "../lib/agents.js" as Agents
+import "../lib/live_agents.js" as LiveAgents
 
 TestCase {
   id: testCase
@@ -19,6 +20,7 @@ TestCase {
   function init() {
     view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:0, hosts:[], accounts:[]}
     view.cyberStyle = null
+    view.expandedHosts = ({})
     view.rows = []
     view.valueData = valueData(0, [])
     testCase.width = 900
@@ -69,6 +71,7 @@ TestCase {
     verify(livePosition.x + live.width <= cardPosition.x + 1)
     testCase.width = 350
     tryVerify(function() { return live.width === view.flick.width && card.width === live.width && view.checkLayout() === 0 })
+    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, 0)
     verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.mapToItem(view.flick.contentItem, 0, 0).y + live.height)
     view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:3, hosts:[unavailable('Host A'), unavailable('Host B'), unavailable('Host C')], accounts:[]}
     compare(empty.text, 'No machine reporting')
@@ -92,7 +95,7 @@ TestCase {
     var line = findChild(rows.itemAt(0), 'agents-live-host-row')
     tryVerify(function() { return view.checkLayout() === 0 && line.width > 0 })
     verify(findChild(view, 'agents-live-providers').visible)
-    compare(findChild(view, 'agents-live-reporting').text, '2/3+ reporting')
+    compare(findChild(view, 'agents-live-reporting').text, '2/3 reporting')
     compare(findChild(rows.itemAt(0), 'agents-live-host-count').color, view.critical)
     var oldHeight = live.height
     var oldContentHeight = view.flick.contentHeight
@@ -101,6 +104,7 @@ TestCase {
     var detail = findChild(rows.itemAt(0), 'agents-live-session')
     verify(detail.text.indexOf('codex · ') === 0 && detail.text.indexOf('headless · 1 MB') >= 0)
     compare(detail.wrapMode, Text.Wrap)
+    compare(detail.x, findChild(rows.itemAt(0), 'agents-live-host-providers').x)
     var accounts = findChild(view, 'agents-live-accounts')
     // A single unbreakable over-long account label must wrap rather than clip.
     verify(accounts.lineCount > 1)
@@ -178,7 +182,55 @@ TestCase {
     var live = view.packed.blocks[0].cards[0]
     var usage = view.packed.blocks[1].cards[0]
     verify(usage.x > live.x)
-    compare(usage.y, live.y)
+    verify(usage.y >= live.y && usage.y < live.y + live.height)
+  }
+  function test_live_two_column_packing() {
+    testCase.width = 900
+    var rows = []
+    for (var i = 0; i < 6; i++) rows.push({name:'Agent ' + i, category:'llm'})
+    view.rows = rows
+    tryVerify(function() { return view.packed.columns === 2 && view.packed.blocks.length === 2 && view.checkLayout() === 0 })
+    var cards = view.packed.blocks[1].cards
+    verify(cards.some(function(card) { return card.x === 0 }))
+    verify(cards.some(function(card) { return card.x > 0 }))
+    var height = cards[0].height
+    verify(cards.every(function(card) { return card.height === height }))
+    verify(Math.max.apply(null, cards.map(function(card) { return card.y + card.height })) <= 4 * (height + 10) + 30)
+  }
+  function test_host_expansion_survives_refresh_and_missing_host() {
+    var session = {provider:'codex', account:'account', project:'project'}
+    function entry(name, valid) {
+      return {host:name, live:valid ? {supported:true, sessions:[session]} : null, receivedMs:1000}
+    }
+    function refresh(first, second, third) {
+      view.fleetLiveAgents = LiveAgents.summarize([entry('first', first), entry('second', second), entry('constructor', third)], [], 1000)
+    }
+    refresh(true, true, true)
+    var rows = findChild(view, 'agents-live-hosts')
+    compare(rows.count, view.fleetLiveAgents.reporting)
+    var row = findChild(rows.itemAt(1), 'agents-live-host-row')
+    tryVerify(function() { return row.width > 0 && rows.itemAt(1).y >= rows.itemAt(0).y + rows.itemAt(0).height && view.checkLayout() === 0 })
+    mouseClick(row, 5, 5)
+    tryVerify(function() { return rows.itemAt(1).expanded && findChild(rows.itemAt(1), 'agents-live-session') !== null })
+    refresh(true, true, true)
+    compare(rows.count, view.fleetLiveAgents.reporting)
+    tryVerify(function() { return rows.itemAt(1).expanded && findChild(rows.itemAt(1), 'agents-live-session') !== null })
+    verify(!rows.itemAt(0).expanded)
+    verify(!rows.itemAt(2).expanded)
+    refresh(false, true, true)
+    compare(rows.count, view.fleetLiveAgents.reporting)
+    compare(findChild(view, 'agents-live-reporting').text, '2/3 reporting')
+    compare(rows.itemAt(0).modelData.host, 'second')
+    tryVerify(function() { return rows.itemAt(0).expanded && findChild(rows.itemAt(0), 'agents-live-session') !== null })
+    verify(!rows.itemAt(1).expanded)
+    tryVerify(function() { return view.checkLayout() === 0 })
+  }
+  function test_duplicate_account_labels() {
+    view.fleetLiveAgents = {total:4, reporting:1, hostsTotal:1, hosts:[], accounts:[
+      {label:'personal', provider:'claude', count:2}, {label:'personal', provider:'codex', count:1},
+      {label:'work', provider:'codex', count:1}]}
+    compare(findChild(view, 'agents-live-accounts').text,
+            'personal\u00a0(claude)\u00a02 · personal\u00a0(codex)\u00a01 · work\u00a01')
   }
   function test_value_card_follows_agent_sections() {
     var rows = []
