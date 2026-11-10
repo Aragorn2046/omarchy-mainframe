@@ -205,7 +205,23 @@ MIT
 
 Overview has Systems, Storage and Agents views. Collectors run independently for all machines while Overview is open. Select a machine card to open its dashboard.
 
-Add accounts in settings. Claude and Codex use the Omarchy collectors with the account directory and an isolated cache. A command account accepts a JSON array of arguments and must print one usage JSON record. Its limit `percent` values use 0–100 (for example, `55` means 55%); Omarchy collector and usage-file values use fractions from 0–1. Mainframe never reads provider credentials. On opening Agents and every ten minutes while it is open, Omarchy collector records older than one minute refresh, except for providers covered by a Mainframe account or disabled in the Omarchy agents widget; `r` forces a refresh. Existing Omarchy usage files also appear. Unavailable providers are hidden unless enabled in Display settings.
+Add accounts in settings. Claude and Codex use the Omarchy collectors with the account directory and an isolated cache. A command account accepts a JSON array of arguments and must print one usage JSON record. Its limit `percent` values use 0–100 (for example, `55` means 55%); Omarchy collector and usage-file values use fractions from 0–1. Mainframe never stores or sends provider credentials. On opening Agents and every ten minutes while it is open, Omarchy collector records older than one minute refresh, except for providers covered by a Mainframe account or disabled in the Omarchy agents widget; `r` forces a refresh. Existing Omarchy usage files also appear. Unavailable providers are hidden unless enabled in Display settings.
+
+#### Running now
+
+Running now counts supported coding-agent CLI processes on each reporting machine, including separate worker sessions. The sampler checks process names, the working folder name, and only these environment variable names: `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `OPENAI_API_KEY`, `CODEX_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and `XAI_API_KEY`. Key values are never read out or sent. Set `MAINFRAME_AGENTS_SCAN=0` to disable the scan. macOS does not show accounts. Cloud agents and plain API scripts are not counted.
+
+Optional limits and account mapping can be added to `hosts.json` and `settings.json`:
+
+```json
+{"hosts":[{"name":"laptop","ssh":"laptop","agentCap":3,"agentAccounts":{"~/.claude-work":"work"}}]}
+```
+
+```json
+{"localAgentCap":4}
+```
+
+The mapping value is an account ID from `accounts.json`. A machine stops contributing to the total when its report is over 60 seconds old or it is unreachable.
 
 A usage JSON file can set `category` to `llm`, `video`, `image`, `voice`, or `other` to choose its section in Agents. The value is case-insensitive; without it, Mainframe infers the section from the provider, ID, or name.
 

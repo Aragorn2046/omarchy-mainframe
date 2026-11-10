@@ -23,6 +23,13 @@ TestCase {
     view.flick.cancelFlick()
     view.flick.contentY = 0
   }
+  function test_live_card() {
+    view.fleetLiveAgents = {total:2, reporting:1, hostsTotal:1, hosts:[{host:'laptop', count:2, cap:3, over:false, headless:0, providers:[], sessions:[], status:'reporting'}], accounts:[]}
+    compare(findChild(view, 'agents-live-total').text, '2')
+    var rows = findChild(view, 'agents-live-hosts')
+    compare(rows.count, 1)
+    compare(findChild(rows.itemAt(0), 'agents-live-host-count').text, '2 / 3')
+  }
   function test_value_card_follows_agent_sections() {
     var rows = []
     var categories = ['llm', 'video', 'image', 'voice', 'other']

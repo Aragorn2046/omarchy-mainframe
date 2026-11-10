@@ -3830,10 +3830,209 @@ def usage_probe():
     return json.loads(result)
 
 
+# Each rule names one CLI and its interpreter package entry points.
+AGENT_RULES = [
+    {'provider': 'claude', 'names': ('claude',), 'scripts': ('claude', '@anthropic-ai/claude-code')},
+    {'provider': 'codex', 'names': ('codex',), 'scripts': ('codex', '@openai/codex')},
+    {'provider': 'gemini', 'names': ('gemini',), 'scripts': ('gemini', '@google/gemini-cli')},
+    {'provider': 'qwen', 'names': ('qwen', 'qwen-code'), 'scripts': ('qwen', 'qwen-code', '@qwen-code')},
+    {'provider': 'grok', 'names': ('grok',), 'scripts': ('grok',)},
+    {'provider': 'cursor-agent', 'names': ('cursor-agent',), 'scripts': ('cursor-agent',)},
+    {'provider': 'opencode', 'names': ('opencode',), 'scripts': ('opencode',)},
+    {'provider': 'aider', 'names': ('aider',), 'scripts': ('aider', 'aider.py')},
+    {'provider': 'crush', 'names': ('crush',), 'scripts': ('crush',)},
+    {'provider': 'amp', 'names': ('amp',), 'scripts': ('amp',)},
+]
+_AGENT_INTERPRETERS = {'node', 'bun', 'deno', 'python', 'python3'}
+_AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
+               'codex': (b'OPENAI_API_KEY', b'CODEX_API_KEY'),
+               'gemini': (b'GEMINI_API_KEY', b'GOOGLE_API_KEY'), 'grok': (b'XAI_API_KEY',)}
+_AGENT_DIRS = {'claude': (b'CLAUDE_CONFIG_DIR', '.claude'), 'codex': (b'CODEX_HOME', '.codex')}
+
+
+def _agent_match(comm, argv, executable=''):
+    if not argv or any(arg.startswith('--type=') for arg in argv):
+        return None
+    exe = os.path.basename(argv[0])
+    if '.app/contents/' in argv[0].lower():
+        return None
+    if comm == 'codex-linux-sandbox' or exe == 'codex-linux-sandbox':
+        return None
+    interpreter = comm in _AGENT_INTERPRETERS or exe in _AGENT_INTERPRETERS
+    # Interpreter options may precede the script; do not inspect arbitrary arguments.
+    script = next((arg for arg in argv[1:] if not arg.startswith('-')), '') if interpreter else ''
+    if interpreter and (not script or script in ('-c', '-m')):
+        return None
+    args = argv[2:] if interpreter else argv[1:]
+    if args and all(arg in ('--version', '-v', '-V', 'version', '--help', '-h', 'help') for arg in args):
+        return None
+    if any(arg in ('mcp-server', 'mcp_server') for arg in args) or any(args[i] == 'mcp' and args[i + 1] in ('serve', 'server') for i in range(len(args) - 1)):
+        return None
+    for rule in AGENT_RULES:
+        matched = not interpreter and (comm in rule['names'] or exe in rule['names'])
+        if interpreter:
+            path = script.replace('\\', '/')
+            matched = any(os.path.basename(path) == name or ('/' + name + '/') in ('/' + path + '/') or path.endswith('/' + name) for name in rule['scripts'])
+        if matched:
+            if rule['provider'] == 'codex':
+                command_args = argv[argv.index(script) + 1:] if interpreter else argv[1:]
+                first_arg = next((arg for arg in command_args if not arg.startswith('-')), '')
+                if '/app-server-daemon/' in executable or '/app-server-daemon/' in argv[0] or first_arg in ('app-server', 'app-server-daemon'):
+                    return None
+            return rule['provider']
+    return None
+
+
+def _agent_environment(path, provider, home):
+    try:
+        with open(path, 'rb') as source:
+            raw = source.read()
+    except OSError:
+        return None, None
+    wanted = set(_AGENT_KEYS.get(provider, ()))
+    directory = _AGENT_DIRS.get(provider)
+    if directory:
+        wanted.add(directory[0])
+    values = {}
+    for entry in raw.split(b'\0'):
+        key, sep, value = entry.partition(b'=')
+        if sep and key in wanted:
+            values[key] = value
+    billing = ('api' if any(values.get(key) for key in _AGENT_KEYS[provider]) else 'subscription') if provider in _AGENT_KEYS else None
+    result = None
+    if directory:
+        value = os.fsdecode(values.get(directory[0]) or b'')
+        path = os.path.normpath(os.path.expanduser(value)) if value else os.path.join(home, directory[1])
+        if os.path.isabs(path):
+            home = os.path.normpath(home)
+            result = '~' + path[len(home):] if path == home or path.startswith(home.rstrip('/') + '/') else path
+            if len(result) > 200:
+                result = None
+    return result, billing
+
+
+def _agent_finish(processes, now):
+    matched = {pid: row for pid, row in processes.items() if row.get('provider')}
+    counted = {pid: row for pid, row in matched.items()
+               if row['ppid'] not in matched or matched[row['ppid']]['provider'] != row['provider']}
+    sessions = []
+    for pid, row in sorted(counted.items()):
+        parent, seen = row['ppid'], {pid}
+        while parent in processes and parent not in seen and parent not in counted:
+            seen.add(parent)
+            parent = processes[parent]['ppid']
+        session = {key: row.get(key) for key in ('pid', 'provider', 'interactive', 'dir', 'billing', 'project', 'age_s', 'rss')}
+        session['parent_pid'] = parent if parent in counted and parent not in seen else None
+        sessions.append(session)
+    return {'at': int(now), 'sessions': sessions[:256], 'truncated': len(sessions) > 256, 'supported': True}
+
+
+def _agent_linux(proc_root, home, now):
+    processes = {}
+    with open(os.path.join(proc_root, 'uptime'), encoding='ascii') as source:
+        uptime = float(source.read().split()[0])
+    ticks, page = os.sysconf('SC_CLK_TCK'), os.sysconf('SC_PAGE_SIZE')
+    candidates = {name for rule in AGENT_RULES for name in rule['names']} | _AGENT_INTERPRETERS
+    with os.scandir(proc_root) as entries:
+        for entry in entries:
+            if not entry.name.isdigit():
+                continue
+            try:
+                with open(os.path.join(entry.path, 'stat'), encoding='utf-8', errors='replace') as source:
+                    statline = source.read()
+                start, end = statline.find('('), statline.rfind(')')
+                comm, fields = statline[start + 1:end], statline[end + 2:].split()
+                pid, ppid = int(entry.name), int(fields[1])
+                row = {'pid': pid, 'ppid': ppid}
+                processes[pid] = row
+                # Some native launchers resolve to version-named binaries.
+                if comm not in candidates and not re.fullmatch(r'\d+\.\d+\.\d+(?:[-.][A-Za-z0-9]+)*', comm):
+                    continue
+                try:
+                    with open(os.path.join(entry.path, 'cmdline'), 'rb') as source:
+                        argv = [os.fsdecode(x) for x in source.read().split(b'\0') if x]
+                except OSError:
+                    argv = [comm] if comm not in _AGENT_INTERPRETERS else []
+                try:
+                    executable = os.readlink(os.path.join(entry.path, 'exe'))
+                except OSError:
+                    executable = ''
+                provider = _agent_match(comm, argv, executable)
+                if not provider:
+                    continue
+                row.update(provider=provider, age_s=max(0, int(uptime - int(fields[19]) / ticks)), rss=max(0, int(fields[21]) * page))
+                try:
+                    tty = os.readlink(os.path.join(entry.path, 'fd', '0'))
+                    row['interactive'] = tty.startswith('/dev/pts/') or tty.startswith('/dev/tty')
+                except OSError:
+                    row['interactive'] = None
+                try:
+                    cwd = os.readlink(os.path.join(entry.path, 'cwd'))
+                    row['project'] = os.path.basename(cwd.rstrip('/')) or None
+                except OSError:
+                    row['project'] = None
+                row['dir'], row['billing'] = _agent_environment(os.path.join(entry.path, 'environ'), provider, home)
+            except (OSError, ValueError, IndexError):
+                continue
+    return _agent_finish(processes, now)
+
+
+def _agent_elapsed(value):
+    try:
+        days, sep, rest = value.partition('-')
+        if not sep:
+            rest, days = days, '0'
+        parts = [int(part) for part in rest.split(':')]
+        if len(parts) not in (2, 3):
+            return None
+        return int(days) * 86400 + sum(part * 60 ** i for i, part in enumerate(reversed(parts)))
+    except ValueError:
+        return None
+
+
+def _agent_darwin(text, now):
+    import shlex
+    processes = {}
+    for line in text.splitlines():
+        fields = line.split(None, 6)
+        if len(fields) != 7:
+            continue
+        try:
+            pid, ppid, tty, elapsed, rss, comm, args = fields
+            pid, ppid = int(pid), int(ppid)
+            row = {'pid': pid, 'ppid': ppid}
+            processes[pid] = row
+            argv = shlex.split(args)
+            provider = _agent_match(os.path.basename(comm), argv, comm)
+            if provider:
+                row.update(provider=provider, interactive=tty != '??', dir=None, billing=None, project=None,
+                           age_s=_agent_elapsed(elapsed), rss=int(rss) * 1024)
+        except (ValueError, IndexError):
+            continue
+    return _agent_finish(processes, now)
+
+
+def agents_probe(proc_root='/proc', home=None, platform=None):
+    now = time.time()
+    failure = {'at': int(now), 'sessions': [], 'truncated': False, 'supported': False}
+    if os.environ.get('MAINFRAME_AGENTS_SCAN') == '0':
+        return failure
+    try:
+        platform = platform or sys.platform
+        if platform.startswith('linux'):
+            return _agent_linux(proc_root, home or os.path.expanduser('~'), now)
+        if platform == 'darwin':
+            output = _run_text(['ps', '-axo', 'pid=,ppid=,tty=,etime=,rss=,comm=,args='], 4)
+            return _agent_darwin(output, now) if output.strip() else failure
+    except (OSError, ValueError, OverflowError):
+        pass
+    return failure
+
+
 # Slow host probes run independently of the one-second sampling clock.
 _probe = {"windows": None, "storage": [], "windows_at": 0.0, "storage_at": 0.0,
           "windows_busy": False, "storage_busy": False, "usage": None, "usage_at": 0.0, "usage_busy": False,
-          "usage_snapshot": (None, 0), "usage_generation": 0}
+          "usage_snapshot": (None, 0), "usage_generation": 0, "agents_live": None, "agents_live_at": 0.0, "agents_live_busy": False}
 _probe_started = time.monotonic()
 _PS_QUERY = r"""$o=Get-CimInstance Win32_OperatingSystem; $p=Get-CimInstance Win32_Processor; $d=Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=3'; @{total=$o.TotalVisibleMemorySize;free=$o.FreePhysicalMemory;cpu=@($p | ForEach-Object {$_.LoadPercentage});disks=@($d | ForEach-Object {@{name=$_.DeviceID;size=$_.Size;free=$_.FreeSpace}})} | ConvertTo-Json -Compress -Depth 4"""
 
@@ -4035,6 +4234,8 @@ def _background_probe(name, function):
         if name == 'usage':
             previous = _probe.get(name)
             _probe[name] = dict(previous, stale=True) if isinstance(previous, dict) else {'days': {}, 'error': _error_text(exc, 'usage scan failed'), 'stale': True}
+        elif name == 'agents_live':
+            _probe[name] = {'at': int(time.time()), 'sessions': [], 'truncated': False, 'supported': False}
         else:
             _probe[name] = None if name == 'windows' else []
     finally:
@@ -4067,8 +4268,8 @@ def usage_scan_enabled():
 
 def slow_probes(sample):
     now = time.monotonic()
-    for name, interval, enabled, fn in (('storage', 30, True, lambda: storage_probe(sample.get('wsl') is True)), ('windows', 15, sample.get('wsl') is True, windows_probe)):
-        if enabled and not _probe[name + '_busy'] and (not _probe[name + '_at'] or now - _probe[name + '_at'] >= interval):
+    for name, interval, enabled, fn in (('agents_live', 10, os.environ.get('MAINFRAME_AGENTS_SCAN') != '0', agents_probe), ('storage', 30, True, lambda: storage_probe(sample.get('wsl') is True)), ('windows', 15, sample.get('wsl') is True, windows_probe)):
+        if enabled and not _probe.get(name + '_busy', False) and (not _probe.get(name + '_at', 0) or now - _probe[name + '_at'] >= interval):
             _probe[name + '_busy'] = True
             _probe[name + '_at'] = now
             threading.Thread(target=_background_probe, args=(name, fn), daemon=True).start()
@@ -4077,6 +4278,7 @@ def slow_probes(sample):
         _probe['usage_at'] = now
         threading.Thread(target=_background_probe, args=('usage', usage_probe), daemon=True).start()
     usage, generation = _probe.get('usage_snapshot', (_probe.get('usage'), _probe.get('usage_generation', 0)))
+    sample['agents_live'] = _probe.get('agents_live') if os.environ.get('MAINFRAME_AGENTS_SCAN') != '0' else None
     sample['usage'] = usage
     sample['_usage_generation'] = generation
     sample['windows'] = _probe['windows'] if sample.get('wsl') else None

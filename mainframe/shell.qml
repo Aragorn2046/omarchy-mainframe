@@ -11,6 +11,7 @@ import "lib/hosts.js" as Hosts
 import "lib/usage_value.js" as UsageValue
 import "lib/slotbind.js" as Slotbind
 import "lib/agents.js" as Agents
+import "lib/live_agents.js" as LiveAgents
 import "lib/navigation.js" as Navigation
 
 ShellRoot {
@@ -160,6 +161,26 @@ ShellRoot {
   property var localView: Metrics.emptyView()
   property var localUsage: null
   property var remoteUsage: ({})
+  property var localLiveAgents: null
+  property var remoteLiveAgents: ({})
+  readonly property var fleetLiveAgents: {
+    var dependency = tabs
+    var cfg = settingsData.hosts && settingsData.hosts.hosts || []
+    var entries = [{host:"this machine", alias:null, live:localLiveAgents, cap:settingsData.settings.localAgentCap, accountMap:null, status:localSilent ? "unreachable" : ""}]
+    var all = fleet && fleet.hosts ? fleet.hosts : []
+    for (var i = 0; i < all.length; i++) {
+      var h = all[i], session = fleet.sessions[h.ssh], report = remoteLiveAgents[h.ssh]
+      var configured = cfg.find(function(item) { return item.ssh === h.ssh }) || {}
+      entries.push({host:h.name, alias:h.ssh, live:report && session && report.generation === session.generation ? report.live : null,
+                    cap:configured.agentCap, accountMap:configured.agentAccounts, status:session ? session.phase : "unreachable"})
+    }
+    var accountList = (settingsData.accounts && settingsData.accounts.accounts || []).map(function(account) {
+      var copy = Object.assign({}, account), home = shell.homeDir.replace(/\/$/, "")
+      if (home && typeof copy.dir === "string" && (copy.dir === home || copy.dir.indexOf(home + "/") === 0)) copy.dir = "~" + copy.dir.slice(home.length)
+      return copy
+    })
+    return LiveAgents.summarize(entries, accountList, Date.now())
+  }
   readonly property var fleetUsageValue: {
     var dependency = tabs
     var entries = [{host:"this machine", usage:localUsage}]
@@ -928,6 +949,7 @@ ShellRoot {
     if (!raw || typeof raw !== "object") return
     var now = Date.now()
     if (!Hosts.noteSample(fleet, ssh, gen, raw, now)) return
+    if (Object.prototype.hasOwnProperty.call(raw, "agents_live")) { var liveMap = copyMap(remoteLiveAgents); liveMap[ssh] = {generation:gen, live:raw.agents_live}; remoteLiveAgents = liveMap }
     if (raw.usage) { var usageMap = copyMap(remoteUsage); usageMap[ssh] = {generation:gen, usage:raw.usage}; remoteUsage = usageMap }
     setRemoteLine(ssh, now)
     var buckets = remoteBuckets || {}
@@ -964,6 +986,7 @@ ShellRoot {
       return
     }
     if (!raw || typeof raw !== "object") return
+    localLiveAgents = raw.agents_live || null
     if (raw.usage) localUsage = raw.usage
     if (smokeMode) console.log("SAMPLE t=" + Date.now())
     var now = Date.now()
@@ -1980,6 +2003,7 @@ ShellRoot {
         visible: shell.agentsVisible
         rows: shell.agentRows
         valueData: shell.fleetUsageValue
+        fleetLiveAgents: shell.fleetLiveAgents
         ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent
         warning: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a")
         critical: shell.sensorColor

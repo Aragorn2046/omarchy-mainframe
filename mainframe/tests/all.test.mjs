@@ -12,3 +12,5 @@ import "./usage_value.test.mjs";
 import "./themed-controls.test.mjs";
 
 import "./navigation.test.mjs";
+
+import "./live_agents.test.mjs";
