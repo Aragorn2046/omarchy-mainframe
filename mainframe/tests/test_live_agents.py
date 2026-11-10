@@ -87,6 +87,10 @@ class LiveProbe(unittest.TestCase):
             with self.subTest(args=args):
                 self.assertEqual(collect._agent_match('claude', ['claude'] + args), 'claude')
         self.assertIsNone(collect._agent_match('claude', ['claude', 'mcp', 'serve']))
+        for option, value in (('--model', 'sonnet'), ('--settings', 'x.json')):
+            with self.subTest(option=option):
+                self.assertIsNone(collect._agent_match('claude', ['claude', option, value, 'mcp', 'serve']))
+        self.assertEqual(collect._agent_match('claude', ['claude', '--mcp-config', './a-mcp']), 'claude')
         self.assertIsNone(collect._agent_match('claude', ['claude', '-p', 'hello', '--chrome-native-host']))
     def test_codex_remote_exec_and_children_of_server(self):
         self.proc(40, 'codex', ['codex', 'app-server'])
@@ -128,6 +132,18 @@ class LiveProbe(unittest.TestCase):
         for secret in ('never-emit-this', 'also-private'):
             for output in (json.dumps(result), emitted.getvalue(), stderr.getvalue(), logs.getvalue()):
                 self.assertNotIn(secret, output)
+
+    def test_qwen_billing(self):
+        path = self.root / 'environment'
+        for key in ('OPENAI_API_KEY', 'DASHSCOPE_API_KEY', 'QWEN_API_KEY'):
+            with self.subTest(key=key):
+                path.write_bytes((key + '=secret\0').encode())
+                self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, 'api'))
+                path.write_bytes((key + '=\0').encode())
+                self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, 'subscription'))
+        path.write_bytes(b'')
+        self.assertEqual(collect._agent_environment(path, 'qwen', self.home), (None, 'subscription'))
+        self.assertEqual(collect._agent_environment(self.root / 'missing', 'qwen', self.home), (None, None))
 
     def test_multi_provider_billing(self):
         keys = ('ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'GEMINI_API_KEY', 'GOOGLE_API_KEY', 'XAI_API_KEY', 'OPENROUTER_API_KEY')

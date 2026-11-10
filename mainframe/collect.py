@@ -3850,7 +3850,8 @@ def _agent_interpreter(name):
     return name in _AGENT_INTERPRETERS or bool(re.fullmatch(r'python3(?:\.\d+)?', name))
 _AGENT_KEYS = {'claude': (b'ANTHROPIC_API_KEY', b'ANTHROPIC_AUTH_TOKEN'),
                'codex': (b'OPENAI_API_KEY', b'CODEX_API_KEY'),
-               'gemini': (b'GEMINI_API_KEY', b'GOOGLE_API_KEY'), 'grok': (b'XAI_API_KEY',)}
+               'gemini': (b'GEMINI_API_KEY', b'GOOGLE_API_KEY'), 'grok': (b'XAI_API_KEY',),
+               'qwen': (b'OPENAI_API_KEY', b'DASHSCOPE_API_KEY', b'QWEN_API_KEY')}
 _AGENT_MULTI_KEYS = (b'ANTHROPIC_API_KEY', b'OPENAI_API_KEY', b'GEMINI_API_KEY',
                      b'GOOGLE_API_KEY', b'XAI_API_KEY', b'OPENROUTER_API_KEY')
 for _provider in ('aider', 'opencode', 'crush'):
@@ -3927,6 +3928,8 @@ def _agent_match(comm, argv, executable='', raw_args=''):
         if matched:
             if rule['provider'] == 'claude':
                 if any(arg in ('--claude-in-chrome-mcp', '--chrome-native-host') for arg in args):
+                    return None
+                if any(args[i] == 'mcp' and args[i + 1] == 'serve' for i in range(len(args) - 1)):
                     return None
                 i = 0
                 while i < len(args) and args[i].startswith('-'):
