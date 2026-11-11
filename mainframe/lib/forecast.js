@@ -1,10 +1,12 @@
 // Forecasting uses the caller's current time and the runtime's local time zone.
 function windowHours(label) {
   label = typeof label === 'string' ? label.toLowerCase() : '';
-  if (/5-hour|5h|session/.test(label)) return 5;
-  if (/week|7-day|7d/.test(label)) return 168;
-  if (/daily|24-hour/.test(label)) return 24;
-  if (/month|30-day/.test(label)) return 720;
+  var explicit = /\b(\d+)\s*-?\s*(hours|hour|hr|h|days|day|d)\b/.exec(label);
+  if (explicit) return Number(explicit[1]) * (/^d/.test(explicit[2]) ? 24 : 1);
+  if (/\b(week|weekly)\b/.test(label)) return 168;
+  if (/\b(daily|day)\b/.test(label)) return 24;
+  if (/\b(month|monthly)\b/.test(label)) return 720;
+  if (/\bsession\b/.test(label)) return 5;
   return null;
 }
 function forecastWhen(t, nowMs) {
@@ -28,22 +30,22 @@ function forecast(limit, nowMs) {
   var points = Array.isArray(limit.history) ? limit.history.filter(function(p) {
     return Array.isArray(p) && p.length === 2 && typeof p[0] === 'number' && isFinite(p[0]) &&
       typeof p[1] === 'number' && isFinite(p[1]) && p[1] >= 0 && p[1] <= 100 && p[0] * 1000 <= nowMs;
-  }).slice(-200).sort(function(a, b) { return a[0] - b[0]; }) : [];
-  var rate = 0;
+  }).sort(function(a, b) { return a[0] - b[0]; }).slice(-200) : [];
+  var rate = null;
   if (points.length > 1) {
     var first = points[0], last = points[points.length - 1];
     var span = (last[0] - first[0]) / 3600;
-    if (span >= minimum && last[1] > first[1]) rate = (last[1] - first[1]) / span;
+    if (span >= minimum) rate = Math.max(0, (last[1] - first[1]) / span);
   }
-  if (!rate && length && isFinite(reset)) {
+  if (rate === null && length && isFinite(reset)) {
     var elapsed = length - (reset - nowMs) / 3600000;
     if (elapsed >= minimum) rate = limit.percent / elapsed;
   }
-  if (!(rate > 0) || !isFinite(rate)) return null;
+  if (rate === null || !isFinite(rate) || (rate === 0 && !isFinite(reset))) return null;
   var hit = nowMs + (100 - limit.percent) / rate * 3600000;
   if (isFinite(reset)) {
     if (hit < reset) return {kind:'full', text:'at this pace full ' + forecastWhen(hit, nowMs), warn:true};
-    var projected = Math.min(99, Math.round((limit.percent + rate * (reset - nowMs) / 3600000) / 5) * 5);
+    var projected = Math.min(99, Math.max(Math.ceil(limit.percent), Math.round((limit.percent + rate * (reset - nowMs) / 3600000) / 5) * 5));
     return {kind:'ends', text:'on pace for ~' + projected + '%', warn:false};
   }
   return hit <= nowMs + 7 * 86400000 ? {kind:'full', text:'at this pace full ' + forecastWhen(hit, nowMs), warn:true} : null;

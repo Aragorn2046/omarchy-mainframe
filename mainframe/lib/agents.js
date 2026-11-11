@@ -69,7 +69,7 @@ function parse(text, filename, now) {
   if (Array.isArray(d.limits)) d.limits.forEach(function(l) {
     if (!l || typeof l !== 'object') return;
     var pct = typeof l.percent === 'number' && isFinite(l.percent) ? Math.max(0, Math.min(100, l.percent)) : null;
-    var history = Array.isArray(l.history) ? l.history.filter(function(p) { return Array.isArray(p) && p.length === 2 && typeof p[0] === 'number' && isFinite(p[0]) && typeof p[1] === 'number' && isFinite(p[1]); }).slice(-200) : [];
+    var history = Array.isArray(l.history) ? l.history.filter(function(p) { return Array.isArray(p) && p.length === 2 && typeof p[0] === 'number' && isFinite(p[0]) && p[0] * 1000 <= now && typeof p[1] === 'number' && isFinite(p[1]) && p[1] >= 0 && p[1] <= 100; }).sort(function(a, b) { return a[0] - b[0]; }).slice(-200) : [];
     var limit = {label:safeHelp(l.title) || safeHelp(l.label) || 'Limit', percent:pct, reset:reset(l.resetsAt, now), resetsAt:l.resetsAt, history:history, level:pct >= 95 ? 'Critical' : pct >= 80 ? 'Warning' : ''};
     limit.forecast = forecastForLimit(limit, now); limits.push(limit);
   });

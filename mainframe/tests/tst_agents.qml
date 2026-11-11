@@ -423,6 +423,12 @@ TestCase {
       compare(card.contentHeight, height)
       tryCompare(card, 'height', height)
       compare(findChild(card, 'agents-limit-reset').text, 'resets in 25 h 6 min')
+      var longReset = row({text:'on pace for ~60%', warn:false})
+      longReset.limits[0].reset = 'resets in an exceptionally long amount of time'
+      view.rows = [longReset]
+      var reset = findChild(card, 'agents-limit-reset')
+      tryVerify(function() { return reset.width > 0 && line.width > 0 })
+      verify(reset.width <= reset.parent.width * 0.55 + 1)
     }
   }
 

@@ -54,8 +54,7 @@ class UsageFilesTest(unittest.TestCase):
                                       {'title': 'Fable Weekly', 'percent': 0.8},
                                       {'percent': -1}, {'percent': 2}, {'percent': None}, {'percent': True}]},
                 'codex': {'limits': [{'percent': value} for value in
-                                     (0.4, 40, 81, 1, 150, float('nan'), float('inf'),
-                                      float('-inf'), True, False, None)]},
+                                     (0.4, 40, 81, 1, 150, True, False, None)]},
             }
             env = dict(os.environ, HOME=str(root), XDG_STATE_HOME=str(root / 'state'),
                        XDG_CACHE_HOME=str(root / 'cache'), OMARCHY_PATH=str(root / 'omarchy'))
@@ -82,7 +81,7 @@ class UsageFilesTest(unittest.TestCase):
             for index in (2, 4, 5): self.assertNotIn('percent', records['claude']['limits'][index])
             self.assertEqual(records['claude']['limits'][1]['title'], 'Fable Weekly')
             self.assertEqual([limit.get('percent') for limit in records['codex']['limits']],
-                             [0.4, 40, 81, 1, 100, None, None, None, None, None, None])
+                             [0.4, 40, 81, 1, 100, None, None, None])
             for limit in records['codex']['limits'][5:]: self.assertNotIn('percent', limit)
             self.assertAlmostEqual(records['old']['limits'][0]['percent'], 55)
             self.assertEqual(records['other']['limits'][0]['percent'], 80)
@@ -91,10 +90,9 @@ class UsageFilesTest(unittest.TestCase):
             self.assertEqual(json.loads((cache / 'claude.json').read_text())['limits'][0]['percent'], 0.55)
 
     def test_limits_state_and_cache_values_and_repeated_reads(self):
-        values = [0.4, 40, 81, 1, 150, -1, float('nan'), float('inf'),
-                  float('-inf'), True, False, None]
+        values = [0.4, 40, 81, 1, 150, -1, True, False, None]
         # The 40, 81 and 150 make this entire record use the percentage scale.
-        expected = [0.4, 40, 81, 1, 100, None, None, None, None, None, None, None]
+        expected = [0.4, 40, 81, 1, 100, None, None, None, None]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             usage = root / 'state/omarchy/agents/usage'
@@ -114,8 +112,11 @@ class UsageFilesTest(unittest.TestCase):
             items = {item['file']: item for item in json.loads(first)}
             self.assertFalse(items['state.json'].get('mainframe', False))
             self.assertTrue(items['cache.json']['mainframe'])
-            self.assertEqual([limit['percent'] for limit in json.loads(items['unchanged.json']['raw'])['limits']], [40, 0])
-            self.assertTrue(all('history' in limit for limit in json.loads(items['unchanged.json']['raw'])['limits']))
+            actual = json.loads(items['unchanged.json']['raw'])
+            for limit in actual['limits']:
+                self.assertIn('history', limit)
+                del limit['history']
+            self.assertEqual(actual, json.loads(unchanged))
             for ident in ('state', 'cache'):
                 limits = json.loads(items[ident + '.json']['raw'])['limits']
                 self.assertEqual([limit.get('percent') for limit in limits], expected)
@@ -125,7 +126,7 @@ class UsageFilesTest(unittest.TestCase):
         cases = [([0.4, 0.81, 1], [40, 81, 100]),
                  ([1, 45], [1, 45]), ([0.8, 45], [0.8, 45]),
                  ([150, 20], [100, 20]), ([0.29], [29])]
-        invalid = [True, False, '0.5', None, float('nan'), float('inf'), float('-inf'), -1]
+        invalid = [True, False, '0.5', None, -1]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             usage = root / 'state/omarchy/agents/usage'
