@@ -118,7 +118,7 @@ function pack(blocks, width, options) {
   var pixelGap = Math.floor(gap);
   var minWidth = options.minCardWidth === undefined ? 340 : options.minCardWidth;
   var maxColumns = options.maxColumns === undefined ? 6 : options.maxColumns;
-  width = Math.max(0, Math.floor(width));
+  width = isFinite(width) ? Math.max(0, Math.floor(width)) : 0;
   var columns = Math.max(1, Math.min(maxColumns, Math.floor((width + gap) / (minWidth + gap))));
   var available = width - (columns - 1) * pixelGap;
   var columnWidth = Math.floor(available / columns), extra = available - columnWidth * columns;
@@ -134,23 +134,27 @@ function pack(blocks, width, options) {
       return;
     }
     if (!band || columns - band.used < Math.ceil(desired / 2)) {
-      band = {used:0, headingHeight:0, sections:[]};
+      band = {used:0, headingHeight:0, hasHeading:false, sections:[]};
       bands.push(band);
     }
     var span = Math.min(desired, columns - band.used);
     band.sections.push({block:block, index:index, start:band.used, span:span});
     band.used += span;
-    if (!block.noHeading) band.headingHeight = Math.max(band.headingHeight, block.headingHeight);
+    if (!block.noHeading) {
+      band.hasHeading = true;
+      band.headingHeight = Math.max(band.headingHeight, number(block.headingHeight));
+    }
   });
   var top = 0, bottom = 0;
   bands.forEach(function(current) {
-    var cardTop = top + current.headingHeight + gap, skyline = [], liveColumn = -1;
+    var cardTop = top + (current.hasHeading ? current.headingHeight + gap : 0), skyline = [], liveColumn = -1;
     for (var c = 0; c < columns; c++) skyline.push(cardTop);
     current.sections.forEach(function(section) {
       var block = section.block, start = section.start, last = start + section.span - 1;
       var headingX = starts[start], headingWidth = starts[last] + widths[last] - headingX;
       var cards = [], minColumn = start, maxColumn = last;
       block.cardHeights.forEach(function(height) {
+        height = number(height);
         var chosen = start;
         for (var k = start + 1; k <= last; k++) if (skyline[k] < skyline[chosen]) chosen = k;
         if (block.flowAround && liveColumn >= 0 && skyline[liveColumn] < skyline[chosen]) chosen = liveColumn;
@@ -159,7 +163,7 @@ function pack(blocks, width, options) {
         bottom = Math.max(bottom, skyline[chosen] + height);
         skyline[chosen] += height + gap;
       });
-      if (block.noHeading && section.span === 1 && block.cardHeights.length === 1) liveColumn = start;
+      liveColumn = block.noHeading && section.span === 1 && block.cardHeights.length === 1 ? start : -1;
       result[section.index] = {key:block.key, x:starts[minColumn], y:top,
         width:starts[maxColumn] + widths[maxColumn] - starts[minColumn],
         heading:{x:headingX, y:top, width:headingWidth}, cards:cards};

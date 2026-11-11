@@ -266,7 +266,7 @@ test('usage flows around the live card and recovers every column', () => {
   for (const width of [350, 900, 1600]) {
     const packed = A.pack(blocks, width);
     const live = packed.blocks[0].cards[0], usage = packed.blocks[1].cards;
-    assert.equal(live.y, packed.columns === 1 ? 10 : usage[0].y);
+    assert.equal(live.y, packed.columns === 1 ? 0 : usage[0].y);
     if (packed.columns === 2) {
       assert.equal(new Set(usage.map(card => card.x)).size, 2);
       assert.ok(Math.max(...usage.map(card => card.y + card.height)) <= 4 * 110 + 25);
@@ -313,11 +313,65 @@ test('joining bands requires at least half of desired columns', () => {
   const single = {key:'single', headingHeight:15, cardHeights:[30]};
   const three = {key:'three', headingHeight:15, cardHeights:[30, 30, 30]};
   const five = {key:'five', headingHeight:15, cardHeights:[30, 30, 30, 30, 30]};
-  let packed = A.pack([three, three], 1600);
+  let packed = A.pack([three, {...three, key:'another-three'}], 1600);
   assert.ok(packed.blocks[1].y > packed.blocks[0].y);
   packed = A.pack([single, five], 1600);
   assert.equal(packed.blocks[0].y, packed.blocks[1].y);
   assert.equal(new Set(packed.blocks[1].cards.map(card => card.x)).size, 3);
+  const two = {key:'two', headingHeight:15, cardHeights:[30, 30]};
+  const four = {key:'four', headingHeight:15, cardHeights:[30, 30, 30, 30]};
+  packed = A.pack([two, four], 1600);
+  assert.equal(packed.blocks[0].y, packed.blocks[1].y);
+  assert.equal(new Set(packed.blocks[1].cards.map(card => card.x)).size, 2);
+});
+
+test('invalid dimensions become zero without affecting later bands', () => {
+  for (const invalid of [undefined, NaN, -1, Infinity, -Infinity]) {
+    const blocks = [
+      {key:'first', headingHeight:invalid, cardHeights:[invalid, 20]},
+      {key:'second', headingHeight:12, cardHeights:[30]},
+    ];
+    const packed = A.pack(blocks, 350);
+    assert.deepEqual(packed.blocks[0].cards.map(card => card.height), [0, 20]);
+    assert.equal(packed.blocks[0].cards[0].y, 10);
+    assert.equal(packed.blocks[1].y, 50);
+    assert.equal(packed.height, 102);
+    for (const block of packed.blocks) for (const rect of [block, block.heading, ...block.cards])
+      for (const value of Object.values(rect)) if (typeof value === 'number') assert.ok(Number.isFinite(value));
+  }
+  const zeroWidth = A.pack([{key:'card', headingHeight:NaN, cardHeights:[undefined]}], NaN);
+  assert.equal(zeroWidth.columns, 1);
+  assert.equal(zeroWidth.columnWidth, 0);
+  assert.equal(zeroWidth.blocks[0].cards[0].width, 0);
+  assert.equal(zeroWidth.height, 10);
+});
+
+test('empty blocks consume no space between non-empty blocks', () => {
+  const first = {key:'first', headingHeight:12, cardHeights:[30]};
+  const empty = {key:'empty', headingHeight:999, cardHeights:[]};
+  const second = {key:'second', headingHeight:15, cardHeights:[40]};
+  for (const width of [350, 900]) {
+    const packed = A.pack([first, empty, second], width);
+    const withoutEmpty = A.pack([first, second], width);
+    assert.deepEqual([packed.blocks[0], packed.blocks[2]], withoutEmpty.blocks);
+    assert.deepEqual(packed.blocks[1], {key:'empty', x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]});
+    assert.equal(packed.height, withoutEmpty.height);
+  }
+});
+
+test('flow around never borrows from a non-adjacent headingless section', () => {
+  const blocks = [
+    {key:'live', noHeading:true, cardHeights:[0]},
+    {key:'middle', headingHeight:15, cardHeights:[100]},
+    {key:'flow', headingHeight:15, cardHeights:[100, 100, 100, 100], flowAround:true},
+  ];
+  const packed = A.pack(blocks, 1600);
+  const [live, middle, flow] = packed.blocks;
+  assert.equal(live.y, flow.y);
+  assert.equal(middle.y, flow.y);
+  assert.equal(flow.x, flow.heading.x);
+  assert.ok(flow.cards.every(card => card.x >= flow.heading.x));
+  assert.ok(flow.x >= middle.x + middle.width);
 });
 
 test('flow around live uses both columns and is no taller than one free column', () => {
@@ -353,6 +407,9 @@ test('bands stay in bounds and headings protect their columns at representative 
         assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y, `overlap at width ${width}`);
     }
     assert.equal(packed.height, Math.max(...rects.map(rect => rect.y + rect.height)));
+    for (const block of packed.blocks) for (const rect of [block.heading, ...block.cards]) {
+      assert.ok(rect.x >= block.x && rect.x + rect.width <= block.x + block.width, `block bounds at width ${width}`);
+    }
     for (const [i, block] of packed.blocks.entries()) for (const card of block.cards) {
       const inOwnColumns = card.x >= block.heading.x && card.x + card.width <= block.heading.x + block.heading.width;
       const inLiveColumn = blocks[i].flowAround && card.x === packed.blocks[0].cards[0].x && card.y >= packed.blocks[0].cards[0].y + packed.blocks[0].cards[0].height;

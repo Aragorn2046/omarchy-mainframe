@@ -71,7 +71,7 @@ TestCase {
     verify(livePosition.x + live.width <= cardPosition.x + 1)
     testCase.width = 350
     tryVerify(function() { return live.width === view.flick.width && card.width === live.width && view.checkLayout() === 0 })
-    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, 10)
+    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, 0)
     verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.mapToItem(view.flick.contentItem, 0, 0).y + live.height)
     view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:3, hosts:[unavailable('Host A'), unavailable('Host B'), unavailable('Host C')], accounts:[]}
     compare(empty.text, 'No machine reporting')
