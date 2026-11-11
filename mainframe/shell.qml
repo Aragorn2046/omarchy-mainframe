@@ -1974,6 +1974,7 @@ ShellRoot {
         Layout.fillHeight: true
         visible: shell.page === "overview" && shell.overviewView === "systems"
         rows: shell.overviewRows
+        warning: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a"); critical: shell.sensorColor
         ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent; secondary: shell.themeCyan
         cardColor: shell.themeCard; borderColor: shell.themeBorder; track: shell.themeTrack
         onOpenMachine: function(index) { shell.selectTab(index + 1) }
@@ -2043,6 +2044,7 @@ ShellRoot {
               Layout.fillWidth: true
               Cyber.DataText {
                 id: cpuPercent
+                objectName: "cpu-percent"
                 cyberStyle: cyberAppearance
                 textFormat: Text.PlainText
                 sourceText: shell.cpuView ? shell.cpuView.percentText : "—"
@@ -2051,7 +2053,21 @@ ShellRoot {
                 font.pixelSize: shell.pxHero
                 font.weight: Font.Medium
               }
-              Item { Layout.fillWidth: true }
+              Item { visible: !cpuPeak.visible; Layout.fillWidth: true }
+              Text {
+                id: cpuPeak
+                objectName: "cpu-temperature-peak"
+                textFormat: Text.PlainText
+                text: shell.cpuView ? shell.cpuView.tempPeakText || "" : ""
+                visible: text !== ""
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                horizontalAlignment: Text.AlignRight
+                elide: Text.ElideRight
+                color: shell.themeLabel
+                font.family: "monospace"
+                font.pixelSize: shell.pxLabel
+              }
               Text {
                 id: cpuTemperature
                 objectName: "cpu-temperature"
@@ -2062,16 +2078,8 @@ ShellRoot {
                 font.pixelSize: shell.pxValue
               }
               Text {
-                objectName: "cpu-temperature-peak"
-                textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.tempPeakText || "" : ""
-                visible: text !== "" && cpuHeader.width >= cpuPercent.implicitWidth + cpuTemperature.implicitWidth + cpuFrequency.implicitWidth + implicitWidth + 60
-                color: shell.themeLabel
-                font.family: "monospace"
-                font.pixelSize: shell.pxLabel
-              }
-              Text {
                 id: cpuFrequency
+                objectName: "cpu-frequency"
                 textFormat: Text.PlainText
                 text: shell.cpuView ? shell.cpuView.freqText : "—"
                 color: shell.themeLabel

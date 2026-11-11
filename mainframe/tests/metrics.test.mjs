@@ -633,9 +633,13 @@ test("CPU temperature history accepts live valid samples and keeps the recent pe
   assert.equal(result.view.cpu.freqText, "3.10 GHz");
   assert.equal(result.view.cpu.history.length, M.HISTORY_LIMIT);
   for (const [index, value] of [NaN, Infinity, -Infinity, -20.01, 150.01, null, undefined, "", "50"].entries()) {
-    const previous = result.state.cpuTempHist;
-    result = M.step(result.state, sample(70 + index, value), (70 + index) * 1000);
-    assert.equal(result.state.cpuTempHist, previous);
+    const beforeCpu = result.state.cpuHist.slice();
+    const beforeTemp = result.state.cpuTempHist.slice();
+    result = M.step(result.state, sample(66 + index, value), (66 + index) * 1000);
+    assert.deepEqual(result.state.cpuHist, [...beforeCpu, 50].slice(-M.HISTORY_LIMIT));
+    assert.deepEqual(result.state.cpuTempHist, [...beforeTemp, null].slice(-M.HISTORY_LIMIT));
+    assert.equal(result.view.cpu.tempText, "—");
+    assert.equal(result.view.cpu.tempLevel, "normal");
   }
   result = M.step(result.state, sample(80, -20), 80000);
   result = M.step(result.state, sample(81, 150), 81000);
@@ -659,32 +663,70 @@ test("CPU temperature plot clips above the shared 100 maximum", () => {
   assert.equal(points[points.length - 1].y, 1.5);
 });
 
-test("CPU and temperature history carry on failures and rebaseline, and clear on n/a", () => {
-  const sample = (i, temp) => ({proc_stat: `cpu  ${i} 0 0 ${i} 0 0 0 0\n`, temps:{package_c:temp}});
-  let result = M.step(M.emptyState(), sample(1, 40), 1000);
-  result = M.step(result.state, sample(2, 96), 2000);
-  const previous = result;
-  result = M.step(result.state, {cpu:null, temps:{package_c:100}, errors:{cpu:"failed"}}, 3000);
-  assert.equal(result.state.cpuHist, previous.state.cpuHist);
-  assert.equal(result.state.cpuTempHist, previous.state.cpuTempHist);
+test("CPU and temperature history stay aligned through failures, gaps and n/a", () => {
+  const sample = (user, idle, temp) => ({proc_stat: `cpu ${user} 0 0 ${idle} 0 0 0 0\n`, temps:{package_c:temp}});
+  let result = M.step(M.emptyState(), sample(0, 0, 40), 1000);
+  const check = (cpu, temps) => {
+    assert.deepEqual(result.state.cpuHist, cpu);
+    assert.deepEqual(result.state.cpuTempHist, temps);
+    assert.deepEqual(result.view.cpu.history, cpu);
+    assert.deepEqual(result.view.cpu.tempHistory, temps);
+  };
+  check([], []);
+  result = M.step(result.state, sample(2, 8, 50), 2000); check([20], [50]);
+  result = M.step(result.state, sample(7, 13, NaN), 3000); check([20, 50], [50, null]);
+  assert.equal(result.view.cpu.tempText, "—");
+  result = M.step(result.state, sample(16, 14, 90), 4000); check([20, 50, 90], [50, null, 90]);
+  result = M.step(result.state, sample(17, 23, 96), 5000); check([20, 50, 90, 10], [50, null, 90, 96]);
+  const cpu = result.state.cpuHist.slice(), temps = result.state.cpuTempHist.slice();
+  result = M.step(result.state, sample(18, 24, 20), 5100); check(cpu, temps);
+  assert.equal(result.skip, true);
+  result = M.step(result.state, {cpu:null, temps:{package_c:100}, errors:{cpu:"failed"}}, 6000); check(cpu, temps);
   assert.equal(result.view.cpu.tempLevel, "hot");
-  result = M.step(result.state, {proc_stat:sample(3, 0).proc_stat, temps:null, errors:{temps:"failed"}}, 4000);
-  assert.equal(result.state.cpuTempHist, previous.state.cpuTempHist);
+  assert.equal(result.view.cpu.tempText, "96°C");
+  result = M.step(result.state, {proc_stat:sample(19, 25, 0).proc_stat, temps:null, errors:{temps:"failed"}}, 7000);
+  const withFailure = [...cpu, 50]; const withNull = [...temps, null];
+  check(withFailure, withNull);
   assert.equal(result.view.cpu.tempLevel, "hot");
-  const beforeGap = result;
-  result = M.step(result.state, sample(4, 120), 100000);
-  assert.equal(result.state.cpuHist, beforeGap.state.cpuHist);
-  assert.equal(result.state.cpuTempHist, beforeGap.state.cpuTempHist);
-  result = M.step(result.state, {cpu:null, temps:{na:true}, errors:{cpu:"failed"}}, 101000);
-  assert.deepEqual(result.state.cpuTempHist, []);
-  assert.equal(result.view.cpu.tempPeakText, "");
+  assert.equal(result.view.cpu.tempText, "96°C");
+  result = M.step(result.state, sample(20, 26, 120), 100000); check(withFailure, withNull);
+  result = M.step(result.state, {cpu:null, temps:{na:true}, errors:{cpu:"failed"}}, 101000); check(withFailure, withNull);
   assert.equal(result.view.cpu.tempText, "n/a");
-  result = M.step(result.state, sample(5, 60), 102000);
-  assert.deepEqual(result.state.cpuTempHist, [60]);
-  result = M.step(result.state, {cpu:{na:true}, temps:{package_c:70}}, 103000);
-  assert.deepEqual(result.state.cpuHist, []);
-  assert.deepEqual(result.state.cpuTempHist, []);
+  result = M.step(result.state, {proc_stat:sample(21, 27, 0).proc_stat, temps:{na:true}}, 102000);
+  check([...withFailure, 50], [...withNull, null]);
+  assert.equal(result.view.cpu.tempText, "n/a");
+  result = M.step(result.state, sample(22, 28, 60), 103000);
+  check([...withFailure, 50, 50], [...withNull, null, 60]);
   assert.equal(result.view.cpu.tempLevel, "normal");
+  result = M.step(result.state, {cpu:{na:true}, temps:{package_c:70}}, 104000); check([], []);
+  assert.equal(result.view.cpu.tempText, "—");
+  assert.equal(result.view.cpu.tempPeakText, "");
+  assert.equal(result.view.cpu.tempLevel, "normal");
+});
+
+test("CPU temperature peak survives cooling and restored histories are revalidated", () => {
+  let result = M.step(M.emptyState(), {package_temp_c: 30}, 1000);
+  result = M.step(result.state, {package_temp_c: 80}, 2000);
+  result = M.step(result.state, {package_temp_c: 60}, 3000);
+  assert.deepEqual(result.state.cpuTempHist, [80, 60]);
+  assert.equal(result.view.cpu.tempPeakText, "peak 80°C");
+  assert.equal(result.view.cpu.tempText, "60°C");
+  const restored = {...result.state, cpuHist:[1, 2, 3, 4, 5], cpuTempHist:[20, NaN, "50", 151, -21, null, 70]};
+  result = M.step(restored, {}, 4000);
+  assert.deepEqual(result.state.cpuHist, [1, 2, 3, 4, 5, 0]);
+  assert.deepEqual(result.state.cpuTempHist, [null, null, null, null, 70, null]);
+  assert.equal(result.view.cpu.tempPeakText, "peak 70°C");
+  result = M.step({...result.state, cpuHist:[1, 2], cpuTempHist:"bad"}, {}, 5000);
+  assert.deepEqual(result.state.cpuHist, [1, 2, 0]);
+  assert.deepEqual(result.state.cpuTempHist, [null, null, null]);
+  assert.equal(result.view.cpu.tempPeakText, "");
+  const many = Array.from({length: 75}, (_, i) => i);
+  result = M.step({...result.state, cpuHist:many, cpuTempHist:many}, {}, 5010);
+  assert.equal(result.skip, true);
+  assert.deepEqual(result.state.cpuHist, many.slice(-60));
+  assert.deepEqual(result.state.cpuTempHist, many.slice(-60));
+  assert.deepEqual(result.view.cpu.history, many.slice(-60));
+  assert.deepEqual(result.view.cpu.tempHistory, many.slice(-60));
 });
 
 test("step keeps 60 samples, zeroes a reset, and hides gpu and battery", () => {

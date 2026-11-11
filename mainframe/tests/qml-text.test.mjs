@@ -59,7 +59,7 @@ test("CPU card binds the temperature chart, colours and optional peak without ch
   assert.match(cpu, /yMin:\s*0[\s\S]*yMax:\s*100/);
   assert.match(cpu, /tempLevel === "hot"\s*\?\s*shell\.sensorColor/);
   assert.match(cpu, /tempLevel === "warm"\s*\?\s*Metrics\.qtColor\(shell\.themeColors\.yellow/);
-  assert.match(cpu, /visible: text !== "" && cpuHeader\.width >= cpuPercent\.implicitWidth \+ cpuTemperature\.implicitWidth \+ cpuFrequency\.implicitWidth \+ implicitWidth/);
+  assert.match(cpu, /objectName: "cpu-temperature-peak"[\s\S]*?visible: text !== ""[\s\S]*?Layout\.fillWidth: true[\s\S]*?Layout\.minimumWidth: 0[\s\S]*?elide: Text\.ElideRight/);
   assert.equal((source.match(/unitB:\s*"°C"/g) || []).length, 1);
 });
 

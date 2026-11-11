@@ -47,7 +47,7 @@ Shape {
     return Math.max(0, Math.min(count - 1, slot - (60 - count))) + Math.max(0, paintedSamples.length - 60)
   }
   function seriesPairSteady(a, b) {
-    return Metrics.seriesFlat(a) && (!(b && b.length) || Metrics.seriesFlat(b))
+    return Metrics.seriesFlat(a) && (!(b && b.length) || (b.indexOf(null) === -1 && Metrics.seriesFlat(b)))
   }
   function updateHover() {
     if (!hover.containsMouse) return
@@ -129,6 +129,23 @@ Shape {
     var fillPath = cmdsToSvg(primary.fill)
     var strokePath = cmdsToSvg(primary.stroke)
     var strokePathB = cmdsToSvg(secondary.stroke)
+    // Nulls in the secondary series break the path at their time slot.
+    if (displaySamplesB && displaySamplesB.indexOf(null) !== -1) {
+      var commands = []
+      var segment = []
+      if (displaySamplesB.length === 1) secondary.points = []
+      for (var bi = 0; bi <= secondary.points.length; bi++) {
+        var sourceIndex = displaySamplesB.length - secondary.points.length + bi
+        if (bi < secondary.points.length && displaySamplesB[sourceIndex] !== null) {
+          segment.push(secondary.points[bi])
+        } else if (segment.length) {
+          commands.push({ t: "M", x: segment[0].x, y: segment[0].y })
+          if (segment.length > 1) Metrics.appendCurves(commands, segment)
+          segment = []
+        }
+      }
+      strokePathB = cmdsToSvg(commands)
+    }
     if (fillSvg !== fillPath) fillSvg = fillPath
     if (strokeSvg !== strokePath) strokeSvg = strokePath
     if (strokeSvgB !== strokePathB) strokeSvgB = strokePathB
@@ -253,7 +270,7 @@ Shape {
       required property int index
       readonly property var values: index === 0 ? canvas.paintedSamples : canvas.paintedSamplesB
       readonly property string label: index === 0 ? canvas.labelA : canvas.labelB
-      visible: !canvas.steady && label !== "" && values && values.length > 0
+      visible: !canvas.steady && label !== "" && values && values.length > 0 && (index === 0 || values[values.length - 1] !== null)
       x: Math.max(0, canvas.width - width - 2)
       y: {
         if (!values || !values.length) return 0
@@ -314,7 +331,12 @@ Shape {
         var result = (canvas.labelA ? canvas.labelA + " " : "") + canvas.displayValue(canvas.paintedSamples[i])
         if (canvas.paintedSamplesB && canvas.paintedSamplesB.length) {
           var j = i - (canvas.paintedSamples.length - canvas.paintedSamplesB.length)
-          if (j >= 0 && j < canvas.paintedSamplesB.length) result += "  " + canvas.labelB + " " + (canvas.unitB === "°C" ? Math.round(Number(canvas.paintedSamplesB[j])) + " °C" : canvas.displayValue(canvas.paintedSamplesB[j]))
+          if (j >= 0 && j < canvas.paintedSamplesB.length) {
+            var valueB = canvas.paintedSamplesB[j]
+            if (canvas.unitB === "°C" && chartMotion.item && canvas.samplesB.length === canvas.paintedSamplesB.length)
+              valueB = canvas.samplesB[j]
+            result += "  " + canvas.labelB + " " + (valueB === null ? "—" : (canvas.unitB === "°C" ? Math.round(Number(valueB)) + " °C" : canvas.displayValue(valueB)))
+          }
         }
         return result + " · " + (canvas.paintedSamples.length - 1 - i) + " s ago"
       }
