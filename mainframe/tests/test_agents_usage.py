@@ -114,7 +114,8 @@ class UsageFilesTest(unittest.TestCase):
             items = {item['file']: item for item in json.loads(first)}
             self.assertFalse(items['state.json'].get('mainframe', False))
             self.assertTrue(items['cache.json']['mainframe'])
-            self.assertEqual(items['unchanged.json']['raw'], unchanged)
+            self.assertEqual([limit['percent'] for limit in json.loads(items['unchanged.json']['raw'])['limits']], [40, 0])
+            self.assertTrue(all('history' in limit for limit in json.loads(items['unchanged.json']['raw'])['limits']))
             for ident in ('state', 'cache'):
                 limits = json.loads(items[ident + '.json']['raw'])['limits']
                 self.assertEqual([limit.get('percent') for limit in limits], expected)

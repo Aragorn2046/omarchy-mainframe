@@ -230,6 +230,8 @@ The mapping value is an account ID from `accounts.json`. A machine stops contrib
 Write directories inside the home directory as `~/...` in `agentAccounts`. Remote directories use their host override and do not use local account mappings.
 API key rows include only unmapped sessions with a key variable set.
 
+Agents forecasts when a limit may fill or roughly where it will end at the current pace. Mainframe keeps a local history of limit percentages only, with no tokens, prompts or credentials, in `~/.local/state/mainframe/usage-history.json`. Forecasts need a few hours of data or a known window length.
+
 A usage JSON file can set `category` to `llm`, `video`, `image`, `voice`, or `other` to choose its section in Agents. The value is case-insensitive; without it, Mainframe infers the section from the provider, ID, or name.
 
 Mainframe stores settings, hosts and accounts under `$XDG_CONFIG_HOME/mainframe/`. Account records use `$XDG_CACHE_HOME/mainframe/agents/`. Storage reports mounted filesystems and Windows drives when available.

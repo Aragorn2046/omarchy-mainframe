@@ -396,4 +396,34 @@ TestCase {
     for (var i = 0; i < limits.count; i++)
       compare(findChild(limits.itemAt(i), 'agents-limit-percent').text, '—')
   }
+  function test_forecast_line_preserves_card_height() {
+    var now = Date.now()
+    var parsed = Agents.parse(JSON.stringify({limits:[{label:'Weekly', percent:40, resetsAt:new Date(now + 120 * 3600000).toISOString(), history:[[now / 1000 - 10800, 20], [now / 1000, 26]]}]}), 'unit', now)
+    compare(parsed.limits[0].forecast.kind, 'full')
+    for (var style = 0; style < 2; style++) {
+      view.cyberStyle = style ? {hudFrames:true, displayFont:false, windowActive:false, dataAnimations:false, segmentedMeters:false, neonGlow:false} : null
+      function row(forecast) {
+        return {name:'Agent', category:'llm', age:'', showLocalStats:false,
+                limits:[{label:'Weekly', percent:40, reset:'resets in 25 h 6 min', forecast:forecast}]}
+      }
+      view.rows = [row(null)]
+      var card = findChild(view, 'agents-cards-repeater').itemAt(0)
+      tryVerify(function() { return card.height > 0 })
+      var height = card.contentHeight
+      tryCompare(card, 'height', height)
+      view.rows = [row({text:'at this pace full Thu 14:00', warn:true})]
+      var line = findChild(card, 'agents-limit-forecast')
+      compare(line.text, ' · at this pace full Thu 14:00')
+      compare(line.color, view.warning)
+      compare(card.contentHeight, height)
+      tryCompare(card, 'height', height)
+      view.rows = [row({text:'on pace for ~60%', warn:false})]
+      compare(line.text, ' · on pace for ~60%')
+      compare(line.color, view.mutedInk)
+      compare(card.contentHeight, height)
+      tryCompare(card, 'height', height)
+      compare(findChild(card, 'agents-limit-reset').text, 'resets in 25 h 6 min')
+    }
+  }
+
 }

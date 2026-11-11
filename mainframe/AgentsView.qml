@@ -197,7 +197,11 @@ Item {
                           Text { objectName: 'agents-limit-percent'; textFormat: Text.PlainText; text: (modelData.level ? modelData.level + ' · ' : '') + (modelData.percent == null ? '—' : Agents.percent(modelData.percent)); color: root.ink; font.family: 'monospace'; font.pixelSize: 11 }
                         }
                         Meter { objectName: 'agents-limit-meter'; cyberStyle: root.cyberStyle; Layout.fillWidth: true; implicitHeight: 6; fraction: modelData.percent == null ? 0 : modelData.percent / 100; fill: modelData.level === 'Critical' ? root.critical : modelData.level === 'Warning' ? root.warning : root.accent; track: root.track; critical: modelData.level === 'Critical'; warningInk: root.ink }
-                        Text { textFormat: Text.PlainText; visible: !!modelData.reset; text: modelData.reset || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10 }
+                        RowLayout {
+                          Layout.fillWidth: true; visible: !!modelData.reset || !!modelData.forecast; spacing: 0
+                          Text { objectName: 'agents-limit-reset'; textFormat: Text.PlainText; text: modelData.reset || ''; color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; elide: Text.ElideRight; Layout.maximumWidth: parent.width }
+                          Text { objectName: 'agents-limit-forecast'; textFormat: Text.PlainText; visible: !!modelData.forecast; Layout.fillWidth: true; text: modelData.forecast ? (modelData.reset ? ' · ' : '') + modelData.forecast.text : ''; color: modelData.forecast && modelData.forecast.warn ? root.warning : root.mutedInk; font.family: 'monospace'; font.pixelSize: 10; elide: Text.ElideRight }
+                        }
                       }
                     }
                     Text { textFormat: Text.PlainText; visible: !!card.modelData.sharedStatsWith; Layout.fillWidth: true; text: 'Local stats shared with ' + (card.modelData.sharedStatsWith || '') + (card.modelData.sharedProjectsFolder ? ' (same projects folder)' : ''); color: root.mutedInk; font.family: 'monospace'; font.pixelSize: 11; wrapMode: Text.Wrap }

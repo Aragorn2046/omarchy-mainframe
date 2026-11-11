@@ -5,6 +5,10 @@ import math
 import os
 from pathlib import Path
 import sys
+import stat
+import time
+import datetime
+import secrets
 
 MAX_JSON_DEPTH = 128
 
@@ -274,4 +278,140 @@ for item, raw in merged:
     current_shared = {key: raw[key] for key in ('sharedStatsWith', 'sharedProjectsFolder') if key in raw} if isinstance(raw, dict) else {}
     if original_shared != current_shared:
         item['raw'] = json.dumps(raw, ensure_ascii=True)
+def _history_number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _history_reset(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(value.replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            return None
+        result = parsed.timestamp()
+        return result if math.isfinite(result) else None
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def _history_directory():
+    # Open each component relative to a verified directory, without following links.
+    state = os.path.abspath(os.environ.get('XDG_STATE_HOME') or str(Path.home() / '.local/state'))
+    parts = Path(state).parts[1:] + ('mainframe',)
+    fd = os.open('/', os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in parts:
+            try:
+                os.mkdir(part, 0o700, dir_fd=fd)
+            except FileExistsError:
+                pass
+            next_fd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            os.close(fd)
+            fd = next_fd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _update_usage_history(merged, now):
+    directory = _history_directory()
+    temp_name = None
+    try:
+        data = {}
+        try:
+            fd = os.open('usage-history.json', os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            with os.fdopen(fd, 'rb') as stream:
+                if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                    raise ValueError('not a regular file')
+                contents = stream.read(512 * 1024 + 1)
+            if len(contents) > 512 * 1024:
+                raise ValueError('history too large')
+            decoded = contents.decode('utf-8')
+            if not json_depth_ok(decoded):
+                raise ValueError('history too deep')
+            data = json.loads(decoded)
+            if not isinstance(data, dict):
+                data = {}
+        except (OSError, ValueError, UnicodeError, RecursionError):
+            data = {}
+        clean = {}
+        for key, samples in data.items():
+            if not isinstance(key, str) or not isinstance(samples, list):
+                continue
+            valid = []
+            for sample in samples:
+                if not isinstance(sample, dict):
+                    continue
+                t, percent, reset = sample.get('time'), sample.get('percent'), sample.get('resetsAt')
+                if (_history_number(t) and now - 8 * 86400 <= t <= now and _history_number(percent)
+                        and 0 <= percent <= 100 and (reset is None or _history_number(reset))):
+                    valid.append({'time': t, 'percent': percent, 'resetsAt': reset})
+            if valid:
+                clean[key] = sorted(valid, key=lambda sample: sample['time'])[-500:]
+        for item, record in merged:
+            if not isinstance(record, dict) or not isinstance(record.get('limits'), list):
+                continue
+            labels_seen = {}
+            for limit in record['limits']:
+                if not isinstance(limit, dict):
+                    continue
+                label = limit.get('title')
+                if not isinstance(label, str) or not label:
+                    label = limit.get('label')
+                if not isinstance(label, str) or not label:
+                    label = 'Limit'
+                ident = record.get('id')
+                if not isinstance(ident, str) or not ident:
+                    ident = item['file']
+                occurrence = labels_seen.get(label, 0)
+                labels_seen[label] = occurrence + 1
+                key = json.dumps([ident, label] if occurrence == 0 else [ident, label, occurrence], ensure_ascii=True, separators=(',', ':'))
+                samples = clean.get(key, [])
+                percent = limit.get('percent')
+                reset = _history_reset(limit.get('resetsAt'))
+                if _history_number(percent) and 0 <= percent <= 100:
+                    if samples:
+                        previous = samples[-1]
+                        old_reset = previous['resetsAt']
+                        if ((old_reset is not None and reset is not None and abs(reset - old_reset) > 3600)
+                                or percent < previous['percent'] - 5):
+                            samples = []
+                    if (not samples or percent != samples[-1]['percent'] or reset != samples[-1]['resetsAt']
+                            or now - samples[-1]['time'] >= 600):
+                        samples.append({'time': now, 'percent': percent, 'resetsAt': reset})
+                    clean[key] = samples[-500:]
+                limit['history'] = [[sample['time'], sample['percent']] for sample in samples
+                                    if sample['time'] >= now - 86400][-200:]
+            item['raw'] = json.dumps(record, ensure_ascii=True)
+        while len(clean) > 128:
+            del clean[min(clean, key=lambda key: clean[key][-1]['time'])]
+        encoded = json.dumps(clean, ensure_ascii=True, separators=(',', ':')).encode('utf-8')
+        while len(encoded) > 512 * 1024 and clean:
+            oldest = min(clean, key=lambda key: clean[key][0]['time'])
+            clean[oldest].pop(0)
+            if not clean[oldest]:
+                del clean[oldest]
+            encoded = json.dumps(clean, ensure_ascii=True, separators=(',', ':')).encode('utf-8')
+        temp_name = '.usage-history-' + secrets.token_hex(12)
+        fd = os.open(temp_name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+        with os.fdopen(fd, 'wb') as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(encoded)
+        os.replace(temp_name, 'usage-history.json', src_dir_fd=directory, dst_dir_fd=directory)
+        temp_name = None
+    finally:
+        if temp_name:
+            try:
+                os.unlink(temp_name, dir_fd=directory)
+            except OSError:
+                pass
+        os.close(directory)
+
+
+try:
+    _update_usage_history(merged, time.time())
+except (OSError, ValueError, TypeError, OverflowError, RecursionError, MemoryError):
+    pass
 json.dump([item for item, _ in merged], sys.stdout, ensure_ascii=True)
