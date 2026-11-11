@@ -14,3 +14,5 @@ import "./themed-controls.test.mjs";
 import "./navigation.test.mjs";
 
 import "./live_agents.test.mjs";
+
+import "./forecast.test.mjs";
