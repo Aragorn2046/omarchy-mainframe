@@ -29,10 +29,22 @@ TestCase {
     rows: [{name:"Machine", status:"connected", badge:"WSL", index:3, view:null}]
     onOpenMachine: function(index) { test.selected = index }
   }
+  Component {
+    id: cpuHeaderComponent
+    CpuHeader {
+      cpuView: shell.cpuView; cyberStyle: cyberAppearance
+      foreground: shell.themeFg; labelColor: shell.themeLabel
+      hotColor: shell.sensorColor; warmColor: shell.themeColors.yellow
+      heroSize: shell.pxHero; valueSize: shell.pxValue; labelSize: shell.pxLabel
+    }
+  }
   function init() {
+    test.width = 900
     style.settings = ({})
+    shell.cpuView = {percentText:"100%", tempText:"95°C", tempPeakText:"peak 100°C", tempLevel:"hot", freqText:"3.20 GHz"}
     overview.rows = [{name:"Machine", status:"connected", badge:"WSL", index:3, view:null}]
   }
+  function cleanup() { test.width = 900 }
   function test_refresh_preserves_cards() {
     var repeater = findChild(overview, "overview-repeater")
     compare(repeater.count, 1)
@@ -78,16 +90,7 @@ TestCase {
     compare(findChild(card, 'overview-cores-repeater').count, 0)
   }
   function test_cpu_header_from_shell_at_narrow_width() {
-    var request = new XMLHttpRequest()
-    request.open("GET", Qt.resolvedUrl("../shell.qml"), false)
-    request.send()
-    var source = request.responseText
-    if (!source) skip("Set QML_XHR_ALLOW_FILE_READ=1 to test the shell header")
-    var start = source.indexOf("            RowLayout {\n              id: cpuHeader")
-    var end = source.indexOf("\n\n            Text { textFormat:", start)
-    verify(start >= 0 && end > start)
-    var imports = 'import QtQuick; import QtQuick.Layouts; import "../cyber" as Cyber; import "../lib/metrics.js" as Metrics; '
-    var header = Qt.createQmlObject(imports + source.slice(start, end), test, "cpu-header-test")
+    var header = createTemporaryObject(cpuHeaderComponent, test)
     verify(header !== null)
     header.width = 600
     wait(20)
@@ -96,17 +99,20 @@ TestCase {
     var temp = findChild(header, "cpu-temperature")
     var freq = findChild(header, "cpu-frequency")
     verify(peak && percent && temp && freq)
+    compare(peak.visible, true)
+    compare(peak.text, "peak 100°C")
+    verify(peak.width >= peak.implicitWidth)
+    verify(!peak.truncated)
     var minWidth = percent.implicitWidth + temp.implicitWidth + freq.implicitWidth + header.spacing * 3
     header.width = minWidth + 4
     wait(20)
-    verify(peak.width < peak.implicitWidth)
+    verify(!peak.visible)
     verify(percent.width >= percent.implicitWidth)
     verify(temp.width >= temp.implicitWidth)
     verify(freq.width >= freq.implicitWidth)
     verify(!percent.truncated && !temp.truncated && !freq.truncated)
     shell.cpuView = {percentText:"100%", tempText:"95°C", tempPeakText:"", tempLevel:"hot", freqText:"3.20 GHz"}
     compare(peak.visible, false)
-    header.destroy()
   }
 
   function test_narrow_cpu_row() {
@@ -167,5 +173,14 @@ TestCase {
     }
     overview.rows = [row("n/a", "normal")]
     verify(!temp.visible)
+    overview.rows = [{name:"Machine", status:"connected", view:{cpu:{percentText:"23%", history:[10,23], cores:[]}}}]
+    compare(temp.text, "")
+    verify(!temp.visible)
+    overview.rows = [row(42, "hot")]
+    compare(temp.text, "")
+    verify(!temp.visible)
+    overview.rows = [row("47°C", "unexpected")]
+    compare(temp.text, "  47°C")
+    compare(temp.color, overview.ink)
   }
 }

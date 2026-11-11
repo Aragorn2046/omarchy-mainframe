@@ -2039,53 +2039,17 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            RowLayout {
-              id: cpuHeader
+            CpuHeader {
               Layout.fillWidth: true
-              Cyber.DataText {
-                id: cpuPercent
-                objectName: "cpu-percent"
-                cyberStyle: cyberAppearance
-                textFormat: Text.PlainText
-                sourceText: shell.cpuView ? shell.cpuView.percentText : "—"
-                color: shell.themeFg
-                font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
-                font.pixelSize: shell.pxHero
-                font.weight: Font.Medium
-              }
-              Item { visible: !cpuPeak.visible; Layout.fillWidth: true }
-              Text {
-                id: cpuPeak
-                objectName: "cpu-temperature-peak"
-                textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.tempPeakText || "" : ""
-                visible: text !== ""
-                Layout.fillWidth: true
-                Layout.minimumWidth: 0
-                horizontalAlignment: Text.AlignRight
-                elide: Text.ElideRight
-                color: shell.themeLabel
-                font.family: "monospace"
-                font.pixelSize: shell.pxLabel
-              }
-              Text {
-                id: cpuTemperature
-                objectName: "cpu-temperature"
-                textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.tempText : "—"
-                color: shell.cpuView && shell.cpuView.tempLevel === "hot" ? shell.sensorColor : (shell.cpuView && shell.cpuView.tempLevel === "warm" ? Metrics.qtColor(shell.themeColors.yellow || "#e0c36a") : shell.themeFg)
-                font.family: "monospace"
-                font.pixelSize: shell.pxValue
-              }
-              Text {
-                id: cpuFrequency
-                objectName: "cpu-frequency"
-                textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.freqText : "—"
-                color: shell.themeLabel
-                font.family: "monospace"
-                font.pixelSize: shell.pxValue
-              }
+              cpuView: shell.cpuView
+              cyberStyle: cyberAppearance
+              foreground: shell.themeFg
+              labelColor: shell.themeLabel
+              hotColor: shell.sensorColor
+              warmColor: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a")
+              heroSize: shell.pxHero
+              valueSize: shell.pxValue
+              labelSize: shell.pxLabel
             }
 
             Text { textFormat: Text.PlainText; visible: shell.cpuView && !!shell.cpuView.windowsText; text: shell.cpuView ? (shell.cpuView.windowsText || "") : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel }

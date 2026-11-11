@@ -47,7 +47,8 @@ Shape {
     return Math.max(0, Math.min(count - 1, slot - (60 - count))) + Math.max(0, paintedSamples.length - 60)
   }
   function seriesPairSteady(a, b) {
-    return Metrics.seriesFlat(a) && (!(b && b.length) || (b.indexOf(null) === -1 && Metrics.seriesFlat(b)))
+    var values = b ? b.filter(function(value) { return value !== null }) : []
+    return Metrics.seriesFlat(a) && (values.length === 0 || Metrics.seriesFlat(values))
   }
   function updateHover() {
     if (!hover.containsMouse) return
@@ -333,9 +334,7 @@ Shape {
           var j = i - (canvas.paintedSamples.length - canvas.paintedSamplesB.length)
           if (j >= 0 && j < canvas.paintedSamplesB.length) {
             var valueB = canvas.paintedSamplesB[j]
-            if (canvas.unitB === "°C" && chartMotion.item && canvas.samplesB.length === canvas.paintedSamplesB.length)
-              valueB = canvas.samplesB[j]
-            result += "  " + canvas.labelB + " " + (valueB === null ? "—" : (canvas.unitB === "°C" ? Math.round(Number(valueB)) + " °C" : canvas.displayValue(valueB)))
+            result += "  " + canvas.labelB + " " + (valueB === null ? "—" : (canvas.unitB !== "" ? Math.round(Number(valueB)) + " " + canvas.unitB : canvas.displayValue(valueB)))
           }
         }
         return result + " · " + (canvas.paintedSamples.length - 1 - i) + " s ago"
