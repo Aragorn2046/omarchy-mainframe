@@ -45,6 +45,24 @@ test("all QML Text objects render as plain text", () => {
   assert.deepEqual(problems, []);
 });
 
+test("CPU card binds the temperature chart, colours and optional peak without changing card dimensions", () => {
+  const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+  const source = readFileSync(join(root, "shell.qml"), "utf8");
+  const cpu = source.slice(source.indexOf('objectName: "card-cpu"'), source.indexOf('id: coreArea'));
+  assert.match(cpu, /Layout\.preferredHeight:\s*180/);
+  assert.match(cpu, /Layout\.minimumHeight:\s*48/);
+  assert.match(cpu, /samplesB:\s*shell\.cpuView\s*\?\s*shell\.cpuView\.tempHistory/);
+  assert.match(cpu, /labelA:\s*"CPU"/);
+  assert.match(cpu, /labelB:\s*"temp"/);
+  assert.match(cpu, /unitB:\s*"°C"/);
+  assert.match(cpu, /strokeColorB:\s*shell\.themeCyan/);
+  assert.match(cpu, /yMin:\s*0[\s\S]*yMax:\s*100/);
+  assert.match(cpu, /tempLevel === "hot"\s*\?\s*shell\.sensorColor/);
+  assert.match(cpu, /tempLevel === "warm"\s*\?\s*Metrics\.qtColor\(shell\.themeColors\.yellow/);
+  assert.match(cpu, /visible: text !== "" && cpuHeader\.width >= cpuPercent\.implicitWidth \+ cpuTemperature\.implicitWidth \+ cpuFrequency\.implicitWidth \+ implicitWidth/);
+  assert.equal((source.match(/unitB:\s*"°C"/g) || []).length, 1);
+});
+
 test("agent rows retain their alphabetical order", () => {
   const root = join(dirname(fileURLToPath(import.meta.url)), "..");
   const source = readFileSync(join(root, "shell.qml"), "utf8");

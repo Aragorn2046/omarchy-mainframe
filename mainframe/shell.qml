@@ -2039,8 +2039,10 @@ ShellRoot {
             spacing: 6
 
             RowLayout {
+              id: cpuHeader
               Layout.fillWidth: true
               Cyber.DataText {
+                id: cpuPercent
                 cyberStyle: cyberAppearance
                 textFormat: Text.PlainText
                 sourceText: shell.cpuView ? shell.cpuView.percentText : "—"
@@ -2051,13 +2053,25 @@ ShellRoot {
               }
               Item { Layout.fillWidth: true }
               Text {
+                id: cpuTemperature
+                objectName: "cpu-temperature"
                 textFormat: Text.PlainText
                 text: shell.cpuView ? shell.cpuView.tempText : "—"
-                color: shell.themeFg
+                color: shell.cpuView && shell.cpuView.tempLevel === "hot" ? shell.sensorColor : (shell.cpuView && shell.cpuView.tempLevel === "warm" ? Metrics.qtColor(shell.themeColors.yellow || "#e0c36a") : shell.themeFg)
                 font.family: "monospace"
                 font.pixelSize: shell.pxValue
               }
               Text {
+                objectName: "cpu-temperature-peak"
+                textFormat: Text.PlainText
+                text: shell.cpuView ? shell.cpuView.tempPeakText || "" : ""
+                visible: text !== "" && cpuHeader.width >= cpuPercent.implicitWidth + cpuTemperature.implicitWidth + cpuFrequency.implicitWidth + implicitWidth + 60
+                color: shell.themeLabel
+                font.family: "monospace"
+                font.pixelSize: shell.pxLabel
+              }
+              Text {
+                id: cpuFrequency
                 textFormat: Text.PlainText
                 text: shell.cpuView ? shell.cpuView.freqText : "—"
                 color: shell.themeLabel
@@ -2068,6 +2082,7 @@ ShellRoot {
 
             Text { textFormat: Text.PlainText; visible: shell.cpuView && !!shell.cpuView.windowsText; text: shell.cpuView ? (shell.cpuView.windowsText || "") : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel }
             Sparkline {
+              objectName: "cpu-sparkline"
               cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
@@ -2078,7 +2093,12 @@ ShellRoot {
               Layout.minimumHeight: steady ? 16 : 28
               Layout.maximumHeight: 40
               samples: shell.cpuView ? shell.cpuView.history : []
+              samplesB: shell.cpuView ? shell.cpuView.tempHistory || [] : []
+              labelA: "CPU"
+              labelB: "temp"
+              unitB: "°C"
               strokeColor: shell.themeAccent
+              strokeColorB: shell.themeCyan
               yMin: 0
               yMax: 100
             }

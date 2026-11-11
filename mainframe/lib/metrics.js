@@ -1271,6 +1271,7 @@ function emptyState() {
     gpuIdle: null,
     gpuAt: null,
     cpuHist: [],
+    cpuTempHist: [],
     memHist: [],
     gpuHist: [],
     rxHist: [],
@@ -1296,7 +1297,10 @@ function emptyView() {
       tempText: "—",
       freqText: "—",
       cores: [],
-      history: []
+      history: [],
+      tempHistory: [],
+      tempPeakText: "",
+      tempLevel: "normal"
     },
     mem: {
       usedText: "—",
@@ -1979,6 +1983,12 @@ function step(state, raw, nowMs) {
     packageTemp = sample.temps.package_c;
     diskTemp = sample.temps.disk_c;
   }
+  var validPackageTemp = typeof packageTemp === "number" && isFinite(packageTemp) && packageTemp >= -20 && packageTemp <= 150;
+  var cpuTempHist = prev.cpuTempHist || [];
+  if (cpuNa || tempsNa) cpuTempHist = [];
+  else if (live && !cpuFailed && !tempsFailed && validPackageTemp) {
+    cpuTempHist = cpuTempHist.concat([packageTemp]).slice(-HISTORY_LIMIT);
+  }
   var freqAvg = sample.cpu_mhz;
   var freqs = sample.cpu_mhz_cores || null;
   if (!cpuFailed && sample.cpu && typeof sample.cpu === "object") {
@@ -2050,6 +2060,16 @@ function step(state, raw, nowMs) {
       history: cpuHist
     };
   }
+  // A failed CPU sample carries its card, but temperature unavailability still clears its history.
+  var tempLevel = "normal";
+  if (!cpuNa && !tempsNa && (cpuFailed || tempsFailed) && prevCpu) tempLevel = prevCpu.tempLevel || "normal";
+  else if (!cpuNa && !tempsNa && validPackageTemp) tempLevel = packageTemp >= 95 ? "hot" : (packageTemp >= 85 ? "warm" : "normal");
+  cpuCard = Object.assign({}, cpuCard, {
+    tempHistory: cpuTempHist,
+    tempPeakText: cpuTempHist.length ? "peak " + formatTemp(Math.max.apply(null, cpuTempHist)) : "",
+    tempLevel: tempLevel
+  });
+  if (tempsNa) cpuCard.tempText = "n/a";
 
   var memCard;
   if (memNa) {
@@ -2169,6 +2189,7 @@ function step(state, raw, nowMs) {
       gpuIdle: gpuIdle,
       gpuAt: gpuAt,
       cpuHist: cpuHist,
+      cpuTempHist: cpuTempHist,
       memHist: memHist,
       gpuHist: gpuHist,
       rxHist: rxHist,

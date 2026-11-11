@@ -98,6 +98,19 @@ TestCase {
     verify(!loader(overviewCard, "cyber-hud-loader").active)
     verify(!loader(agents, "cyber-segments-loader").active)
   }
+  function test_overview_temperature_in_both_styles() {
+    overview.rows = [{name:"Machine", status:"connected", view:{cpu:{percentText:"23%",tempText:"95°C",tempLevel:"hot",history:[10,23],cores:[]}}}]
+    var temp = findChild(overview, "overview-cpu-temperature")
+    var overviewCard = findChild(overview, "overview-machine-card")
+    var initialHeight = overviewCard.height
+    compare(temp.text, "  95°C")
+    compare(temp.color, "#e06c75")
+    for (var i = 0; i < 2; i++) {
+      style.settings = {style:i === 0 ? "classic" : "cyberpunk", cyber:{}}
+      compare(temp.color, "#e06c75")
+      compare(overviewCard.height, initialHeight)
+    }
+  }
   function test_display_font_loads() {
     style.settings = {style:"cyberpunk", cyber:{displayFont:true}}
     tryCompare(loader(style, "cyber-font-loader").item, "status", FontLoader.Ready)

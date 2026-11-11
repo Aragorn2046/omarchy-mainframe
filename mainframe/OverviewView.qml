@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import "cyber" as Cyber
 import "lib/agents.js" as Agents
+import "lib/metrics.js" as Metrics
 
 Item {
   id: root
@@ -61,7 +62,11 @@ Item {
               Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 4
-                Cyber.DataText { cyberStyle: root.cyberStyle; objectName: "overview-cpu-value"; textFormat: Text.PlainText; sourceText: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                RowLayout {
+                  spacing: 0
+                  Cyber.DataText { cyberStyle: root.cyberStyle; objectName: "overview-cpu-value"; textFormat: Text.PlainText; sourceText: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                  Text { objectName: "overview-cpu-temperature"; textFormat: Text.PlainText; visible: !!(card.cpu && card.cpu.tempText && card.cpu.tempText !== '—' && card.cpu.tempText !== 'n/a'); text: visible ? '  ' + card.cpu.tempText : ''; color: card.cpu && card.cpu.tempLevel === 'hot' ? (typeof shell !== 'undefined' ? shell.sensorColor : '#e06c75') : (card.cpu && card.cpu.tempLevel === 'warm' ? Metrics.qtColor(typeof shell !== 'undefined' && shell.themeColors.yellow ? shell.themeColors.yellow : '#e0c36a') : root.ink); font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                }
                 Sparkline { cyberStyle: root.cyberStyle; objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
                 Row {
                   Layout.fillWidth: true; spacing: 2; clip: true

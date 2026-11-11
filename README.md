@@ -17,6 +17,7 @@ screen, and it wears your Omarchy theme: switch themes and Mainframe follows wit
 
 - **Every logical core** as its own meter with its percentage (a compact heat-map mode exists for 32+ cores)
 - **CPU** total, package temperature, frequency and history
+  The CPU chart also plots package temperature and its recent peak, with amber text at 85 °C and red at 95 °C.
 - **Memory** used / available / cached and swap, with history
 - **GPU** busy % and frequency from the kernel driver (code paths for Intel `xe`, Intel `i915` and AMD `amdgpu`;
   NVIDIA shows "not supported")

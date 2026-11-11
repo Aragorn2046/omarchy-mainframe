@@ -26,6 +26,8 @@ TestCase {
     chart.visible = true
     chart.samples = [10, 20, 30]
     chart.samplesB = []
+    chart.unitB = ""
+    chart.labelB = ""
     chart.rateChart = false
     chart.yMax = -1
     chart.yMin = 0
@@ -192,5 +194,22 @@ TestCase {
     tryVerify(function() { return chart.steady && !chart.built })
     chart.samples = [5, 10, 5]
     tryVerify(function() { return !chart.steady && chart.built && chart.strokeSvg.length > 0 })
+  }
+
+  function test_temperature_tooltip_and_default_units() {
+    chart.samplesB = [44.2, 46.7, 50]
+    chart.labelB = "temp"
+    chart.unitB = "°C"
+    chart.yMax = 100
+    tryVerify(function() { return chart.paintedSamplesB && chart.paintedSamplesB[1] === 46.7 })
+    mouseMove(chart, 295, 30)
+    tryVerify(function() { return chart.hoverIndex === 1 })
+    var tip = findChild(chart, "sparkline-tooltip-text")
+    compare(tip.text, "CPU 20%  temp 47 °C · 1 s ago")
+    chart.unitB = ""
+    compare(tip.text, "CPU 20%  temp 46.7% · 1 s ago")
+    chart.samplesB = [44, 47, 120]
+    tryVerify(function() { return chart.paintedSamplesB[2] === 120 })
+    verify(chart.pointY(120) >= 0)
   }
 }

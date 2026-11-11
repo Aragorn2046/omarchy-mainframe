@@ -30,6 +30,7 @@ Shape {
   property color tooltipBg: "#171b22"
   property string labelA: ""
   property string labelB: ""
+  property string unitB: ""
   property bool rateChart: false
   readonly property bool steady: seriesPairSteady(paintedSamples, paintedSamplesB)
   property real plotMax: 1
@@ -313,7 +314,7 @@ Shape {
         var result = (canvas.labelA ? canvas.labelA + " " : "") + canvas.displayValue(canvas.paintedSamples[i])
         if (canvas.paintedSamplesB && canvas.paintedSamplesB.length) {
           var j = i - (canvas.paintedSamples.length - canvas.paintedSamplesB.length)
-          if (j >= 0 && j < canvas.paintedSamplesB.length) result += "  " + canvas.labelB + " " + canvas.displayValue(canvas.paintedSamplesB[j])
+          if (j >= 0 && j < canvas.paintedSamplesB.length) result += "  " + canvas.labelB + " " + (canvas.unitB === "°C" ? Math.round(Number(canvas.paintedSamplesB[j])) + " °C" : canvas.displayValue(canvas.paintedSamplesB[j]))
         }
         return result + " · " + (canvas.paintedSamples.length - 1 - i) + " s ago"
       }

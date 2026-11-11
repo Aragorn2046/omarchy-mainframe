@@ -7,6 +7,7 @@ TestCase {
   name: "Overview"
   width: 900; height: 700; visible: true; when: windowShown
   property int selected: -1
+  QtObject { id: shell; property var themeColors: ({yellow:"#123456"}); property color sensorColor: "#654321" }
   OverviewView {
     id: overview
     anchors.fill: parent
@@ -71,5 +72,28 @@ TestCase {
     verify(chart !== null)
     mouseClick(chart, chart.width / 2, chart.height / 2)
     compare(selected, 3)
+  }
+  function test_cpu_temperature_colours_and_height() {
+    function row(temp, level) {
+      return {name:"Machine", status:"connected", view:{cpu:{percentText:"23%", tempText:temp, tempLevel:level, history:[10, 23], cores:[]}}}
+    }
+    overview.rows = [row("—", "normal")]
+    var card = findChild(overview, "overview-machine-card")
+    var value = findChild(card, "overview-cpu-value")
+    var temp = findChild(card, "overview-cpu-temperature")
+    wait(0)
+    var cardHeight = card.height
+    verify(!temp.visible)
+    overview.rows = [row("47°C", "normal")]
+    compare(value.text + temp.text, "CPU  23%  47°C")
+    compare(temp.color, overview.ink)
+    compare(card.height, cardHeight)
+    overview.rows = [row("85°C", "warm")]
+    compare(temp.color, shell.themeColors.yellow)
+    overview.rows = [row("95°C", "hot")]
+    compare(temp.color, shell.sensorColor)
+    compare(card.height, cardHeight)
+    overview.rows = [row("n/a", "normal")]
+    verify(!temp.visible)
   }
 }
