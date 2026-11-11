@@ -12,7 +12,7 @@ const h = 3600000;
 const history = (hours, rise) => [[now / 1000 - hours * 3600, 20], [now / 1000, 20 + rise]];
 const limit = (overrides = {}) => ({label:'Weekly (7-day)', percent:40, resetsAt:new Date(now + 5 * 24 * h).toISOString(), history:history(3, 6), ...overrides});
 test('window labels are parsed case insensitively', () => {
-  for (const [label, hours] of [['5-hour',5],['5H',5],['session',5],['Week',168],['7-day',168],['7d',168],['Daily',24],['24-hour',24],['Month',720],['30-day',720],['15-hour',15],['25h',25],['7-day session',168],['unknown',null]]) assert.equal(F.windowHours(label), hours);
+  for (const [label, hours] of [['5-hour',5],['5H',5],['session',5],['Week',168],['7-day',168],['7d',168],['Daily',24],['24-hour',24],['Month',720],['30-day',720],['15-hour',15],['25h',25],['7-day session',168],['1.5 days',36],['0.5h',0.5],['v2 weekly',168],['v2h',null],['1.2.5h',null],['unknown',null]]) assert.equal(F.windowHours(label), hours);
 });
 test('recent pace beats window average', () => {
   assert.equal(F.forecast(limit({history:history(3, 2.4)}), now).kind, 'full');
@@ -34,6 +34,13 @@ test('flat and falling history take precedence over the window average', () => {
     assert.deepEqual(F.forecast(limit({percent:40, history:history(3, rise)}), now), {kind:'ends',text:'on pace for ~40%',warn:false});
     assert.equal(F.forecast(limit({history:history(3, rise), resetsAt:null}), now), null);
   }
+});
+test('zero usage with zero pace has no forecast', () => {
+  assert.equal(F.forecast(limit({percent:0, history:history(3, 0)}), now), null);
+  assert.equal(F.forecast(limit({percent:0, history:history(3, -5)}), now), null);
+  assert.equal(F.forecast(limit({percent:0, history:[]}), now), null);
+  assert.deepEqual(F.forecast(limit({percent:0.01, history:history(3, 0)}), now), {kind:'ends',text:'on pace for ~1%',warn:false});
+  assert.ok(F.forecast(limit({percent:0, history:history(3, 6)}), now));
 });
 test('unknown reset, full bar, past reset and zero pace', () => {
   assert.equal(F.forecast(limit({resetsAt:null}),now).kind, 'full');
@@ -61,11 +68,17 @@ test('time format uses local calendar days across midnight and daylight saving',
 });
 test('parser filters malformed history and passes raw reset', () => {
   const raw = limit({label:'unknown', resetsAt:null, history:[null,[1],[1,'2'],[1,2,3],...history(3,6)]});
-  const result = A.parse(JSON.stringify({limits:[raw]}),'record',now).limits[0];
+  const result = A.parse(JSON.stringify({updatedAt:new Date(now).toISOString(), limits:[raw]}),'record',now).limits[0];
   assert.deepEqual(result.history,history(3,6));
   assert.equal(result.resetsAt,null); assert.equal(result.forecast.kind,'full');
   const many = A.parse(JSON.stringify({limits:[{history:Array.from({length:210},(_, i)=>[i,i % 100]).reverse()}]}),'record',now).limits[0];
   assert.equal(many.history.length,200); assert.equal(many.history[0][0],10);
+});
+test('stale or unknown update times suppress forecasts', () => {
+  const parse = updatedAt => A.parse(JSON.stringify({updatedAt, limits:[limit()]}), 'record', now);
+  assert.ok(parse(new Date(now - 7200000).toISOString()).limits[0].forecast);
+  assert.equal(parse(new Date(now - 7200001).toISOString()).limits[0].forecast, null);
+  assert.equal(parse(undefined).limits[0].forecast, null);
 });
 test('forecast ignores invalid, future, and unsorted samples before applying the cap', () => {
   const samples = Array.from({length:205}, (_, i) => [now/1000 - (204-i)*60, 20 + i/100]);

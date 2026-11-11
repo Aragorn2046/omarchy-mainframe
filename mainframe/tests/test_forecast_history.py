@@ -1,4 +1,5 @@
 import io
+import datetime
 import fcntl
 import json
 import os
@@ -26,9 +27,11 @@ class HistoryTest(unittest.TestCase):
         self.path = self.root / 'state/mainframe/usage-history.json'
         self.key = json.dumps(['unit.json', 'unit', 'Weekly', 0], separators=(',', ':'))
 
-    def update(self, percent=40, reset='2027-01-20T00:00:00Z', now=NOW):
+    def update(self, percent=40, reset='2027-01-20T00:00:00Z', now=NOW, updated=None):
         item = {'file':'unit.json', 'raw':''}
         record = {'id':'unit', 'limits':[{'label':'Weekly', 'percent':percent, 'resetsAt':reset, 'extra':'private'}]}
+        if updated is not None:
+            record['updatedAt'] = updated
         self.module['_update_usage_history']([(item, record)], now)
         return json.loads(item['raw'])['limits'][0]['history']
 
@@ -51,6 +54,15 @@ class HistoryTest(unittest.TestCase):
         self.assertEqual(self.update(percent=34, now=NOW+1), [[NOW+1, 34]])
         self.assertEqual(self.update(percent=35, reset='2027-01-20T03:00:00Z', now=NOW+2), [[NOW+2, 35]])
         self.assertEqual(len(self.update(percent=35, reset='2027-01-20T03:30:00Z', now=NOW+3)), 2)
+
+    def test_updated_time_prevents_stale_samples_and_resets(self):
+        stamp = lambda t: datetime.datetime.fromtimestamp(t, datetime.timezone.utc).isoformat()
+        self.assertEqual(self.update(now=NOW, updated=stamp(NOW-60)), [[NOW-60, 40]])
+        self.assertEqual(self.update(percent=30, now=NOW+3600, updated=stamp(NOW-60)), [[NOW-60, 40]])
+        self.assertEqual(self.update(percent=30, now=NOW+3601, updated=stamp(NOW-120)), [[NOW-60, 40]])
+        self.assertEqual(self.update(now=NOW+3602, updated=stamp(NOW+539)), [[NOW-60, 40]])
+        self.assertEqual(self.update(now=NOW+3603, updated=stamp(NOW+540)), [[NOW-60, 40], [NOW+540, 40]])
+        self.assertEqual(self.update(percent=41, now=NOW+3604, updated=stamp(NOW+541)), [[NOW-60, 40], [NOW+540, 40], [NOW+541, 41]])
 
     def test_retention_and_key_caps(self):
         sample = lambda t: {'time':t, 'percent':40, 'resetsAt':None}
@@ -143,6 +155,15 @@ class HistoryTest(unittest.TestCase):
             {'time':NOW-1, 'percent':'40', 'resetsAt':None},
             {'time':NOW-1, 'percent':40, 'resetsAt':'123'}]}))
         self.assertEqual(self.update(), [[NOW, 40]])
+
+    def test_history_repairs_oversized_integers(self):
+        huge = 10 ** 400
+        invalid = [dict(time=huge, percent=40, resetsAt=None),
+                   dict(time=NOW-1, percent=huge, resetsAt=None),
+                   dict(time=NOW-1, percent=40, resetsAt=huge)]
+        self.path.write_text(json.dumps({self.key: invalid}))
+        self.assertEqual(self.update(), [[NOW, 40]])
+        self.assertEqual(self.read()[self.key], [dict(time=NOW, percent=40, resetsAt=self.module['_history_reset']('2027-01-20T00:00:00Z'))])
 
     def test_nonfinite_record_preserves_raw_and_does_not_add_history(self):
         for number in (float('nan'), float('inf'), float('-inf')):

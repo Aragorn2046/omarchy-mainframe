@@ -1,7 +1,7 @@
 // Forecasting uses the caller's current time and the runtime's local time zone.
 function windowHours(label) {
   label = typeof label === 'string' ? label.toLowerCase() : '';
-  var explicit = /\b(\d+)\s*-?\s*(hours|hour|hr|h|days|day|d)\b/.exec(label);
+  var explicit = /(?:^|[^a-z0-9.])(\d+(?:\.\d+)?)\s*-?\s*(hours|hour|hr|h|days|day|d)\b/.exec(label);
   if (explicit) return Number(explicit[1]) * (/^d/.test(explicit[2]) ? 24 : 1);
   if (/\b(week|weekly)\b/.test(label)) return 168;
   if (/\b(daily|day)\b/.test(label)) return 24;
@@ -41,7 +41,7 @@ function forecast(limit, nowMs) {
     var elapsed = length - (reset - nowMs) / 3600000;
     if (elapsed >= minimum) rate = limit.percent / elapsed;
   }
-  if (rate === null || !isFinite(rate) || (rate === 0 && !isFinite(reset))) return null;
+  if (rate === null || !isFinite(rate) || (rate === 0 && (limit.percent === 0 || !isFinite(reset)))) return null;
   var hit = nowMs + (100 - limit.percent) / rate * 3600000;
   if (isFinite(reset)) {
     if (hit < reset) return {kind:'full', text:'at this pace full ' + forecastWhen(hit, nowMs), warn:true};

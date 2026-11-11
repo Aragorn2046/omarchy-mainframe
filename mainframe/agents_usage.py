@@ -138,11 +138,12 @@ for item in records:
             parsed.append(None)
             continue
         record = json.loads(item['raw'])
-        # Preserve the original raw record when any value is not JSON-finite.
+        changed = (isinstance(record, dict) and
+                   (not item.get('mainframe') or record.get('provider') in ('claude', 'codex')) and
+                   normalize_limits(record))
+        # Preserve the original raw record if other values are not JSON-finite.
         json.dumps(record, allow_nan=False)
-        if (isinstance(record, dict) and
-                (not item.get('mainframe') or record.get('provider') in ('claude', 'codex')) and
-                normalize_limits(record)):
+        if changed:
             item['raw'] = json.dumps(record, ensure_ascii=True)
         parsed.append(record)
     except ValueError:
@@ -282,7 +283,22 @@ for item, raw in merged:
     if original_shared != current_shared:
         item['raw'] = json.dumps(raw, ensure_ascii=True)
 def _history_number(value):
-    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _history_updated(value):
+    if not isinstance(value, str):
+        return None
+    try:
+        result = datetime.datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+        return result if math.isfinite(result) else None
+    except (ValueError, OverflowError, OSError):
+        return None
 
 
 def _history_reset(value):
@@ -383,6 +399,8 @@ def _update_usage_history(merged, now):
                 json.dumps(record, allow_nan=False)
             except (ValueError, TypeError, OverflowError):
                 continue
+            updated = _history_updated(record.get('updatedAt'))
+            sample_time = now if updated is None else updated
             labels_seen = {}
             for limit in record['limits']:
                 if not isinstance(limit, dict):
@@ -401,7 +419,8 @@ def _update_usage_history(merged, now):
                 samples = clean.get(key, [])
                 percent = limit.get('percent')
                 reset = _history_reset(limit.get('resetsAt'))
-                if _history_number(percent) and 0 <= percent <= 100:
+                if (_history_number(percent) and 0 <= percent <= 100 and
+                        (updated is None or not samples or sample_time > samples[-1]['time'])):
                     if samples:
                         previous = samples[-1]
                         old_reset = previous['resetsAt']
@@ -409,8 +428,8 @@ def _update_usage_history(merged, now):
                                 or percent < previous['percent'] - 5):
                             samples = []
                     if (not samples or percent != samples[-1]['percent'] or reset != samples[-1]['resetsAt']
-                            or now - samples[-1]['time'] >= 600):
-                        samples.append({'time': now, 'percent': percent, 'resetsAt': reset})
+                            or sample_time - samples[-1]['time'] >= 600):
+                        samples.append({'time': sample_time, 'percent': percent, 'resetsAt': reset})
                     clean[key] = samples[-500:]
                 limit['history'] = [[sample['time'], sample['percent']] for sample in samples
                                     if sample['time'] >= now - 86400][-200:]

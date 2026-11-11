@@ -71,7 +71,7 @@ function parse(text, filename, now) {
     var pct = typeof l.percent === 'number' && isFinite(l.percent) ? Math.max(0, Math.min(100, l.percent)) : null;
     var history = Array.isArray(l.history) ? l.history.filter(function(p) { return Array.isArray(p) && p.length === 2 && typeof p[0] === 'number' && isFinite(p[0]) && p[0] * 1000 <= now && typeof p[1] === 'number' && isFinite(p[1]) && p[1] >= 0 && p[1] <= 100; }).sort(function(a, b) { return a[0] - b[0]; }).slice(-200) : [];
     var limit = {label:safeHelp(l.title) || safeHelp(l.label) || 'Limit', percent:pct, reset:reset(l.resetsAt, now), resetsAt:l.resetsAt, history:history, level:pct >= 95 ? 'Critical' : pct >= 80 ? 'Warning' : ''};
-    limit.forecast = forecastForLimit(limit, now); limits.push(limit);
+    limit.forecast = updated.stale ? null : forecastForLimit(limit, now); limits.push(limit);
   });
   if (d.modelUsage && typeof d.modelUsage === 'object' && !Array.isArray(d.modelUsage)) for (k in d.modelUsage) if (Object.prototype.hasOwnProperty.call(d.modelUsage,k)) { v=d.modelUsage[k]; if (!v || typeof v !== 'object') continue; seenModels[k] = true; models.push({name:safeHelp(k), input:number(v.inputTokens), output:number(v.outputTokens), cache:number(v.cacheReadInputTokens)+number(v.cacheCreationInputTokens)}); }
   if (d.todayTokensByModel && typeof d.todayTokensByModel === 'object') for (k in d.todayTokensByModel) if (Object.prototype.hasOwnProperty.call(d.todayTokensByModel,k) && !seenModels[k]) models.push({name:safeHelp(k), total:number(d.todayTokensByModel[k]), input:0, output:0, cache:0});

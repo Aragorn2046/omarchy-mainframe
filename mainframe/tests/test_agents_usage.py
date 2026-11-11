@@ -90,9 +90,9 @@ class UsageFilesTest(unittest.TestCase):
             self.assertEqual(json.loads((cache / 'claude.json').read_text())['limits'][0]['percent'], 0.55)
 
     def test_limits_state_and_cache_values_and_repeated_reads(self):
-        values = [0.4, 40, 81, 1, 150, -1, True, False, None]
+        values = [0.4, 40, 81, 1, 150, -1, True, False, None, float('nan'), float('inf'), float('-inf')]
         # The 40, 81 and 150 make this entire record use the percentage scale.
-        expected = [0.4, 40, 81, 1, 100, None, None, None, None]
+        expected = [0.4, 40, 81, 1, 100, None, None, None, None, None, None, None]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             usage = root / 'state/omarchy/agents/usage'
@@ -126,7 +126,7 @@ class UsageFilesTest(unittest.TestCase):
         cases = [([0.4, 0.81, 1], [40, 81, 100]),
                  ([1, 45], [1, 45]), ([0.8, 45], [0.8, 45]),
                  ([150, 20], [100, 20]), ([0.29], [29])]
-        invalid = [True, False, '0.5', None, -1]
+        invalid = [True, False, '0.5', None, -1, float('nan'), float('inf'), float('-inf')]
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             usage = root / 'state/omarchy/agents/usage'
