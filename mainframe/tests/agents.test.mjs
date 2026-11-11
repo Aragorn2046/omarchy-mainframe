@@ -195,7 +195,7 @@ test('category recognizes provider in full account id', () => {
 });
 
 
-test('skyline packing uses available columns and preserves masonry', () => {
+test('band packing uses available columns and preserves masonry', () => {
   const opts = {minCardWidth:340, gap:10, maxColumns:6};
   assert.equal(A.pack([], 300, opts).columns, 1);
   assert.deepEqual(A.pack([], 1750, opts), {columns:5, columnWidth:342, height:0, blocks:[]});
@@ -266,7 +266,7 @@ test('usage flows around the live card and recovers every column', () => {
   for (const width of [350, 900, 1600]) {
     const packed = A.pack(blocks, width);
     const live = packed.blocks[0].cards[0], usage = packed.blocks[1].cards;
-    assert.equal(live.y, 0);
+    assert.equal(live.y, packed.columns === 1 ? 10 : usage[0].y);
     if (packed.columns === 2) {
       assert.equal(new Set(usage.map(card => card.x)).size, 2);
       assert.ok(Math.max(...usage.map(card => card.y + card.height)) <= 4 * 110 + 25);
@@ -279,4 +279,87 @@ test('usage flows around the live card and recovers every column', () => {
     for (const [i, a] of rects.entries()) for (const b of rects.slice(i + 1))
       assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y);
   }
+});
+
+
+test('band headings and card rows align with their owned columns', () => {
+  const blocks = [
+    {key:'live', noHeading:true, headingHeight:0, cardHeights:[100]},
+    {key:'usage', headingHeight:15, cardHeights:[90, 100, 110, 120, 130], flowAround:true},
+    {key:'video', headingHeight:12, cardHeights:[70]},
+    {key:'voice', headingHeight:20, cardHeights:[80]},
+    {key:'other', headingHeight:16, cardHeights:[80, 90]},
+  ];
+  const packed = A.pack(blocks, 1600);
+  const [live, usage, video, voice, other] = packed.blocks;
+  assert.equal(packed.columns, 4);
+  assert.equal(live.y, usage.y);
+  assert.equal(live.cards[0].y, usage.cards[0].y);
+  assert.deepEqual(usage.cards.slice(0, 3).map(card => card.y), Array(3).fill(live.cards[0].y));
+  assert.equal(video.y, voice.y);
+  assert.equal(voice.y, other.y);
+  assert.equal(video.cards[0].y, voice.cards[0].y);
+  assert.equal(voice.cards[0].y, other.cards[0].y);
+  assert.equal(other.cards[0].y, other.cards[1].y);
+  for (const block of [usage, video, voice, other]) {
+    const ownCards = block.cards.filter(card => card.x >= block.heading.x && card.x < block.heading.x + block.heading.width);
+    assert.equal(block.heading.width, Math.max(...ownCards.map(card => card.x + card.width)) - block.heading.x);
+  }
+  assert.equal(usage.heading.x, usage.cards[0].x);
+  assert.equal(usage.heading.width, 1600 - usage.heading.x);
+});
+
+test('joining bands requires at least half of desired columns', () => {
+  const single = {key:'single', headingHeight:15, cardHeights:[30]};
+  const three = {key:'three', headingHeight:15, cardHeights:[30, 30, 30]};
+  const five = {key:'five', headingHeight:15, cardHeights:[30, 30, 30, 30, 30]};
+  let packed = A.pack([three, three], 1600);
+  assert.ok(packed.blocks[1].y > packed.blocks[0].y);
+  packed = A.pack([single, five], 1600);
+  assert.equal(packed.blocks[0].y, packed.blocks[1].y);
+  assert.equal(new Set(packed.blocks[1].cards.map(card => card.x)).size, 3);
+});
+
+test('flow around live uses both columns and is no taller than one free column', () => {
+  const live = {key:'live', noHeading:true, headingHeight:0, cardHeights:[120]};
+  const usage = {key:'usage', headingHeight:15, cardHeights:Array(6).fill(100), flowAround:true};
+  const packed = A.pack([live, usage], 900);
+  const alternative = A.pack([live, {...usage, flowAround:false}], 900);
+  const [livePlacement, section] = packed.blocks;
+  assert.equal(new Set(section.cards.map(card => card.x)).size, 2);
+  assert.ok(packed.height <= alternative.height);
+  assert.equal(section.x, livePlacement.x);
+  assert.equal(section.width, 900);
+  assert.ok(section.heading.x > section.x);
+  assert.ok(section.cards.filter(card => card.x === livePlacement.x).every(card => card.y >= livePlacement.cards[0].y + livePlacement.cards[0].height));
+});
+
+test('bands stay in bounds and headings protect their columns at representative widths', () => {
+  const blocks = [
+    {key:'live', noHeading:true, headingHeight:0, cardHeights:[155]},
+    {key:'usage', headingHeight:15, cardHeights:[110, 140, 90, 120, 130], flowAround:true},
+    {key:'video', headingHeight:20, cardHeights:[100]},
+    {key:'voice', headingHeight:12, cardHeights:[95]},
+    {key:'other', headingHeight:17, cardHeights:[130, 85]},
+  ];
+  for (const width of [350, 900, 1600, 2576]) {
+    const packed = A.pack(blocks, width);
+    const rects = packed.blocks.flatMap((block, i) => [
+      ...(!blocks[i].noHeading ? [{...block.heading, height:blocks[i].headingHeight}] : []), ...block.cards
+    ]);
+    for (const [i, a] of rects.entries()) {
+      assert.ok(a.x >= 0 && a.x + a.width <= width);
+      for (const b of rects.slice(i + 1))
+        assert.ok(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y, `overlap at width ${width}`);
+    }
+    assert.equal(packed.height, Math.max(...rects.map(rect => rect.y + rect.height)));
+    for (const [i, block] of packed.blocks.entries()) for (const card of block.cards) {
+      const inOwnColumns = card.x >= block.heading.x && card.x + card.width <= block.heading.x + block.heading.width;
+      const inLiveColumn = blocks[i].flowAround && card.x === packed.blocks[0].cards[0].x && card.y >= packed.blocks[0].cards[0].y + packed.blocks[0].cards[0].height;
+      assert.ok(inOwnColumns || inLiveColumn);
+    }
+  }
+  const empty = A.pack([{key:'empty', headingHeight:20, cardHeights:[]}], 900);
+  assert.deepEqual(empty.blocks[0], {key:'empty', x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]});
+  assert.equal(empty.height, 0);
 });

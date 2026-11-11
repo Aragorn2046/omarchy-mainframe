@@ -71,7 +71,7 @@ TestCase {
     verify(livePosition.x + live.width <= cardPosition.x + 1)
     testCase.width = 350
     tryVerify(function() { return live.width === view.flick.width && card.width === live.width && view.checkLayout() === 0 })
-    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, 0)
+    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, 10)
     verify(card.mapToItem(view.flick.contentItem, 0, 0).y >= live.mapToItem(view.flick.contentItem, 0, 0).y + live.height)
     view.fleetLiveAgents = {total:0, reporting:0, hostsTotal:3, hosts:[unavailable('Host A'), unavailable('Host B'), unavailable('Host C')], accounts:[]}
     compare(empty.text, 'No machine reporting')
@@ -268,6 +268,19 @@ TestCase {
     var voice = view.packed.blocks[3].cards[0]
     verify(video.x !== voice.x)
     verify(Math.abs(video.y - voice.y) <= 1)
+  }
+  function test_band_heading_and_card_alignment() {
+    testCase.width = 1600
+    view.rows = [{name:'First', category:'video'}, {name:'Second', category:'voice'}]
+    tryVerify(function() { return view.packed.columns === 4 && view.packed.blocks.length === 3 && view.checkLayout() === 0 })
+    var sections = findChild(view, 'agents-sections-repeater')
+    var first = sections.itemAt(0), second = sections.itemAt(1)
+    var live = findChild(view, 'agents-live-card')
+    var firstCard = first.cardRepeater.itemAt(0), secondCard = second.cardRepeater.itemAt(0)
+    compare(first.headingItem.mapToItem(view.flick.contentItem, 0, 0).y, second.headingItem.mapToItem(view.flick.contentItem, 0, 0).y)
+    compare(firstCard.mapToItem(view.flick.contentItem, 0, 0).y, secondCard.mapToItem(view.flick.contentItem, 0, 0).y)
+    compare(live.mapToItem(view.flick.contentItem, 0, 0).y, firstCard.mapToItem(view.flick.contentItem, 0, 0).y)
+    compare(view.checkLayout(), 0)
   }
   function test_packing_updates_after_content_and_width_change() {
     testCase.width = 900

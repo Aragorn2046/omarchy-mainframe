@@ -111,7 +111,7 @@ function sections(items) {
     return {key:pair[0], heading:pair[1], cards:cards};
   }).filter(function(section) { return section.cards.length > 0; });
 }
-// Place sections on a shared skyline while retaining each card's own height.
+// Place sections in horizontal bands, then pack cards within their columns.
 function pack(blocks, width, options) {
   options = options || {};
   var gap = options.gap === undefined ? 10 : options.gap;
@@ -122,34 +122,49 @@ function pack(blocks, width, options) {
   var columns = Math.max(1, Math.min(maxColumns, Math.floor((width + gap) / (minWidth + gap))));
   var available = width - (columns - 1) * pixelGap;
   var columnWidth = Math.floor(available / columns), extra = available - columnWidth * columns;
-  var skyline = [], starts = [], widths = [], result = [], bottom = 0, i, nextX = 0;
+  var starts = [], widths = [], result = [], bands = [], band = null, i, nextX = 0;
   for (i = 0; i < columns; i++) {
-    skyline.push(0); starts.push(nextX); widths.push(columnWidth + (i < extra ? 1 : 0));
+    starts.push(nextX); widths.push(columnWidth + (i < extra ? 1 : 0));
     nextX += widths[i] + pixelGap;
   }
-  blocks.forEach(function(block) {
-    var count = block.cardHeights.length, span = Math.min(count, columns, block.flowAround ? 1 : (block.maxSpan === undefined ? columns : Math.max(1, block.maxSpan)));
-    if (!span) { result.push({key:block.key, x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]}); return; }
-    var start = 0, top = Infinity, c, j;
-    for (c = 0; c <= columns - span; c++) {
-      var candidate = 0;
-      for (j = c; j < c + span; j++) candidate = Math.max(candidate, skyline[j]);
-      if (candidate < top) { top = candidate; start = c; }
+  blocks.forEach(function(block, index) {
+    var desired = Math.min(block.cardHeights.length, columns);
+    if (!desired) {
+      result[index] = {key:block.key, x:0, y:0, width:0, heading:{x:0, y:0, width:0}, cards:[]};
+      return;
     }
-    var x = starts[start], last = start + span - 1;
-    var blockWidth = starts[last] + widths[last] - x;
-    var heading = {x:x, y:top, width:blockWidth}, cards = [];
-    var cardTop = block.noHeading ? top : top + block.headingHeight + gap;
-    var cardStart = block.flowAround ? 0 : start, cardEnd = block.flowAround ? columns : start + span;
-    for (j = cardStart; j < cardEnd; j++) skyline[j] = Math.max(skyline[j], cardTop);
-    block.cardHeights.forEach(function(height) {
-      var chosen = cardStart;
-      for (var k = cardStart + 1; k < cardEnd; k++) if (skyline[k] < skyline[chosen]) chosen = k;
-      cards.push({x:starts[chosen], y:skyline[chosen], width:widths[chosen], height:height});
-      bottom = Math.max(bottom, skyline[chosen] + height);
-      skyline[chosen] += height + gap;
+    if (!band || columns - band.used < Math.ceil(desired / 2)) {
+      band = {used:0, headingHeight:0, sections:[]};
+      bands.push(band);
+    }
+    var span = Math.min(desired, columns - band.used);
+    band.sections.push({block:block, index:index, start:band.used, span:span});
+    band.used += span;
+    if (!block.noHeading) band.headingHeight = Math.max(band.headingHeight, block.headingHeight);
+  });
+  var top = 0, bottom = 0;
+  bands.forEach(function(current) {
+    var cardTop = top + current.headingHeight + gap, skyline = [], liveColumn = -1;
+    for (var c = 0; c < columns; c++) skyline.push(cardTop);
+    current.sections.forEach(function(section) {
+      var block = section.block, start = section.start, last = start + section.span - 1;
+      var headingX = starts[start], headingWidth = starts[last] + widths[last] - headingX;
+      var cards = [], minColumn = start, maxColumn = last;
+      block.cardHeights.forEach(function(height) {
+        var chosen = start;
+        for (var k = start + 1; k <= last; k++) if (skyline[k] < skyline[chosen]) chosen = k;
+        if (block.flowAround && liveColumn >= 0 && skyline[liveColumn] < skyline[chosen]) chosen = liveColumn;
+        cards.push({x:starts[chosen], y:skyline[chosen], width:widths[chosen], height:height});
+        minColumn = Math.min(minColumn, chosen); maxColumn = Math.max(maxColumn, chosen);
+        bottom = Math.max(bottom, skyline[chosen] + height);
+        skyline[chosen] += height + gap;
+      });
+      if (block.noHeading && section.span === 1 && block.cardHeights.length === 1) liveColumn = start;
+      result[section.index] = {key:block.key, x:starts[minColumn], y:top,
+        width:starts[maxColumn] + widths[maxColumn] - starts[minColumn],
+        heading:{x:headingX, y:top, width:headingWidth}, cards:cards};
     });
-    result.push({key:block.key, x:block.flowAround ? 0 : x, y:top, width:block.flowAround ? width : blockWidth, heading:heading, cards:cards});
+    top = bottom + gap;
   });
   return {columns:columns, columnWidth:columnWidth, height:bottom, blocks:result};
 }
