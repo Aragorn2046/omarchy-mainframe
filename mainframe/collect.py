@@ -1921,7 +1921,9 @@ class WslTemperatureReader:
                         child.kill()
                 finally:
                     try:
-                        child.wait()
+                        child.wait(timeout=1)
+                    except (subprocess.TimeoutExpired, OSError):
+                        raise ValueError('registry query cleanup failed') from None
                     finally:
                         child.stdout.close()
             self.sensors = parse_hwinfo_temperatures(bytes(output))
@@ -1980,7 +1982,7 @@ def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=N
     if sample["os"] == "linux" and kernel_is_wsl(sample["kernel"]):
         sample["wsl"] = True
         temps = sample.get("temps")
-        if local and kernel_is_wsl(kernel_release()) and isinstance(temps, dict) and temps.get("package_c") is None:
+        if local and isinstance(temps, dict) and temps.get("package_c") is None:
             try:
                 value = (wsl_reader or wsl_temperature_c)(sample["kernel"])
                 if value is not None:

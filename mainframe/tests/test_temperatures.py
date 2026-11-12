@@ -146,6 +146,9 @@ class MacTemperatureTests(unittest.TestCase):
         for call in calls:
             self.assertTrue(any(kw.arg == 'local' and isinstance(kw.value, ast.Constant)
                                 and kw.value.value is True for kw in call.keywords))
+            self.assertTrue(isinstance(call.args[3], ast.Call)
+                            and isinstance(call.args[3].func, ast.Name)
+                            and call.args[3].func.id == 'kernel_release')
 
     def test_duplicate_sensor_names_keep_highest_value(self):
         for values in ([72, 48], [48, 72]):
@@ -334,6 +337,42 @@ class WslTemperatureTests(unittest.TestCase):
         self.assertIsNotNone(children[0].returncode)
         self.assertTrue(children[0].stdout.closed)
 
+    def test_failed_kill_and_reap_are_bounded_and_back_off(self):
+        now = [0]
+        child = Mock()
+        child.poll.return_value = None
+        child.kill.side_effect = OSError('kill failed')
+        child.wait.side_effect = subprocess.TimeoutExpired('registry query', 1)
+        runner = Mock(return_value=child)
+        reader = collector.WslTemperatureReader(clock=lambda: now[0], runner=runner)
+        start = time.monotonic()
+        with patch.object(collector.select, 'select', side_effect=OSError('read failed')):
+            self.assertEqual(reader.read(WSL), {})
+        self.assertLess(time.monotonic() - start, 1)
+        child.kill.assert_called_once_with()
+        child.wait.assert_called_once_with(timeout=1)
+        child.stdout.close.assert_called_once_with()
+        self.assertEqual(reader.interval, 60)
+        now[0] = 59
+        self.assertEqual(reader.read(WSL), {})
+        runner.assert_called_once()
+        now[0] = 60
+        with patch.object(collector.select, 'select', side_effect=OSError('read failed')):
+            self.assertEqual(reader.read(WSL), {})
+        self.assertEqual(runner.call_count, 2)
+
+    def test_failed_reap_discards_successful_read(self):
+        child = Mock()
+        child.poll.return_value = 0
+        child.wait.side_effect = [0, subprocess.TimeoutExpired('registry query', 1)]
+        data = registry_entry(1, 'CPU Package', '52 C', '52').encode()
+        reader = collector.WslTemperatureReader(runner=Mock(return_value=child))
+        with patch.object(collector.select, 'select', return_value=([child.stdout], [], [])), \
+             patch.object(collector.os, 'read', side_effect=[data, b'']):
+            self.assertEqual(reader.read(WSL), {})
+        child.wait.assert_any_call(timeout=1)
+        self.assertEqual(reader.interval, 60)
+
     def test_no_cpu_label_backs_off_but_preserves_diagnostics(self):
         now = [0]
         output = registry_entry(1, 'GPU', '50 C', '50').encode()
@@ -382,15 +421,21 @@ class WslTemperatureTests(unittest.TestCase):
             self.assertEqual(sample['errors'], {'cpu': 'error'})
         probe.reset_mock()
         sample = {'temps': collector.temps_na(), 'errors': {'temps': 'unavailable'}}
-        with patch.object(collector, 'kernel_release', return_value=LINUX):
-            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe, local=True)
+        with patch.object(collector, 'kernel_release', side_effect=OSError('unavailable')):
+            collector.apply_host_meta(sample, '', 'linux', LINUX, wsl_reader=probe, local=True)
         probe.assert_not_called()
         self.assertEqual(sample['temps'], collector.temps_na())
         self.assertEqual(sample['errors'], {'temps': 'unavailable'})
-        with patch.object(collector, 'kernel_release', return_value=WSL):
+        with patch.object(collector, 'kernel_release', side_effect=OSError('unavailable')):
             collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=lambda _: None, local=True)
         self.assertEqual(sample['temps'], collector.temps_na())
         self.assertEqual(sample['errors'], {'temps': 'unavailable'})
+        with patch.object(collector, 'kernel_release', side_effect=OSError('unavailable')) as release:
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe, local=True)
+        release.assert_not_called()
+        probe.assert_called_once_with(WSL)
+        self.assertEqual(sample['temps'], {'package_c': 55, 'disk_c': None})
+        self.assertNotIn('errors', sample)
 
     def test_nonlocal_wsl_keeps_temperatures_without_reading(self):
         probe = Mock(return_value=55)
