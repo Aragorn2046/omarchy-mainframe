@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import time
 import unittest
 from unittest.mock import Mock, patch
 
@@ -116,8 +117,42 @@ class MacTemperatureTests(unittest.TestCase):
             collector.apply_host_meta({'temps': {}}, '', 'darwin', '24', mac_reader=probe)
         probe.assert_not_called()
 
+    def test_reader_replaces_invalid_name_without_losing_other_sensors(self):
+        reader = collector.MacTemperatureReader()
+        cf, io = Mock(), Mock()
+        reader.cf, reader.io, reader.client = cf, io, 1
+        io.IOHIDEventSystemClientCopyServices.return_value = 2
+        cf.CFStringCreateWithCString.return_value = 3
+        cf.CFArrayGetCount.return_value = 2
+        cf.CFArrayGetValueAtIndex.side_effect = [4, 5]
+        io.IOHIDServiceClientCopyProperty.side_effect = [6, 7]
+        cf.CFGetTypeID.return_value = cf.CFStringGetTypeID.return_value = 8
+        cf.CFStringGetLength.return_value = 10
+        cf.CFStringGetMaximumSizeForEncoding.return_value = 20
+        def get_string(name, buffer, _size, _encoding):
+            buffer.value = b'bad\xffname' if name == 6 else b'PMU tdie1'
+            return True
+        cf.CFStringGetCString.side_effect = get_string
+        io.IOHIDServiceClientCopyEvent.return_value = 9
+        io.IOHIDEventGetFloatValue.return_value = 53.5
+        sensors = reader.read()
+        self.assertEqual(sensors, {'bad\ufffdname': 53.5, 'PMU tdie1': 53.5})
+        self.assertEqual(collector.select_mac_cpu_temperature(sensors), 53.5)
+
 
 class WslTemperatureTests(unittest.TestCase):
+    def test_large_lines_and_output_are_bounded(self):
+        for label, shown in (('x' + ' ' * 200000 + 'y', '50 C'),
+                             ('CPU', '9' * 200000)):
+            data = (registry_entry(1, label, shown, '50')
+                    + registry_entry(2, 'Core Max', '48 C', '48')).encode()
+            start = time.monotonic()
+            self.assertEqual(collector.parse_hwinfo_temperatures(data), {'Core Max': 48.0})
+            self.assertLess(time.monotonic() - start, 1.0)
+        data = (b' ' * (256 * 1024) + b'\n' +
+                registry_entry(1, 'CPU', '50 C', '50').encode())
+        self.assertEqual(collector.parse_hwinfo_temperatures(data), {})
+
     def test_utf16_and_priority(self):
         data = ('HKEY_CURRENT_USER\\Software\\HWiNFO64\\VSB\r\n'
                 + registry_entry(1, 'CPU', '35 °C', '35.5')
@@ -218,11 +253,13 @@ class WslTemperatureTests(unittest.TestCase):
     def test_wsl_result_shape_and_local_guard(self):
         probe = Mock(return_value=55)
         for disk in (None, 36):
-            sample = {'temps': dict(collector.temps_na(), disk_c=disk),
+            original = dict(collector.temps_na(), disk_c=disk, extra=17)
+            sample = {'temps': original,
                       'errors': {'temps': 'unavailable', 'cpu': 'error'}}
             with patch.object(collector, 'kernel_release', return_value=WSL):
                 collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
-            self.assertEqual(sample['temps'], {'package_c': 55, 'disk_c': disk})
+            self.assertEqual(sample['temps'], {'package_c': 55, 'disk_c': disk, 'extra': 17})
+            self.assertIsNot(sample['temps'], original)
             self.assertEqual(sample['errors'], {'cpu': 'error'})
         probe.reset_mock()
         sample = {'temps': collector.temps_na(), 'errors': {'temps': 'unavailable'}}

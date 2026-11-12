@@ -1785,7 +1785,7 @@ class MacTemperatureReader:
                                 try:
                                     value = valid_temperature(io.IOHIDEventGetFloatValue(event, 15 << 16))
                                     if value is not None:
-                                        self.sensors[buf.value.decode('utf-8')] = value
+                                        self.sensors[buf.value.decode('utf-8', errors='replace')] = value
                                 finally:
                                     cf.CFRelease(event)
                         finally:
@@ -1813,6 +1813,7 @@ _HWiNFO_KEY = r'HKCU\Software\HWiNFO64\VSB'
 
 
 def parse_hwinfo_temperatures(data):
+    data = data[:256 * 1024] if isinstance(data, (bytes, str)) else ''
     if isinstance(data, bytes):
         if data.startswith((b'\xff\xfe', b'\xfe\xff')):
             text = data.decode('utf-16', errors='replace')
@@ -1827,9 +1828,19 @@ def parse_hwinfo_temperatures(data):
         text = str(data or '')
     entries = {}
     for line in text.splitlines():
-        match = re.match(r'^\s*(Sensor|Label|ValueRaw|Value)(\d+)\s+REG_SZ\s+(.*?)\s*$', line, re.IGNORECASE)
-        if match:
-            entries.setdefault(match.group(2), {})[match.group(1).lower()] = match.group(3)
+        if len(line) > 1024:
+            continue
+        line = line.strip()
+        key, separator, _ = line.upper().partition(' REG_SZ ')
+        if not separator:
+            continue
+        shown = line[len(key) + len(separator):].strip()
+        key = key.strip().lower()
+        for prefix in ('sensor', 'label', 'valueraw', 'value'):
+            index = key[len(prefix):]
+            if key.startswith(prefix) and index and index.isascii() and index.isdigit():
+                entries.setdefault(index, {})[prefix] = shown
+                break
     sensors = {}
     for entry in entries.values():
         label, shown = entry.get('label', ''), entry.get('value', '')
@@ -1837,7 +1848,21 @@ def parse_hwinfo_temperatures(data):
         if raw.count(',') == 1 and '.' not in raw:
             raw = raw.replace(',', '.')
         value = valid_temperature(raw)
-        if label and re.search(r'[+-]?\d+(?:[.,]\d+)?\s*[^a-zA-Z0-9\s]*\s*C\s*$', shown, re.IGNORECASE) and value is not None:
+        shown = shown.strip()
+        if not shown.lower().endswith('c'):
+            continue
+        number = shown[:-1].rstrip()
+        end = len(number)
+        while (end and not number[end - 1].isspace() and
+               not (number[end - 1].isascii() and number[end - 1].isalnum())):
+            end -= 1
+        number = number[:end].rstrip()
+        unsigned = number.lstrip('+-')
+        parts = unsigned.replace(',', '.').split('.')
+        numeric = (len(number) <= 64 and len(parts) <= 2 and
+                   all(part and part.isascii() and part.isdigit() for part in parts) and
+                   number.count('+') + number.count('-') <= 1)
+        if label and numeric and value is not None:
             sensors.setdefault(label, value)
     return sensors
 
@@ -1929,7 +1954,9 @@ def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=N
             try:
                 value = (wsl_reader or wsl_temperature_c)(sample["kernel"])
                 if value is not None:
-                    sample["temps"] = {"package_c": value, "disk_c": temps.get("disk_c")}
+                    sample["temps"] = temps.copy()
+                    sample["temps"]["package_c"] = value
+                    sample["temps"].pop("na", None)
                     if errors is not None:
                         errors.pop("temps", None)
             except Exception:  # noqa: BLE001 — optional platform sensor
