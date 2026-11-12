@@ -182,10 +182,10 @@ What you see depends on the host:
 - **Linux** uses the same `/proc` numbers as this machine, including GPU and temperatures when the
   host exposes them.
 - **macOS** shows per-core CPU, memory, swap, disk throughput, root disk usage, network, battery and
-  the busiest processes. GPU and temperatures need root, so those cards say "n/a". The process CPU
+  the busiest processes. CPU temperature shows on Apple Silicon Macs when the sensors can be read; GPU and disk temperatures show "n/a". The process CPU
   figure is the decayed average `ps` already reports.
 - **WSL** (a Linux kernel that says `microsoft` or `WSL`) shows Windows host memory and CPU when PowerShell is available, with a WSL memory breakdown.
-  If the Windows sample fails, the card falls back to WSL figures. The GPU usually shows "n/a".
+  If the Windows sample fails, the card falls back to WSL figures. CPU temperature appears when HWiNFO64 runs on Windows with Gadget reporting enabled for a CPU temperature such as CPU (Tctl/Tdie) or CPU Package; otherwise it shows "n/a". The GPU usually shows "n/a".
 
 A sensor the host cannot provide says "n/a". It does not take the rest of the cards down with it.
 

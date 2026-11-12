@@ -1644,6 +1644,309 @@ def kernel_is_wsl(release):
     return "microsoft" in text or "wsl" in text
 
 
+def valid_temperature(value):
+    try:
+        value = float(value)
+        return value if math.isfinite(value) and -20 <= value <= 150 else None
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def select_mac_cpu_temperature(sensors):
+    tdie, mtr = [], []
+    for name, raw in sensors.items():
+        value = valid_temperature(raw)
+        if value is None:
+            continue
+        if "tdie" in name.lower():
+            tdie.append(value)
+        elif re.search(r"^\s*(?:pacc|eacc|acc).*mtr temp sensor", name, re.IGNORECASE):
+            mtr.append(value)
+    return max(tdie or mtr) if tdie or mtr else None
+
+
+class MacTemperatureReader:
+    """Own one HID client and cache its temperature events for two seconds."""
+
+    def __init__(self, clock=None):
+        self.clock = clock or time.monotonic
+        self.client = None
+        self.init_at = None
+        self.at = None
+        self.sensors = {}
+        self.cf = None
+        self.io = None
+
+    def _initialize(self):
+        if sys.platform != "darwin" or os.uname().machine.lower() != "arm64":
+            return
+        cf = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
+        io = ctypes.CDLL('/System/Library/Frameworks/IOKit.framework/IOKit')
+        ptr, integer = ctypes.c_void_p, ctypes.c_long
+        def bind(lib, name, result, args):
+            fn = getattr(lib, name)
+            fn.restype, fn.argtypes = result, args
+            return fn
+        bind(cf, 'CFRelease', None, [ptr])
+        bind(cf, 'CFGetTypeID', ctypes.c_ulong, [ptr])
+        bind(cf, 'CFStringGetTypeID', ctypes.c_ulong, [])
+        bind(cf, 'CFStringCreateWithCString', ptr, [ptr, ctypes.c_char_p, ctypes.c_uint32])
+        bind(cf, 'CFStringGetLength', integer, [ptr])
+        bind(cf, 'CFStringGetMaximumSizeForEncoding', integer, [integer, ctypes.c_uint32])
+        bind(cf, 'CFStringGetCString', ctypes.c_bool, [ptr, ctypes.c_char_p, integer, ctypes.c_uint32])
+        bind(cf, 'CFNumberCreate', ptr, [ptr, ctypes.c_int, ptr])
+        bind(cf, 'CFDictionaryCreate', ptr, [ptr, ctypes.POINTER(ptr), ctypes.POINTER(ptr), integer, ptr, ptr])
+        bind(cf, 'CFArrayGetCount', integer, [ptr])
+        bind(cf, 'CFArrayGetValueAtIndex', ptr, [ptr, integer])
+        bind(io, 'IOHIDEventSystemClientCreate', ptr, [ptr])
+        bind(io, 'IOHIDEventSystemClientSetMatching', None, [ptr, ptr])
+        bind(io, 'IOHIDEventSystemClientCopyServices', ptr, [ptr])
+        bind(io, 'IOHIDServiceClientCopyProperty', ptr, [ptr, ptr])
+        bind(io, 'IOHIDServiceClientCopyEvent', ptr, [ptr, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64])
+        bind(io, 'IOHIDEventGetFloatValue', ctypes.c_double, [ptr, ctypes.c_int])
+        self.cf, self.io = cf, io
+        owned = []
+        client = None
+        try:
+            client = io.IOHIDEventSystemClientCreate(None)
+            if not client:
+                return
+            for text in (b'PrimaryUsagePage', b'PrimaryUsage'):
+                obj = cf.CFStringCreateWithCString(None, text, 0x08000100)
+                if not obj:
+                    return
+                owned.append(obj)
+            for number in (0xff00, 5):
+                raw = ctypes.c_int(number)
+                obj = cf.CFNumberCreate(None, 9, ctypes.byref(raw))  # kCFNumberIntType
+                if not obj:
+                    return
+                owned.append(obj)
+            keys = (ptr * 2)(*owned[:2])
+            values = (ptr * 2)(*owned[2:])
+            key_callbacks = ctypes.addressof(ctypes.c_byte.in_dll(cf, 'kCFTypeDictionaryKeyCallBacks'))
+            value_callbacks = ctypes.addressof(ctypes.c_byte.in_dll(cf, 'kCFTypeDictionaryValueCallBacks'))
+            matching = cf.CFDictionaryCreate(None, keys, values, 2, key_callbacks, value_callbacks)
+            if not matching:
+                return
+            owned.append(matching)
+            io.IOHIDEventSystemClientSetMatching(client, matching)
+            atexit.register(self.close)
+            self.client, client = client, None
+        finally:
+            for obj in reversed(owned):
+                cf.CFRelease(obj)
+            if client:
+                cf.CFRelease(client)
+
+    def close(self):
+        if self.client:
+            self.cf.CFRelease(self.client)
+            self.client = None
+
+    def read(self):
+        now = self.clock()
+        retry_due = not self.client and (self.init_at is None or now - self.init_at >= 60)
+        if self.at is not None and now - self.at < 2 and not retry_due:
+            return self.sensors
+        self.at, self.sensors = now, {}
+        try:
+            if retry_due:
+                self.init_at = now
+                self._initialize()
+            if not self.client:
+                return self.sensors
+            cf, io = self.cf, self.io
+            services = io.IOHIDEventSystemClientCopyServices(self.client)
+            if not services:
+                return self.sensors
+            try:
+                key = cf.CFStringCreateWithCString(None, b'Product', 0x08000100)
+                if not key:
+                    return self.sensors
+                try:
+                    for index in range(cf.CFArrayGetCount(services)):
+                        service = cf.CFArrayGetValueAtIndex(services, index)
+                        name = io.IOHIDServiceClientCopyProperty(service, key)
+                        if not name:
+                            continue
+                        try:
+                            if cf.CFGetTypeID(name) != cf.CFStringGetTypeID():
+                                continue
+                            length = cf.CFStringGetLength(name)
+                            size = cf.CFStringGetMaximumSizeForEncoding(length, 0x08000100) + 1
+                            if size <= 0 or size > 65536:
+                                continue
+                            buf = ctypes.create_string_buffer(size)
+                            if not cf.CFStringGetCString(name, buf, size, 0x08000100):
+                                continue
+                            event = io.IOHIDServiceClientCopyEvent(service, 15, 0, 0)
+                            if event:
+                                try:
+                                    value = valid_temperature(io.IOHIDEventGetFloatValue(event, 15 << 16))
+                                    if value is not None:
+                                        sensor_name = buf.value.decode('utf-8', errors='replace')
+                                        self.sensors[sensor_name] = max(value, self.sensors.get(sensor_name, value))
+                                finally:
+                                    cf.CFRelease(event)
+                        finally:
+                            cf.CFRelease(name)
+                finally:
+                    cf.CFRelease(key)
+            finally:
+                cf.CFRelease(services)
+        except Exception:  # noqa: BLE001 — optional platform sensor
+            self.sensors = {}
+        return self.sensors
+
+
+_mac_temperature_reader = MacTemperatureReader()
+
+
+def mac_temperature_c():
+    return select_mac_cpu_temperature(_mac_temperature_reader.read())
+
+
+_HWiNFO_LABELS = ('CPU Package', 'CPU (Tctl/Tdie)', 'CPU Die (average)',
+                  'CPU (Tctl)', 'CPU (Tdie)', 'Core Max', 'CPU')
+_HWiNFO_REG = '/mnt/c/Windows/System32/reg.exe'
+_HWiNFO_KEY = r'HKCU\Software\HWiNFO64\VSB'
+_HWiNFO_OUTPUT_LIMIT = 256 * 1024
+_HWiNFO_TIMEOUT = 2
+
+
+def parse_hwinfo_temperatures(data):
+    data = data[:256 * 1024] if isinstance(data, (bytes, str)) else ''
+    if isinstance(data, bytes):
+        if data.startswith((b'\xff\xfe', b'\xfe\xff')):
+            text = data.decode('utf-16', errors='replace')
+        elif b'\x00' in data:
+            text = data.decode('utf-16le', errors='replace')
+        else:
+            try:
+                text = data.decode('utf-8-sig')
+            except UnicodeDecodeError:
+                text = data.decode('latin-1')
+    else:
+        text = str(data or '')
+    entries = {}
+    for line in text.splitlines():
+        if len(line) > 1024:
+            continue
+        line = line.strip()
+        key, separator, _ = line.upper().partition(' REG_SZ ')
+        if not separator:
+            continue
+        shown = line[len(key) + len(separator):].strip()
+        key = key.strip().lower()
+        for prefix in ('sensor', 'label', 'valueraw', 'value'):
+            index = key[len(prefix):]
+            if key.startswith(prefix) and index and index.isascii() and index.isdigit():
+                entries.setdefault(index, {})[prefix] = shown
+                break
+    sensors = {}
+    for entry in entries.values():
+        label, shown = entry.get('label', ''), entry.get('value', '')
+        raw = entry.get('valueraw', '')
+        if raw.count(',') == 1 and '.' not in raw:
+            raw = raw.replace(',', '.')
+        value = valid_temperature(raw)
+        shown = shown.strip()
+        if not shown.lower().endswith('c'):
+            continue
+        number = shown[:-1].rstrip()
+        end = len(number)
+        while (end and not number[end - 1].isspace() and
+               not (number[end - 1].isascii() and number[end - 1].isalnum())):
+            end -= 1
+        number = number[:end].rstrip()
+        unsigned = number.lstrip('+-')
+        parts = unsigned.replace(',', '.').split('.')
+        numeric = (len(number) <= 64 and len(parts) <= 2 and
+                   all(part and part.isascii() and part.isdigit() for part in parts) and
+                   number.count('+') + number.count('-') <= 1)
+        if label and numeric and value is not None:
+            sensors.setdefault(label, value)
+    return sensors
+
+
+def select_hwinfo_cpu_temperature(sensors):
+    for wanted in _HWiNFO_LABELS:
+        for label, value in sensors.items():
+            if label.casefold() == wanted.casefold():
+                return value
+    return None
+
+
+class WslTemperatureReader:
+    def __init__(self, clock=None, runner=None):
+        self.clock = clock or time.monotonic
+        self.runner = runner or subprocess.Popen
+        self.at = None
+        self.interval = 0
+        self.sensors = {}
+
+    def read(self, release):
+        if not kernel_is_wsl(release):
+            return {}
+        now = self.clock()
+        if self.at is not None and now - self.at < self.interval:
+            return self.sensors
+        self.at, self.sensors, self.interval = now, {}, 60
+        try:
+            deadline = time.monotonic() + _HWiNFO_TIMEOUT
+            child = self.runner([_HWiNFO_REG, 'query', _HWiNFO_KEY],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+            try:
+                output = bytearray()
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not select.select([child.stdout], [], [], remaining)[0]:
+                        raise subprocess.TimeoutExpired(child.args, _HWiNFO_TIMEOUT)
+                    chunk = os.read(child.stdout.fileno(), min(65536, _HWiNFO_OUTPUT_LIMIT + 1 - len(output)))
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > _HWiNFO_OUTPUT_LIMIT:
+                        raise ValueError('registry output exceeds limit')
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(child.args, _HWiNFO_TIMEOUT)
+                if child.wait(timeout=remaining) != 0:
+                    raise ValueError('registry query failed')
+            finally:
+                try:
+                    if child.poll() is None:
+                        child.kill()
+                finally:
+                    try:
+                        child.wait(timeout=1)
+                    except (subprocess.TimeoutExpired, OSError):
+                        raise ValueError('registry query cleanup failed') from None
+                    finally:
+                        child.stdout.close()
+            self.sensors = parse_hwinfo_temperatures(bytes(output))
+            if select_hwinfo_cpu_temperature(self.sensors) is not None:
+                self.interval = 5
+        except Exception:  # noqa: BLE001 — Windows interop is optional
+            pass
+        return self.sensors
+
+
+_wsl_temperature_reader = WslTemperatureReader()
+
+
+def wsl_temperature_c(release):
+    return select_hwinfo_cpu_temperature(_wsl_temperature_reader.read(release))
+
+
+def diagnostic_temperature_sensors():
+    if host_os_name() == 'darwin':
+        return _mac_temperature_reader.read()
+    return _wsl_temperature_reader.read(kernel_release())
+
+
 def remote_includes(index):
     """Process table on sample 0, 5, 10, ... in --remote mode."""
     try:
@@ -1666,8 +1969,8 @@ def temps_na():
     return {"na": True, "package_c": None, "disk_c": None}
 
 
-def apply_host_meta(sample, name, os_name, kernel):
-    """Add host identity. macOS and a GPU-less WSL report those sensors as n/a."""
+def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=None, *, local=False):
+    """Add host identity and optional platform sensor values."""
     if not isinstance(sample, dict):
         sample = {}
     sample["host"] = name or ""
@@ -1678,6 +1981,18 @@ def apply_host_meta(sample, name, os_name, kernel):
         errors = None
     if sample["os"] == "linux" and kernel_is_wsl(sample["kernel"]):
         sample["wsl"] = True
+        temps = sample.get("temps")
+        if local and isinstance(temps, dict) and temps.get("package_c") is None:
+            try:
+                value = (wsl_reader or wsl_temperature_c)(sample["kernel"])
+                if value is not None:
+                    sample["temps"] = temps.copy()
+                    sample["temps"]["package_c"] = value
+                    sample["temps"].pop("na", None)
+                    if errors is not None:
+                        errors.pop("temps", None)
+            except Exception:  # noqa: BLE001 — optional platform sensor
+                pass
         gpu = sample.get("gpu")
         if not isinstance(gpu, dict) or gpu.get("present") is not True:
             sample["gpu"] = gpu_na()
@@ -1685,7 +2000,23 @@ def apply_host_meta(sample, name, os_name, kernel):
                 errors.pop("gpu", None)
     if sample["os"] == "darwin":
         sample["gpu"] = gpu_na()
-        sample["temps"] = temps_na()
+        value = None
+        if local and sys.platform == "darwin":
+            try:
+                value = (mac_reader or mac_temperature_c)()
+            except Exception:  # noqa: BLE001 — optional platform sensor
+                pass
+        if local:
+            sample["temps"] = {"package_c": value, "disk_c": None} if value is not None else temps_na()
+        else:
+            temps = sample.get("temps")
+            value = temps.get("package_c") if isinstance(temps, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and -20 <= value <= 150 and math.isfinite(value):
+                sample["temps"] = temps.copy()
+                sample["temps"]["disk_c"] = None
+                sample["temps"].pop("na", None)
+            else:
+                sample["temps"] = temps_na()
         if errors is not None:
             errors.pop("gpu", None)
             errors.pop("temps", None)
@@ -2603,7 +2934,7 @@ def darwin_collector():
 
 
 def collect_darwin(include_procs):
-    """macOS sample. GPU and temperatures are n/a without root."""
+    """macOS sample. GPU is n/a without root."""
     errors = {}
     sample = {"t_ms": int(time.time() * 1000)}
     box = darwin_collector()
@@ -2703,7 +3034,7 @@ def safe_sample(include_procs):
             "procs": None,
             "errors": {"collector": _error_text(exc, "collector")},
         }
-        return apply_host_meta(sample, host_name(), host_os_name(), kernel_release())
+        return apply_host_meta(sample, host_name(), host_os_name(), kernel_release(), local=True)
 
 
 def remote_shutdown():
@@ -3150,14 +3481,14 @@ def darwin_parser_checks(check):
     check(parse_pmset_batt("Now drawing from 'AC Power'\n") is None, "pmset without a battery hides")
 
     wsl = {"gpu": {"present": False}, "temps": {"package_c": None, "disk_c": None}, "errors": {"gpu": "no card"}}
-    apply_host_meta(wsl, "host-b", "linux", "5.15.153.1-microsoft-standard-WSL2")
+    apply_host_meta(wsl, "host-b", "linux", "5.15.153.1-microsoft-standard-WSL2", wsl_reader=lambda _release: None)
     check(wsl.get("wsl") is True and wsl["gpu"].get("na") is True, "wsl gpu is n/a")
     check("errors" not in wsl or "gpu" not in wsl.get("errors", {}), "wsl drops the gpu error")
     plain_linux = {"gpu": {"present": False, "name": None}}
     apply_host_meta(plain_linux, "box", "linux", "6.8.0-arch1-1")
     check(plain_linux.get("wsl") is not True and plain_linux["gpu"].get("na") is not True, "linux keeps gpu absent")
     mac = {"gpu": {"present": True}, "temps": {"package_c": 40}, "errors": {"temps": "denied", "cpu": "no"}}
-    apply_host_meta(mac, "host-a", "darwin", "24.5.0")
+    apply_host_meta(mac, "host-a", "darwin", "24.5.0", mac_reader=lambda: None, local=True)
     check(mac["gpu"].get("na") is True and mac["temps"].get("na") is True, "darwin gpu and temps are n/a")
     check("temps" not in mac["errors"] and mac["errors"].get("cpu") == "no", "darwin keeps unrelated errors")
 
@@ -4422,7 +4753,7 @@ def collect_sample(include_procs):
         sample = collect_darwin(include_procs)
     else:
         sample = collect_linux(include_procs)
-    return slow_probes(apply_host_meta(sample, host_name(), host_os_name(), kernel_release()))
+    return slow_probes(apply_host_meta(sample, host_name(), host_os_name(), kernel_release(), local=True))
 
 
 class _UsageEmitter:
@@ -5113,6 +5444,9 @@ def _serve():
 
 
 def _main():
+    if "--temp-sensors" in sys.argv:
+        print(json.dumps(diagnostic_temperature_sensors(), allow_nan=False))
+        return 0
     if '--usage-scan' in sys.argv:
         try:
             import resource
