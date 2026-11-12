@@ -117,6 +117,28 @@ class MacTemperatureTests(unittest.TestCase):
             collector.apply_host_meta({'temps': {}}, '', 'darwin', '24', mac_reader=probe)
         probe.assert_not_called()
 
+    def test_duplicate_sensor_names_keep_highest_value(self):
+        for values in ([72, 48], [48, 72]):
+            with self.subTest(values=values):
+                reader = collector.MacTemperatureReader()
+                cf, io = Mock(), Mock()
+                reader.cf, reader.io, reader.client = cf, io, 1
+                io.IOHIDEventSystemClientCopyServices.return_value = 2
+                cf.CFStringCreateWithCString.return_value = 3
+                cf.CFArrayGetCount.return_value = 2
+                cf.CFArrayGetValueAtIndex.side_effect = [4, 5]
+                io.IOHIDServiceClientCopyProperty.return_value = 6
+                cf.CFGetTypeID.return_value = cf.CFStringGetTypeID.return_value = 8
+                cf.CFStringGetLength.return_value = 9
+                cf.CFStringGetMaximumSizeForEncoding.return_value = 20
+                def get_string(_name, buffer, _size, _encoding):
+                    buffer.value = b'PMU tdie1'
+                    return True
+                cf.CFStringGetCString.side_effect = get_string
+                io.IOHIDServiceClientCopyEvent.return_value = 9
+                io.IOHIDEventGetFloatValue.side_effect = values
+                self.assertEqual(reader.read(), {'PMU tdie1': 72})
+
     def test_reader_replaces_invalid_name_without_losing_other_sensors(self):
         reader = collector.MacTemperatureReader()
         cf, io = Mock(), Mock()
@@ -193,9 +215,11 @@ class WslTemperatureTests(unittest.TestCase):
     def test_cache_and_failure_backoff(self):
         now = [0.0]
         output = registry_entry(1, 'CPU Package', '52 °C', '52.4').encode()
-        runner = Mock(side_effect=[subprocess.CompletedProcess([], 0, output),
-                                   subprocess.TimeoutExpired('reg.exe', 2),
-                                   subprocess.CompletedProcess([], 0, output)])
+        scripts = iter([f'import sys; sys.stdout.buffer.write({output!r})',
+                        f'import sys; sys.stdout.buffer.write({output!r}); sys.exit(1)',
+                        f'import sys; sys.stdout.buffer.write({output!r})'])
+        runner = Mock(side_effect=lambda _args, **kwargs:
+                      subprocess.Popen([sys.executable, '-c', next(scripts)], **kwargs))
         reader = collector.WslTemperatureReader(clock=lambda: now[0], runner=runner)
         self.assertEqual(reader.read(WSL), {'CPU Package': 52.4})
         now[0] = 4.99
@@ -212,13 +236,16 @@ class WslTemperatureTests(unittest.TestCase):
         args, kwargs = runner.call_args
         self.assertEqual(args[0], ['/mnt/c/Windows/System32/reg.exe', 'query',
                                   r'HKCU\Software\HWiNFO64\VSB'])
-        self.assertEqual(kwargs['timeout'], 2)
         self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
+        self.assertEqual(kwargs['stdout'], subprocess.PIPE)
+        self.assertEqual(kwargs['stderr'], subprocess.DEVNULL)
+        self.assertEqual(set(kwargs), {'stdin', 'stdout', 'stderr'})
 
     def test_empty_and_missing_key_back_off(self):
         now = [0]
-        runner = Mock(side_effect=[subprocess.CompletedProcess([], 0, b''),
-                                   subprocess.CalledProcessError(1, 'reg.exe')])
+        scripts = iter(['pass', 'import sys; sys.exit(1)'])
+        runner = Mock(side_effect=lambda _args, **kwargs:
+                      subprocess.Popen([sys.executable, '-c', next(scripts)], **kwargs))
         reader = collector.WslTemperatureReader(clock=lambda: now[0], runner=runner)
         self.assertEqual(reader.read(WSL), {})
         now[0] = 59
@@ -228,6 +255,68 @@ class WslTemperatureTests(unittest.TestCase):
         self.assertEqual(reader.read(WSL), {})
         now[0] = 119
         self.assertEqual(reader.read(WSL), {})
+        self.assertEqual(runner.call_count, 2)
+
+    def test_over_limit_output_fails_and_backs_off(self):
+        now = [0]
+        output = registry_entry(1, 'CPU', '50 C', '50').encode()
+        script = f'import sys; sys.stdout.buffer.write({output!r} + b" " * (256 * 1024))'
+        children = []
+        def run(_args, **kwargs):
+            child = subprocess.Popen([sys.executable, '-c', script], **kwargs)
+            children.append(child)
+            return child
+        runner = Mock(side_effect=run)
+        reader = collector.WslTemperatureReader(clock=lambda: now[0], runner=runner)
+        self.assertEqual(reader.read(WSL), {})
+        self.assertIsNotNone(children[0].returncode)
+        now[0] = 59
+        self.assertEqual(reader.read(WSL), {})
+        self.assertEqual(runner.call_count, 1)
+        now[0] = 60
+        self.assertEqual(reader.read(WSL), {})
+        self.assertEqual(runner.call_count, 2)
+
+    def test_timeout_kills_and_reaps_child(self):
+        children = []
+        def run(_args, **kwargs):
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'], **kwargs)
+            child.kill = Mock(wraps=child.kill)
+            child.wait = Mock(wraps=child.wait)
+            children.append(child)
+            return child
+        reader = collector.WslTemperatureReader(runner=run)
+        with patch.object(collector, '_HWiNFO_TIMEOUT', 0.1):
+            self.assertEqual(reader.read(WSL), {})
+        children[0].kill.assert_called_once()
+        children[0].wait.assert_called()
+        self.assertIsNotNone(children[0].returncode)
+
+    def test_reader_exception_kills_and_reaps_child(self):
+        children = []
+        def run(_args, **kwargs):
+            child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(10)'], **kwargs)
+            children.append(child)
+            return child
+        reader = collector.WslTemperatureReader(runner=run)
+        with patch.object(collector.select, 'select', side_effect=OSError('read failed')):
+            self.assertEqual(reader.read(WSL), {})
+        self.assertIsNotNone(children[0].returncode)
+        self.assertTrue(children[0].stdout.closed)
+
+    def test_no_cpu_label_backs_off_but_preserves_diagnostics(self):
+        now = [0]
+        output = registry_entry(1, 'GPU', '50 C', '50').encode()
+        script = f'import sys; sys.stdout.buffer.write({output!r})'
+        runner = Mock(side_effect=lambda _args, **kwargs:
+                      subprocess.Popen([sys.executable, '-c', script], **kwargs))
+        reader = collector.WslTemperatureReader(clock=lambda: now[0], runner=runner)
+        self.assertEqual(reader.read(WSL), {'GPU': 50})
+        now[0] = 59
+        self.assertEqual(reader.read(WSL), {'GPU': 50})
+        self.assertEqual(runner.call_count, 1)
+        now[0] = 60
+        self.assertEqual(reader.read(WSL), {'GPU': 50})
         self.assertEqual(runner.call_count, 2)
 
     def test_non_wsl_never_runs_and_linux_value_wins(self):

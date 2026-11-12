@@ -1785,7 +1785,8 @@ class MacTemperatureReader:
                                 try:
                                     value = valid_temperature(io.IOHIDEventGetFloatValue(event, 15 << 16))
                                     if value is not None:
-                                        self.sensors[buf.value.decode('utf-8', errors='replace')] = value
+                                        sensor_name = buf.value.decode('utf-8', errors='replace')
+                                        self.sensors[sensor_name] = max(value, self.sensors.get(sensor_name, value))
                                 finally:
                                     cf.CFRelease(event)
                         finally:
@@ -1810,6 +1811,8 @@ _HWiNFO_LABELS = ('CPU Package', 'CPU (Tctl/Tdie)', 'CPU Die (average)',
                   'CPU (Tctl)', 'CPU (Tdie)', 'Core Max', 'CPU')
 _HWiNFO_REG = '/mnt/c/Windows/System32/reg.exe'
 _HWiNFO_KEY = r'HKCU\Software\HWiNFO64\VSB'
+_HWiNFO_OUTPUT_LIMIT = 256 * 1024
+_HWiNFO_TIMEOUT = 2
 
 
 def parse_hwinfo_temperatures(data):
@@ -1878,7 +1881,7 @@ def select_hwinfo_cpu_temperature(sensors):
 class WslTemperatureReader:
     def __init__(self, clock=None, runner=None):
         self.clock = clock or time.monotonic
-        self.runner = runner or subprocess.run
+        self.runner = runner or subprocess.Popen
         self.at = None
         self.interval = 0
         self.sensors = {}
@@ -1891,11 +1894,38 @@ class WslTemperatureReader:
             return self.sensors
         self.at, self.sensors, self.interval = now, {}, 60
         try:
-            result = self.runner([_HWiNFO_REG, 'query', _HWiNFO_KEY],
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                                 stderr=subprocess.PIPE, timeout=2, check=True)
-            self.sensors = parse_hwinfo_temperatures(result.stdout)
-            if self.sensors:
+            deadline = time.monotonic() + _HWiNFO_TIMEOUT
+            child = self.runner([_HWiNFO_REG, 'query', _HWiNFO_KEY],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+            try:
+                output = bytearray()
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0 or not select.select([child.stdout], [], [], remaining)[0]:
+                        raise subprocess.TimeoutExpired(child.args, _HWiNFO_TIMEOUT)
+                    chunk = os.read(child.stdout.fileno(), min(65536, _HWiNFO_OUTPUT_LIMIT + 1 - len(output)))
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > _HWiNFO_OUTPUT_LIMIT:
+                        raise ValueError('registry output exceeds limit')
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise subprocess.TimeoutExpired(child.args, _HWiNFO_TIMEOUT)
+                if child.wait(timeout=remaining) != 0:
+                    raise ValueError('registry query failed')
+            finally:
+                try:
+                    if child.poll() is None:
+                        child.kill()
+                finally:
+                    try:
+                        child.wait()
+                    finally:
+                        child.stdout.close()
+            self.sensors = parse_hwinfo_temperatures(bytes(output))
+            if select_hwinfo_cpu_temperature(self.sensors) is not None:
                 self.interval = 5
         except Exception:  # noqa: BLE001 — Windows interop is optional
             pass
