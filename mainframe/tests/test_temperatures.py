@@ -1,4 +1,5 @@
 import importlib.util
+import ctypes
 import json
 from pathlib import Path
 import subprocess
@@ -42,25 +43,47 @@ class MacTemperatureTests(unittest.TestCase):
         for value, expected in [(53.5, {'package_c': 53.5, 'disk_c': None}),
                                 (None, collector.temps_na())]:
             sample = {'gpu': {}, 'temps': {}, 'errors': {'temps': 'unavailable', 'cpu': 'error'}}
-            result = collector.apply_host_meta(sample, '', 'darwin', '24', mac_reader=lambda: value)
+            with patch.object(collector.sys, 'platform', 'darwin'):
+                result = collector.apply_host_meta(sample, '', 'darwin', '24', mac_reader=lambda: value)
             self.assertEqual(result['temps'], expected)
             self.assertTrue(result['gpu']['na'])
             self.assertEqual(result['errors'], {'cpu': 'error'})
 
     def test_reader_caches_failed_initialization(self):
-        clock = Mock(side_effect=[0, 1, 2])
-        reader = collector.MacTemperatureReader(clock=clock)
-        reader._initialize = Mock(side_effect=RuntimeError('unavailable'))
-        self.assertEqual(reader.read(), {})
-        self.assertEqual(reader.read(), {})
-        self.assertEqual(reader.read(), {})
-        self.assertEqual(reader._initialize.call_count, 2)
+        now = [0]
+        reader = collector.MacTemperatureReader(clock=lambda: now[0])
+        cf, io = Mock(), Mock()
+        io.IOHIDEventSystemClientCreate.side_effect = [None, 10, 20]
+        cf.CFStringCreateWithCString.side_effect = [11, RuntimeError('unavailable'), 21, 22]
+        cf.CFNumberCreate.side_effect = [23, 24]
+        cf.CFDictionaryCreate.return_value = 25
+        io.IOHIDEventSystemClientCopyServices.return_value = None
+        byte_type = Mock()
+        with patch.object(collector.sys, 'platform', 'darwin'), \
+             patch.object(collector.os, 'uname', return_value=Mock(machine='arm64')), \
+             patch.object(collector.ctypes, 'CDLL', side_effect=[cf, io] * 3), \
+             patch.object(collector.ctypes, 'c_byte', byte_type), \
+             patch.object(collector.ctypes, 'addressof', return_value=1), \
+             patch.object(collector.atexit, 'register'):
+            for instant, attempts in ((0, 1), (59, 1), (60, 2), (119, 2), (120, 3), (200, 3)):
+                now[0] = instant
+                self.assertEqual(reader.read(), {})
+                self.assertEqual(io.IOHIDEventSystemClientCreate.call_count, attempts)
+            self.assertEqual(io.IOHIDEventSystemClientCreate.call_count, 3)
+            self.assertEqual(reader.client, 20)
+            self.assertEqual([call.args[0] for call in cf.CFRelease.call_args_list],
+                             [11, 10, 25, 24, 23, 22, 21])
+            self.assertEqual(io.IOHIDServiceClientCopyEvent.argtypes,
+                             [ctypes.c_void_p, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64])
+            self.assertEqual(io.IOHIDServiceClientCopyEvent.restype, ctypes.c_void_p)
+            reader.close()
+            self.assertEqual(cf.CFRelease.call_args.args, (20,))
 
     def test_reader_reuses_client_and_releases_copied_objects(self):
         now = [0]
         reader = collector.MacTemperatureReader(clock=lambda: now[0])
         cf, io = Mock(), Mock()
-        reader.cf, reader.io, reader.client, reader.initialized = cf, io, 1, True
+        reader.cf, reader.io, reader.client = cf, io, 1
         io.IOHIDEventSystemClientCopyServices.return_value = 2
         cf.CFStringCreateWithCString.return_value = 3
         cf.CFArrayGetCount.return_value = 1
@@ -87,6 +110,12 @@ class MacTemperatureTests(unittest.TestCase):
         reader.close()
         self.assertEqual(cf.CFRelease.call_args.args, (1,))
 
+    def test_non_mac_does_not_read_local_mac_sensors(self):
+        probe = Mock(return_value=55)
+        with patch.object(collector.sys, 'platform', 'linux'):
+            collector.apply_host_meta({'temps': {}}, '', 'darwin', '24', mac_reader=probe)
+        probe.assert_not_called()
+
 
 class WslTemperatureTests(unittest.TestCase):
     def test_utf16_and_priority(self):
@@ -108,6 +137,23 @@ class WslTemperatureTests(unittest.TestCase):
         self.assertEqual(collector.select_hwinfo_cpu_temperature(sensors), 48.1)
         self.assertEqual(collector.parse_hwinfo_temperatures(b''), {})
         self.assertEqual(collector.parse_hwinfo_temperatures(b'ERROR: key missing\r\n'), {})
+
+    def test_codepages_and_decimal_comma(self):
+        text = (registry_entry(1, 'CPU Package', '52 °C', '52,4')
+                + registry_entry(2, 'Core Max', '48 C', '48.1')
+                + registry_entry(3, 'CPU', '40 MHz', '40')
+                + registry_entry(4, 'Fan', '50 RPM', '50')
+                + registry_entry(5, 'Power', '5 W', '5')
+                + registry_entry(6, 'Voltage', '1 V', '1')
+                + registry_entry(7, 'Bad', 'C', '4')
+                + registry_entry(8, 'Bad comma', '52 C', '52,4,1')
+                + registry_entry(9, 'Bad mixed', '52 C', '52,4.1'))
+        for encoding in ('cp437', 'cp1252', 'utf-8', 'utf-8-sig', 'utf-16', 'utf-16le'):
+            with self.subTest(encoding=encoding):
+                self.assertEqual(collector.parse_hwinfo_temperatures(text.encode(encoding)),
+                                 {'CPU Package': 52.4, 'Core Max': 48.1})
+        self.assertEqual(collector.parse_hwinfo_temperatures(text.encode('utf-16le') + b'\xff'),
+                         {'CPU Package': 52.4, 'Core Max': 48.1})
 
     def test_cache_and_failure_backoff(self):
         now = [0.0]
@@ -132,6 +178,7 @@ class WslTemperatureTests(unittest.TestCase):
         self.assertEqual(args[0], ['/mnt/c/Windows/System32/reg.exe', 'query',
                                   r'HKCU\Software\HWiNFO64\VSB'])
         self.assertEqual(kwargs['timeout'], 2)
+        self.assertEqual(kwargs['stdin'], subprocess.DEVNULL)
 
     def test_empty_and_missing_key_back_off(self):
         now = [0]
@@ -155,17 +202,39 @@ class WslTemperatureTests(unittest.TestCase):
         runner.assert_not_called()
         probe = Mock(return_value=55)
         sample = {'temps': {'package_c': 42, 'disk_c': None}}
-        collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
-        self.assertEqual(sample['temps']['package_c'], 42)
-        probe.assert_not_called()
-        sample['temps']['package_c'] = None
-        collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
-        self.assertEqual(sample['temps']['package_c'], 55)
-        probe.assert_called_once_with(WSL)
+        with patch.object(collector, 'kernel_release', return_value=WSL):
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+            self.assertEqual(sample['temps']['package_c'], 42)
+            probe.assert_not_called()
+            sample['temps']['package_c'] = None
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+            self.assertEqual(sample['temps']['package_c'], 55)
+            probe.assert_called_once_with(WSL)
+            probe.reset_mock()
+            sample['temps']['package_c'] = None
+            collector.apply_host_meta(sample, '', 'linux', LINUX, wsl_reader=probe)
+            probe.assert_not_called()
+
+    def test_wsl_result_shape_and_local_guard(self):
+        probe = Mock(return_value=55)
+        for disk in (None, 36):
+            sample = {'temps': dict(collector.temps_na(), disk_c=disk),
+                      'errors': {'temps': 'unavailable', 'cpu': 'error'}}
+            with patch.object(collector, 'kernel_release', return_value=WSL):
+                collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+            self.assertEqual(sample['temps'], {'package_c': 55, 'disk_c': disk})
+            self.assertEqual(sample['errors'], {'cpu': 'error'})
         probe.reset_mock()
-        sample['temps']['package_c'] = None
-        collector.apply_host_meta(sample, '', 'linux', LINUX, wsl_reader=probe)
+        sample = {'temps': collector.temps_na(), 'errors': {'temps': 'unavailable'}}
+        with patch.object(collector, 'kernel_release', return_value=LINUX):
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
         probe.assert_not_called()
+        self.assertEqual(sample['temps'], collector.temps_na())
+        self.assertEqual(sample['errors'], {'temps': 'unavailable'})
+        with patch.object(collector, 'kernel_release', return_value=WSL):
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=lambda _: None)
+        self.assertEqual(sample['temps'], collector.temps_na())
+        self.assertEqual(sample['errors'], {'temps': 'unavailable'})
 
     def test_diagnostic_on_linux(self):
         with patch.object(collector, 'host_os_name', return_value='linux'), \

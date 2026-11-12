@@ -1671,14 +1671,13 @@ class MacTemperatureReader:
     def __init__(self, clock=None):
         self.clock = clock or time.monotonic
         self.client = None
-        self.initialized = False
+        self.init_at = None
         self.at = None
         self.sensors = {}
         self.cf = None
         self.io = None
 
     def _initialize(self):
-        self.initialized = True
         if sys.platform != "darwin" or os.uname().machine.lower() != "arm64":
             return
         cf = ctypes.CDLL('/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation')
@@ -1703,7 +1702,7 @@ class MacTemperatureReader:
         bind(io, 'IOHIDEventSystemClientSetMatching', None, [ptr, ptr])
         bind(io, 'IOHIDEventSystemClientCopyServices', ptr, [ptr])
         bind(io, 'IOHIDServiceClientCopyProperty', ptr, [ptr, ptr])
-        bind(io, 'IOHIDServiceClientCopyEvent', ptr, [ptr, ctypes.c_int, ctypes.c_int, ctypes.c_int])
+        bind(io, 'IOHIDServiceClientCopyEvent', ptr, [ptr, ctypes.c_int64, ctypes.c_int32, ctypes.c_int64])
         bind(io, 'IOHIDEventGetFloatValue', ctypes.c_double, [ptr, ctypes.c_int])
         self.cf, self.io = cf, io
         owned = []
@@ -1732,8 +1731,8 @@ class MacTemperatureReader:
                 return
             owned.append(matching)
             io.IOHIDEventSystemClientSetMatching(client, matching)
-            self.client, client = client, None
             atexit.register(self.close)
+            self.client, client = client, None
         finally:
             for obj in reversed(owned):
                 cf.CFRelease(obj)
@@ -1747,11 +1746,13 @@ class MacTemperatureReader:
 
     def read(self):
         now = self.clock()
-        if self.at is not None and now - self.at < 2:
+        retry_due = not self.client and (self.init_at is None or now - self.init_at >= 60)
+        if self.at is not None and now - self.at < 2 and not retry_due:
             return self.sensors
         self.at, self.sensors = now, {}
         try:
-            if not self.initialized:
+            if retry_due:
+                self.init_at = now
                 self._initialize()
             if not self.client:
                 return self.sensors
@@ -1814,11 +1815,14 @@ _HWiNFO_KEY = r'HKCU\Software\HWiNFO64\VSB'
 def parse_hwinfo_temperatures(data):
     if isinstance(data, bytes):
         if data.startswith((b'\xff\xfe', b'\xfe\xff')):
-            text = data.decode('utf-16')
+            text = data.decode('utf-16', errors='replace')
         elif b'\x00' in data:
-            text = data.decode('utf-16le')
+            text = data.decode('utf-16le', errors='replace')
         else:
-            text = data.decode('utf-8-sig')
+            try:
+                text = data.decode('utf-8-sig')
+            except UnicodeDecodeError:
+                text = data.decode('latin-1')
     else:
         text = str(data or '')
     entries = {}
@@ -1829,8 +1833,11 @@ def parse_hwinfo_temperatures(data):
     sensors = {}
     for entry in entries.values():
         label, shown = entry.get('label', ''), entry.get('value', '')
-        value = valid_temperature(entry.get('valueraw'))
-        if label and re.search(r'(?:°\s*)?C\s*$', shown, re.IGNORECASE) and value is not None:
+        raw = entry.get('valueraw', '')
+        if raw.count(',') == 1 and '.' not in raw:
+            raw = raw.replace(',', '.')
+        value = valid_temperature(raw)
+        if label and re.search(r'[+-]?\d+(?:[.,]\d+)?\s*[^a-zA-Z0-9\s]*\s*C\s*$', shown, re.IGNORECASE) and value is not None:
             sensors.setdefault(label, value)
     return sensors
 
@@ -1860,7 +1867,8 @@ class WslTemperatureReader:
         self.at, self.sensors, self.interval = now, {}, 60
         try:
             result = self.runner([_HWiNFO_REG, 'query', _HWiNFO_KEY],
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=2, check=True)
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, timeout=2, check=True)
             self.sensors = parse_hwinfo_temperatures(result.stdout)
             if self.sensors:
                 self.interval = 5
@@ -1917,11 +1925,13 @@ def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=N
     if sample["os"] == "linux" and kernel_is_wsl(sample["kernel"]):
         sample["wsl"] = True
         temps = sample.get("temps")
-        if isinstance(temps, dict) and temps.get("package_c") is None:
+        if kernel_is_wsl(kernel_release()) and isinstance(temps, dict) and temps.get("package_c") is None:
             try:
                 value = (wsl_reader or wsl_temperature_c)(sample["kernel"])
                 if value is not None:
-                    temps["package_c"] = value
+                    sample["temps"] = {"package_c": value, "disk_c": temps.get("disk_c")}
+                    if errors is not None:
+                        errors.pop("temps", None)
             except Exception:  # noqa: BLE001 — optional platform sensor
                 pass
         gpu = sample.get("gpu")
@@ -1931,10 +1941,12 @@ def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=N
                 errors.pop("gpu", None)
     if sample["os"] == "darwin":
         sample["gpu"] = gpu_na()
-        try:
-            value = (mac_reader or mac_temperature_c)()
-        except Exception:  # noqa: BLE001 — optional platform sensor
-            value = None
+        value = None
+        if sys.platform == "darwin":
+            try:
+                value = (mac_reader or mac_temperature_c)()
+            except Exception:  # noqa: BLE001 — optional platform sensor
+                pass
         sample["temps"] = {"package_c": value, "disk_c": None} if value is not None else temps_na()
         if errors is not None:
             errors.pop("gpu", None)
