@@ -1,3 +1,4 @@
+import ast
 import importlib.util
 import ctypes
 import json
@@ -45,7 +46,7 @@ class MacTemperatureTests(unittest.TestCase):
                                 (None, collector.temps_na())]:
             sample = {'gpu': {}, 'temps': {}, 'errors': {'temps': 'unavailable', 'cpu': 'error'}}
             with patch.object(collector.sys, 'platform', 'darwin'):
-                result = collector.apply_host_meta(sample, '', 'darwin', '24', mac_reader=lambda: value)
+                result = collector.apply_host_meta(sample, '', 'darwin', '24', mac_reader=lambda: value, local=True)
             self.assertEqual(result['temps'], expected)
             self.assertTrue(result['gpu']['na'])
             self.assertEqual(result['errors'], {'cpu': 'error'})
@@ -114,8 +115,37 @@ class MacTemperatureTests(unittest.TestCase):
     def test_non_mac_does_not_read_local_mac_sensors(self):
         probe = Mock(return_value=55)
         with patch.object(collector.sys, 'platform', 'linux'):
-            collector.apply_host_meta({'temps': {}}, '', 'darwin', '24', mac_reader=probe)
+            collector.apply_host_meta({'temps': {}}, '', 'darwin', '24', mac_reader=probe, local=True)
         probe.assert_not_called()
+
+    def test_nonlocal_mac_preserves_valid_temperatures_without_reading(self):
+        probe = Mock(return_value=99)
+        for value in (55, -20, 150):
+            original = {'package_c': value, 'disk_c': 30, 'na': True, 'extra': 1}
+            sample = {'temps': original}
+            with patch.object(collector.sys, 'platform', 'darwin'):
+                collector.apply_host_meta(sample, '', 'darwin', '24', mac_reader=probe)
+            self.assertEqual(sample['temps'], {'package_c': value, 'disk_c': None, 'extra': 1})
+            self.assertEqual(original['disk_c'], 30)
+        probe.assert_not_called()
+
+    def test_nonlocal_mac_rejects_invalid_temperatures(self):
+        for value in (None, True, '55', -21, 151, float('nan'), float('inf')):
+            with self.subTest(value=value):
+                sample = {'temps': {'package_c': value}}
+                collector.apply_host_meta(sample, '', 'darwin', '24')
+                self.assertEqual(sample['temps'], collector.temps_na())
+
+    def test_local_sample_producers_mark_samples_local(self):
+        tree = ast.parse(COLLECT.read_text())
+        calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
+                 and isinstance(node.func, ast.Name) and node.func.id == 'apply_host_meta'
+                 and any(isinstance(arg, ast.Call) and isinstance(arg.func, ast.Name)
+                         and arg.func.id == 'host_name' for arg in node.args)]
+        self.assertEqual(len(calls), 2)
+        for call in calls:
+            self.assertTrue(any(kw.arg == 'local' and isinstance(kw.value, ast.Constant)
+                                and kw.value.value is True for kw in call.keywords))
 
     def test_duplicate_sensor_names_keep_highest_value(self):
         for values in ([72, 48], [48, 72]):
@@ -327,16 +357,16 @@ class WslTemperatureTests(unittest.TestCase):
         probe = Mock(return_value=55)
         sample = {'temps': {'package_c': 42, 'disk_c': None}}
         with patch.object(collector, 'kernel_release', return_value=WSL):
-            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe, local=True)
             self.assertEqual(sample['temps']['package_c'], 42)
             probe.assert_not_called()
             sample['temps']['package_c'] = None
-            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe, local=True)
             self.assertEqual(sample['temps']['package_c'], 55)
             probe.assert_called_once_with(WSL)
             probe.reset_mock()
             sample['temps']['package_c'] = None
-            collector.apply_host_meta(sample, '', 'linux', LINUX, wsl_reader=probe)
+            collector.apply_host_meta(sample, '', 'linux', LINUX, wsl_reader=probe, local=True)
             probe.assert_not_called()
 
     def test_wsl_result_shape_and_local_guard(self):
@@ -346,21 +376,31 @@ class WslTemperatureTests(unittest.TestCase):
             sample = {'temps': original,
                       'errors': {'temps': 'unavailable', 'cpu': 'error'}}
             with patch.object(collector, 'kernel_release', return_value=WSL):
-                collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+                collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe, local=True)
             self.assertEqual(sample['temps'], {'package_c': 55, 'disk_c': disk, 'extra': 17})
             self.assertIsNot(sample['temps'], original)
             self.assertEqual(sample['errors'], {'cpu': 'error'})
         probe.reset_mock()
         sample = {'temps': collector.temps_na(), 'errors': {'temps': 'unavailable'}}
         with patch.object(collector, 'kernel_release', return_value=LINUX):
-            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe, local=True)
         probe.assert_not_called()
         self.assertEqual(sample['temps'], collector.temps_na())
         self.assertEqual(sample['errors'], {'temps': 'unavailable'})
         with patch.object(collector, 'kernel_release', return_value=WSL):
-            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=lambda _: None)
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=lambda _: None, local=True)
         self.assertEqual(sample['temps'], collector.temps_na())
         self.assertEqual(sample['errors'], {'temps': 'unavailable'})
+
+    def test_nonlocal_wsl_keeps_temperatures_without_reading(self):
+        probe = Mock(return_value=55)
+        temps = {'package_c': None, 'disk_c': 36, 'na': True}
+        sample = {'temps': temps}
+        with patch.object(collector, 'kernel_release', return_value=WSL):
+            collector.apply_host_meta(sample, '', 'linux', WSL, wsl_reader=probe)
+        self.assertIs(sample['temps'], temps)
+        self.assertEqual(sample['temps'], {'package_c': None, 'disk_c': 36, 'na': True})
+        probe.assert_not_called()
 
     def test_diagnostic_on_linux(self):
         with patch.object(collector, 'host_os_name', return_value='linux'), \

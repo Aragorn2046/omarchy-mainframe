@@ -1967,7 +1967,7 @@ def temps_na():
     return {"na": True, "package_c": None, "disk_c": None}
 
 
-def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=None):
+def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=None, *, local=False):
     """Add host identity and optional platform sensor values."""
     if not isinstance(sample, dict):
         sample = {}
@@ -1980,7 +1980,7 @@ def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=N
     if sample["os"] == "linux" and kernel_is_wsl(sample["kernel"]):
         sample["wsl"] = True
         temps = sample.get("temps")
-        if kernel_is_wsl(kernel_release()) and isinstance(temps, dict) and temps.get("package_c") is None:
+        if local and kernel_is_wsl(kernel_release()) and isinstance(temps, dict) and temps.get("package_c") is None:
             try:
                 value = (wsl_reader or wsl_temperature_c)(sample["kernel"])
                 if value is not None:
@@ -1999,12 +1999,22 @@ def apply_host_meta(sample, name, os_name, kernel, mac_reader=None, wsl_reader=N
     if sample["os"] == "darwin":
         sample["gpu"] = gpu_na()
         value = None
-        if sys.platform == "darwin":
+        if local and sys.platform == "darwin":
             try:
                 value = (mac_reader or mac_temperature_c)()
             except Exception:  # noqa: BLE001 — optional platform sensor
                 pass
-        sample["temps"] = {"package_c": value, "disk_c": None} if value is not None else temps_na()
+        if local:
+            sample["temps"] = {"package_c": value, "disk_c": None} if value is not None else temps_na()
+        else:
+            temps = sample.get("temps")
+            value = temps.get("package_c") if isinstance(temps, dict) else None
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and -20 <= value <= 150 and math.isfinite(value):
+                sample["temps"] = temps.copy()
+                sample["temps"]["disk_c"] = None
+                sample["temps"].pop("na", None)
+            else:
+                sample["temps"] = temps_na()
         if errors is not None:
             errors.pop("gpu", None)
             errors.pop("temps", None)
@@ -3022,7 +3032,7 @@ def safe_sample(include_procs):
             "procs": None,
             "errors": {"collector": _error_text(exc, "collector")},
         }
-        return apply_host_meta(sample, host_name(), host_os_name(), kernel_release())
+        return apply_host_meta(sample, host_name(), host_os_name(), kernel_release(), local=True)
 
 
 def remote_shutdown():
@@ -3476,7 +3486,7 @@ def darwin_parser_checks(check):
     apply_host_meta(plain_linux, "box", "linux", "6.8.0-arch1-1")
     check(plain_linux.get("wsl") is not True and plain_linux["gpu"].get("na") is not True, "linux keeps gpu absent")
     mac = {"gpu": {"present": True}, "temps": {"package_c": 40}, "errors": {"temps": "denied", "cpu": "no"}}
-    apply_host_meta(mac, "host-a", "darwin", "24.5.0", mac_reader=lambda: None)
+    apply_host_meta(mac, "host-a", "darwin", "24.5.0", mac_reader=lambda: None, local=True)
     check(mac["gpu"].get("na") is True and mac["temps"].get("na") is True, "darwin gpu and temps are n/a")
     check("temps" not in mac["errors"] and mac["errors"].get("cpu") == "no", "darwin keeps unrelated errors")
 
@@ -4741,7 +4751,7 @@ def collect_sample(include_procs):
         sample = collect_darwin(include_procs)
     else:
         sample = collect_linux(include_procs)
-    return slow_probes(apply_host_meta(sample, host_name(), host_os_name(), kernel_release()))
+    return slow_probes(apply_host_meta(sample, host_name(), host_os_name(), kernel_release(), local=True))
 
 
 class _UsageEmitter:
