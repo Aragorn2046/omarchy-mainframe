@@ -17,6 +17,14 @@ TestCase {
     labelA: "CPU"
     samples: [10, 20, 30]
   }
+  QtObject {
+    id: motionClock
+    property bool windowActive: true
+    property bool dataAnimations: true
+    property bool neonGlow: false
+    signal dataStep()
+    function requestDataStep() {}
+  }
   Component {
     id: freshChart
     Mainframe.Sparkline { width: 300; height: 100; rateChart: true; samples: [4, 4] }
@@ -26,9 +34,12 @@ TestCase {
     chart.visible = true
     chart.samples = [10, 20, 30]
     chart.samplesB = []
+    chart.unitB = ""
+    chart.labelB = ""
     chart.rateChart = false
     chart.yMax = -1
     chart.yMin = 0
+    chart.cyberStyle = null
   }
   function init() {
     resetChart()
@@ -192,5 +203,86 @@ TestCase {
     tryVerify(function() { return chart.steady && !chart.built })
     chart.samples = [5, 10, 5]
     tryVerify(function() { return !chart.steady && chart.built && chart.strokeSvg.length > 0 })
+  }
+
+  function test_temperature_gaps_and_clamping() {
+    chart.yMax = 100
+    chart.samples = [10, 20, 30, 40, 50]
+    chart.samplesB = [20, 40, null, 80, 120]
+    chart.labelB = "temp"
+    chart.unitB = "°C"
+    tryVerify(function() { return chart.paintedSamplesB && chart.paintedSamplesB.length === 5 && chart.paintedSamplesB[4] === 120 })
+    var path = chart.strokeSvgB
+    compare((path.match(/M/g) || []).length, 2)
+    verify(path.indexOf("98.5") === -1)
+    verify(path.indexOf("1.5") !== -1)
+    var starts = path.match(/M[-\d.]+ [\d.]+/g)
+    verify(starts !== null && starts.length === 2)
+    verify(Number(starts[0].split(" ")[1]) !== Number(starts[1].split(" ")[1]))
+    verify(/L300 1\.5$/.test(path))
+    mouseMove(chart, 290, 30)
+    tryVerify(function() { return chart.hoverIndex === 2 })
+    compare(findChild(chart, "sparkline-tooltip-text").text, "CPU 30%  temp — · 2 s ago")
+    mouseMove(chart, 299, 30)
+    tryVerify(function() { return chart.hoverIndex === 4 })
+    compare(findChild(chart, "sparkline-tooltip-text").text, "CPU 50%  temp 120 °C · 0 s ago")
+    chart.samplesB = [null]
+    tryVerify(function() { return chart.paintedSamplesB.length === 1 })
+    compare(chart.strokeSvgB, "")
+    chart.samples = [0, 0, 0]
+    chart.samplesB = [null, null, null]
+    tryVerify(function() { return chart.paintedSamplesB.length === 3 })
+    tryVerify(function() { return chart.steady })
+    compare(chart.strokeSvgB, "")
+  }
+
+  function test_steady_ignores_null_temperature_samples() {
+    chart.samples = [5, 5, 5, 5]
+    chart.samplesB = [null, null, null, null]
+    tryVerify(function() { return chart.steady && chart.paintedSamplesB && chart.paintedSamplesB.length === 4 })
+    chart.samplesB = [null, 40, null, 40]
+    tryVerify(function() { return chart.steady && chart.paintedSamplesB[1] === 40 })
+    chart.samplesB = [null, 40, null, 41]
+    tryVerify(function() { return !chart.steady && chart.paintedSamplesB[3] === 41 })
+    chart.samplesB = [null, 40, null, null]
+    tryVerify(function() { return !chart.steady && chart.paintedSamplesB[3] === null })
+    chart.samples = [5, 6, 5, 5]
+    chart.samplesB = [null, null, null, null]
+    tryVerify(function() { return !chart.steady && chart.paintedSamples[1] === 6 })
+  }
+
+  function test_animated_tooltip_uses_painted_series() {
+    chart.samplesB = [20, 30, 40]
+    chart.labelB = "temp"
+    chart.unitB = "°C"
+    chart.cyberStyle = motionClock
+    tryVerify(function() { return chart.paintedSamplesB && chart.paintedSamplesB[2] === 40 && findChild(chart, "cyber-chart-motion-loader").item !== null })
+    mouseMove(chart, 299, 30)
+    tryVerify(function() { return chart.hoverIndex === 2 })
+    chart.samplesB = [20, 30, 100]
+    tryVerify(function() { return chart.paintedSamplesB[2] > 40 && chart.paintedSamplesB[2] < 100 })
+    compare(findChild(chart, "sparkline-tooltip-text").text, "CPU 30%  temp " + Math.round(chart.paintedSamplesB[2]) + " °C · 0 s ago")
+    chart.unitB = "K"
+    compare(findChild(chart, "sparkline-tooltip-text").text, "CPU 30%  temp " + Math.round(chart.paintedSamplesB[2]) + " K · 0 s ago")
+    chart.samplesB = [20, 30, null]
+    tryVerify(function() { return chart.paintedSamplesB[2] === null })
+    compare(findChild(chart, "sparkline-tooltip-text").text, "CPU 30%  temp — · 0 s ago")
+  }
+
+  function test_temperature_tooltip_and_default_units() {
+    chart.samplesB = [44.2, 46.7, 50]
+    chart.labelB = "temp"
+    chart.unitB = "°C"
+    chart.yMax = 100
+    tryVerify(function() { return chart.paintedSamplesB && chart.paintedSamplesB[1] === 46.7 })
+    mouseMove(chart, 295, 30)
+    tryVerify(function() { return chart.hoverIndex === 1 })
+    var tip = findChild(chart, "sparkline-tooltip-text")
+    compare(tip.text, "CPU 20%  temp 47 °C · 1 s ago")
+    chart.unitB = ""
+    compare(tip.text, "CPU 20%  temp 46.7% · 1 s ago")
+    chart.samplesB = [44, 47, 120]
+    tryVerify(function() { return chart.paintedSamplesB[2] === 120 })
+    compare(chart.pointY(120), 0)
   }
 }

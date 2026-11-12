@@ -1974,6 +1974,7 @@ ShellRoot {
         Layout.fillHeight: true
         visible: shell.page === "overview" && shell.overviewView === "systems"
         rows: shell.overviewRows
+        warning: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a"); critical: shell.sensorColor
         ink: shell.themeFg; mutedInk: shell.themeLabel; accent: shell.themeAccent; secondary: shell.themeCyan
         cardColor: shell.themeCard; borderColor: shell.themeBorder; track: shell.themeTrack
         onOpenMachine: function(index) { shell.selectTab(index + 1) }
@@ -2038,36 +2039,22 @@ ShellRoot {
             anchors.fill: parent
             spacing: 6
 
-            RowLayout {
+            CpuHeader {
               Layout.fillWidth: true
-              Cyber.DataText {
-                cyberStyle: cyberAppearance
-                textFormat: Text.PlainText
-                sourceText: shell.cpuView ? shell.cpuView.percentText : "—"
-                color: shell.themeFg
-                font.family: cyberAppearance.displayFont ? cyberAppearance.fontFamily : "monospace"
-                font.pixelSize: shell.pxHero
-                font.weight: Font.Medium
-              }
-              Item { Layout.fillWidth: true }
-              Text {
-                textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.tempText : "—"
-                color: shell.themeFg
-                font.family: "monospace"
-                font.pixelSize: shell.pxValue
-              }
-              Text {
-                textFormat: Text.PlainText
-                text: shell.cpuView ? shell.cpuView.freqText : "—"
-                color: shell.themeLabel
-                font.family: "monospace"
-                font.pixelSize: shell.pxValue
-              }
+              cpuView: shell.cpuView
+              cyberStyle: cyberAppearance
+              foreground: shell.themeFg
+              labelColor: shell.themeLabel
+              hotColor: shell.sensorColor
+              warmColor: Metrics.qtColor(shell.themeColors.yellow || "#e0c36a")
+              heroSize: shell.pxHero
+              valueSize: shell.pxValue
+              labelSize: shell.pxLabel
             }
 
             Text { textFormat: Text.PlainText; visible: shell.cpuView && !!shell.cpuView.windowsText; text: shell.cpuView ? (shell.cpuView.windowsText || "") : ""; color: shell.themeLabel; font.family: "monospace"; font.pixelSize: shell.pxLabel }
             Sparkline {
+              objectName: "cpu-sparkline"
               cyberStyle: cyberAppearance
               ink: shell.themeFg
               mutedInk: shell.themeLabel
@@ -2078,7 +2065,12 @@ ShellRoot {
               Layout.minimumHeight: steady ? 16 : 28
               Layout.maximumHeight: 40
               samples: shell.cpuView ? shell.cpuView.history : []
+              samplesB: shell.cpuView ? shell.cpuView.tempHistory || [] : []
+              labelA: "CPU"
+              labelB: "temp"
+              unitB: "°C"
               strokeColor: shell.themeAccent
+              strokeColorB: shell.themeCyan
               yMin: 0
               yMax: 100
             }

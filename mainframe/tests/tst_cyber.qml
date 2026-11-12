@@ -21,7 +21,7 @@ TestCase {
   }
   Mainframe.OverviewView {
     id: overview; x: 250; width: 300; height: 180; cyberStyle: style
-    ink: "white"; mutedInk: "gray"; accent: "cyan"; secondary: "cyan"; cardColor: "black"; borderColor: "gray"; track: "gray"
+    warning: "#e0c36a"; critical: "#e06c75"; ink: "white"; mutedInk: "gray"; accent: "cyan"; secondary: "cyan"; cardColor: "black"; borderColor: "gray"; track: "gray"
     rows: [{name:"Machine", status:"connected", index:0, view:{cpu:{percentText:"20%",history:[10,20],cores:[]},mem:{usedText:"1 GB",fraction:0.5,swapText:"0"}}}]
   }
   Mainframe.AgentsView {
@@ -97,6 +97,19 @@ TestCase {
     style.settings = {style:"classic"}
     verify(!loader(overviewCard, "cyber-hud-loader").active)
     verify(!loader(agents, "cyber-segments-loader").active)
+  }
+  function test_overview_temperature_in_both_styles() {
+    overview.rows = [{name:"Machine", status:"connected", view:{cpu:{percentText:"23%",tempText:"95°C",tempLevel:"hot",history:[10,23],cores:[]}}}]
+    var temp = findChild(overview, "overview-cpu-temperature")
+    var overviewCard = findChild(overview, "overview-machine-card")
+    var initialHeight = overviewCard.height
+    compare(temp.text, "  95°C")
+    compare(temp.color, overview.critical)
+    for (var i = 0; i < 2; i++) {
+      style.settings = {style:i === 0 ? "classic" : "cyberpunk", cyber:{}}
+      compare(temp.color, overview.critical)
+      compare(overviewCard.height, initialHeight)
+    }
   }
   function test_display_font_loads() {
     style.settings = {style:"cyberpunk", cyber:{displayFont:true}}

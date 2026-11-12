@@ -1271,6 +1271,7 @@ function emptyState() {
     gpuIdle: null,
     gpuAt: null,
     cpuHist: [],
+    cpuTempHist: [],
     memHist: [],
     gpuHist: [],
     rxHist: [],
@@ -1296,7 +1297,10 @@ function emptyView() {
       tempText: "—",
       freqText: "—",
       cores: [],
-      history: []
+      history: [],
+      tempHistory: [],
+      tempPeakText: "",
+      tempLevel: "normal"
     },
     mem: {
       usedText: "—",
@@ -1606,9 +1610,36 @@ function filesystemRows(value) {
   return rows;
 }
 
+function cpuTemperaturePeak(history) {
+  var peak = null;
+  for (var i = 0; i < history.length; i++) {
+    var point = history[i];
+    if (isFiniteNumber(point) && (peak === null || point > peak)) peak = point;
+  }
+  return peak === null ? "" : "peak " + formatTemp(peak);
+}
+
 function step(state, raw, nowMs) {
   var prev = state || emptyState();
   var sample = raw || {};
+  // Restored histories can come from older versions or malformed state.
+  var restoredCpu = isArray(prev.cpuHist) ? prev.cpuHist.slice(-HISTORY_LIMIT) : [];
+  var restoredTemps = isArray(prev.cpuTempHist) ? prev.cpuTempHist.slice(-HISTORY_LIMIT) : [];
+  restoredTemps = restoredCpu.length ? restoredTemps.slice(-restoredCpu.length) : [];
+  for (var rt = 0; rt < restoredTemps.length; rt++) {
+    var value = restoredTemps[rt];
+    if (value !== null && !(isFiniteNumber(value) && value >= -20 && value <= 150)) restoredTemps[rt] = null;
+  }
+  while (restoredTemps.length < restoredCpu.length) restoredTemps.unshift(null);
+  if (!seriesSame(prev.cpuHist, restoredCpu) || !seriesSame(prev.cpuTempHist, restoredTemps) ||
+      !isArray(prev.cpuHist) || !isArray(prev.cpuTempHist)) {
+    prev = Object.assign({}, prev, { cpuHist: restoredCpu, cpuTempHist: restoredTemps });
+    if (prev.view && prev.view.cpu) {
+      var restoredView = Object.assign({}, prev.view);
+      restoredView.cpu = Object.assign({}, prev.view.cpu, { history: restoredCpu, tempHistory: restoredTemps, tempPeakText: cpuTemperaturePeak(restoredTemps) });
+      prev.view = restoredView;
+    }
+  }
   var now = Number(nowMs);
   if (!isFinite(now)) now = 0;
   var first = prev.t == null;
@@ -1673,7 +1704,8 @@ function step(state, raw, nowMs) {
   if (!rateGap && monoEarly != null && monoEarly > 0) rateDt = monoEarly;
 
   var cpuHist = prev.cpuHist || [];
-  if (live && !cpuFailed && !cpuNa) cpuHist = pushHistory(cpuHist, cpu.total, HISTORY_LIMIT);
+  var cpuHistoryPush = live && !cpuFailed && !cpuNa;
+  if (cpuHistoryPush) cpuHist = pushHistory(cpuHist, cpu.total, HISTORY_LIMIT);
 
   var memHist = prev.memHist || [];
   var memFraction = (mem.total && mem.used != null) ? clamp01(mem.used / mem.total) : 0;
@@ -1979,6 +2011,12 @@ function step(state, raw, nowMs) {
     packageTemp = sample.temps.package_c;
     diskTemp = sample.temps.disk_c;
   }
+  var validPackageTemp = typeof packageTemp === "number" && isFinite(packageTemp) && packageTemp >= -20 && packageTemp <= 150;
+  var cpuTempHist = prev.cpuTempHist || [];
+  if (cpuNa) cpuTempHist = [];
+  else if (cpuHistoryPush) {
+    cpuTempHist = cpuTempHist.concat([!tempsNa && !tempsFailed && validPackageTemp ? packageTemp : null]).slice(-HISTORY_LIMIT);
+  }
   var freqAvg = sample.cpu_mhz;
   var freqs = sample.cpu_mhz_cores || null;
   if (!cpuFailed && sample.cpu && typeof sample.cpu === "object") {
@@ -2037,7 +2075,7 @@ function step(state, raw, nowMs) {
     cpuHist = prev.cpuHist || [];
   } else {
     var cores = coreViews(percents, freqs, live, prevCpu ? prevCpu.cores : null);
-    var cpuTempText = tempsNa ? "n/a" : formatTemp(packageTemp);
+    var cpuTempText = tempsNa ? "n/a" : (validPackageTemp ? formatTemp(packageTemp) : "—");
     if (!tempsNa && tempsFailed && prevCpu) cpuTempText = prevCpu.tempText || cpuTempText;
     var cpuFreqText = freqAvg == null || freqAvg === "" ? "—" : formatMhz(freqAvg);
     if (!live && prevCpu && (freqAvg == null || freqAvg === "")) cpuFreqText = prevCpu.freqText || cpuFreqText;
@@ -2050,6 +2088,16 @@ function step(state, raw, nowMs) {
       history: cpuHist
     };
   }
+  // A failed CPU sample carries its card and both histories.
+  var tempLevel = "normal";
+  if (!cpuNa && !tempsNa && (cpuFailed || tempsFailed) && prevCpu) tempLevel = prevCpu.tempLevel || "normal";
+  else if (!cpuNa && !tempsNa && validPackageTemp) tempLevel = packageTemp >= 95 ? "hot" : (packageTemp >= 85 ? "warm" : "normal");
+  cpuCard = Object.assign({}, cpuCard, {
+    tempHistory: cpuTempHist,
+    tempPeakText: cpuTemperaturePeak(cpuTempHist),
+    tempLevel: tempLevel
+  });
+  if (tempsNa) cpuCard.tempText = "n/a";
 
   var memCard;
   if (memNa) {
@@ -2169,6 +2217,7 @@ function step(state, raw, nowMs) {
       gpuIdle: gpuIdle,
       gpuAt: gpuAt,
       cpuHist: cpuHist,
+      cpuTempHist: cpuTempHist,
       memHist: memHist,
       gpuHist: gpuHist,
       rxHist: rxHist,

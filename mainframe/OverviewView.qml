@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Layouts
 import "cyber" as Cyber
 import "lib/agents.js" as Agents
+import "lib/metrics.js" as Metrics
 
 Item {
   id: root
@@ -10,6 +11,7 @@ Item {
   property var rows: []
   property color ink; property color mutedInk; property color accent; property color secondary
   property color cardColor; property color borderColor; property color track
+  property color warning; property color critical
   signal openMachine(int index)
   function checkLayout() {
     var failures = 0
@@ -61,7 +63,12 @@ Item {
               Layout.fillWidth: true; Layout.fillHeight: true; spacing: 20
               ColumnLayout {
                 Layout.fillWidth: true; Layout.preferredWidth: 1; spacing: 4
-                Cyber.DataText { cyberStyle: root.cyberStyle; objectName: "overview-cpu-value"; textFormat: Text.PlainText; sourceText: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                RowLayout {
+                  objectName: "overview-cpu-row"
+                  Layout.fillWidth: true; Layout.minimumWidth: 0; spacing: 0; clip: true
+                  Cyber.DataText { cyberStyle: root.cyberStyle; objectName: "overview-cpu-value"; textFormat: Text.PlainText; sourceText: 'CPU  ' + (card.cpu ? card.cpu.percentText : '—'); color: root.ink; font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14; Layout.minimumWidth: implicitWidth; Layout.preferredWidth: implicitWidth }
+                  Text { objectName: "overview-cpu-temperature"; Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredWidth: 0; elide: Text.ElideRight; textFormat: Text.PlainText; readonly property string temperatureText: card.cpu && typeof card.cpu.tempText === 'string' && card.cpu.tempText !== '—' && card.cpu.tempText !== 'n/a' ? card.cpu.tempText : ''; visible: temperatureText !== ''; text: temperatureText !== '' ? '  ' + temperatureText : ''; color: card.cpu && card.cpu.tempLevel === 'hot' ? root.critical : (card.cpu && card.cpu.tempLevel === 'warm' ? root.warning : root.ink); font.family: root.cyberStyle && root.cyberStyle.displayFont ? root.cyberStyle.fontFamily : 'monospace'; font.pixelSize: 14 }
+                }
                 Sparkline { cyberStyle: root.cyberStyle; objectName: "overview-cpu-sparkline"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 20; samples: card.cpu ? card.cpu.history : []; strokeColor: root.accent; ink: root.ink; mutedInk: root.mutedInk; tooltipBg: root.cardColor; yMax: 100 }
                 Row {
                   Layout.fillWidth: true; spacing: 2; clip: true
