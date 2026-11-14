@@ -69,6 +69,10 @@ class UsageFilesTest(unittest.TestCase):
                            'command': [sys.executable, '-c', 'print(\'{"provider":"claude","limits":[{"percent":0.5},{"percent":55}]}\')']}
                 self.assertTrue(config_manager.collect(command))
                 self.assertEqual(json.loads((cache / 'custom.json').read_text())['provider'], 'command')
+                # All values are 1 or less, so only the command guard keeps them from being read as fractions.
+                small = {'id': 'custom-small', 'name': 'Custom small', 'provider': 'command',
+                         'command': [sys.executable, '-c', 'print(\'{"provider":"claude","limits":[{"percent":0.5},{"percent":0.8}]}\')']}
+                self.assertTrue(config_manager.collect(small))
             # An old account cache has the same raw helper format, even when fresh.
             (cache / 'old.json').write_text(json.dumps({'id': 'old', 'provider': 'claude',
                                                        'limits': [{'percent': 0.55}]}))
@@ -87,6 +91,7 @@ class UsageFilesTest(unittest.TestCase):
             self.assertEqual(records['other']['limits'][0]['percent'], 80)
             self.assertEqual([item['percent'] for item in records['custom']['limits']], [0.5, 55])
             self.assertEqual(records['custom']['provider'], 'command')
+            self.assertEqual([item['percent'] for item in records['custom-small']['limits']], [0.5, 0.8])
             self.assertEqual(json.loads((cache / 'claude.json').read_text())['limits'][0]['percent'], 0.55)
 
     def test_limits_state_and_cache_values_and_repeated_reads(self):
