@@ -35,6 +35,7 @@ Item {
     active: root.sweepEnabled
     sourceComponent: Item {
       id: sweep
+      clip: true
       readonly property bool sweeping: travel.running
       function startSweep() {
         travel.restart()
@@ -48,7 +49,7 @@ Item {
         Rectangle {
           width: parent.width; height: 32
           gradient: Gradient {
-            GradientStop { position: 0; color: "transparent" }
+            GradientStop { position: 0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0) }
             GradientStop { position: 1; color: root.accent }
           }
           opacity: 0.16
