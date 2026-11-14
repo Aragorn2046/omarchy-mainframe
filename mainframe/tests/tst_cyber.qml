@@ -35,7 +35,7 @@ TestCase {
   Component { id: chartMotionComponent; Cyber.ChartMotion { clock: manualClock; samples: [0]; samplesB: [0] } }
   Cyber.DataText { id: figure; cyberStyle: style; sourceText: "20.0%" }
   Loader {
-    id: ambient; active: style.windowActive && (style.titleGlitch || style.scanlineSweep)
+    id: ambient; width: 600; height: 400; active: style.windowActive && (style.titleGlitch || style.scanlineSweep)
     sourceComponent: Cyber.Ambient { glitchEnabled: style.titleGlitch; sweepEnabled: style.scanlineSweep }
   }
   Loader {
@@ -268,9 +268,9 @@ TestCase {
     style.settings = {style:"cyberpunk", cyber:{}}
     var effects = ambient.item
     verify(effects.glitchInterval >= 20000 && effects.glitchDuration <= 250)
-    verify(effects.sweepInterval >= 30000 && effects.sweepStepInterval * effects.sweepSteps <= 2000)
+    verify(effects.sweepDuration >= 1200 && effects.sweepDuration <= 2000)
     compare(effects.glitchInterval, 25000); compare(effects.glitchDuration, 180)
-    compare(effects.sweepInterval, 35000); compare(effects.sweepStepInterval, 300); compare(effects.sweepSteps, 5)
+    compare(effects.sweepInterval, 35000)
     var glitch = loader(effects, "cyber-glitch-loader")
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     var start = Date.now()
@@ -278,10 +278,23 @@ TestCase {
     tryCompare(effects, "glitchOffset", 0, 350)
     verify(Date.now() - start <= 350)
     var sweep = loader(effects, "cyber-sweep-loader").item
-    sweep.startSweep(); compare(sweep.step, 1)
+    var band = loader(sweep, "cyber-sweep-band")
+    var travel = loader(sweep, "cyber-sweep-travel")
+    verify(!effects.sweeping && !sweep.sweeping && !travel.running && !band.visible)
+    sweep.startSweep()
     start = Date.now()
-    tryCompare(sweep, "step", 0, 2100)
-    verify(Date.now() - start <= 2100)
+    verify(effects.sweeping && sweep.sweeping && travel.running && band.visible)
+    verify(band.y + band.height < 0)
+    var previousY = band.y
+    for (var i = 0; i < 8; ++i) {
+      wait(120)
+      verify(band.y > previousY, "sweep must advance on each sample")
+      previousY = band.y
+    }
+    tryCompare(effects, "sweeping", false, effects.sweepDuration + 500)
+    verify(Date.now() - start <= effects.sweepDuration + 500)
+    verify(!sweep.sweeping && !travel.running && !band.visible)
+    verify(band.y > sweep.height)
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:false}}
     compare(effects.glitchOffset, 0); verify(!glitch.active)

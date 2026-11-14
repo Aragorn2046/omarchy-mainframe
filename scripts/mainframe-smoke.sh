@@ -434,8 +434,8 @@ def gate_selftest():
     check(cpu_gate_verdict(None, 2.0) == "FAIL", "missing cpu fails")
     check(frame_gate_verdict(60, 20, True, True) == 'PASS', '3 fps passes')
     check(frame_gate_verdict(61, 20, True, True) == 'FAIL', 'over 3 fps fails')
-    check(frame_gate_verdict(160, 20, True, True, 8) == 'PASS', '8 fps passes')
-    check(frame_gate_verdict(161, 20, True, True, 8) == 'FAIL', 'over 8 fps fails')
+    check(frame_gate_verdict(240, 20, True, True, 12) == 'PASS', '12 fps passes')
+    check(frame_gate_verdict(241, 20, True, True, 12) == 'FAIL', 'over 12 fps fails')
     check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
     check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
     check(cpu_gate_verdict(4.0, 3.0, 'report') == 'REPORT', 'report mode reports over-limit cpu')
@@ -1034,7 +1034,8 @@ if measure:
                 connected = 'FRAME_DIAGNOSTIC connected' in log
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
-                frame_limit = 8 if mode == 'cyber-all' else 3
+                # The smooth scanline sweep lasts about 1.6 s; smoke forces it into 20 s, while real use runs it once per 35 s.
+                frame_limit = 12 if mode == 'cyber-all' else 3
                 frame_verdict = frame_gate_verdict(
                     len(frames), elapsed, connected, saw_frame, frame_limit,
                     os.environ.get('MAINFRAME_SMOKE_GATES', ''))
