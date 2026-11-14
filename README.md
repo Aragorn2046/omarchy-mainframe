@@ -233,6 +233,8 @@ API key rows include only unmapped sessions with a key variable set.
 
 Agents forecasts when a limit may fill or roughly where it will end at the current pace. Mainframe keeps a local history of limit percentages only, with no tokens, prompts or credentials, in `~/.local/state/mainframe/usage-history.json`. Forecasts need a few hours of data or a known window length.
 
+For usage files, Mainframe decides the scale per record. If any valid `percent` value in a record is above 1, the whole record is read as 0–100; otherwise every value is read as a fraction from 0–1. So a 0–100 file whose values are all 1 or less (for example `0.5` meaning half a percent) would be shown as 50%, which is why your own usage files should always write fractions, like Omarchy's helpers do.
+
 A usage JSON file can set `category` to `llm`, `video`, `image`, `voice`, or `other` to choose its section in Agents. The value is case-insensitive; without it, Mainframe infers the section from the provider, ID, or name.
 
 Mainframe stores settings, hosts and accounts under `$XDG_CONFIG_HOME/mainframe/`. Account records use `$XDG_CACHE_HOME/mainframe/agents/`. Storage reports mounted filesystems and Windows drives when available.
