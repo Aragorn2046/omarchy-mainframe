@@ -9,9 +9,9 @@ Item {
   readonly property int glitchInterval: 25000
   readonly property int glitchDuration: 180
   readonly property int sweepInterval: 35000
-  readonly property int sweepStepInterval: 300
-  readonly property int sweepSteps: 5
+  readonly property int sweepDuration: 1600
   readonly property int glitchOffset: glitch.item ? glitch.item.offset : 0
+  readonly property bool sweeping: sweepLoader.item ? sweepLoader.item.sweeping : false
   Loader {
     id: glitch
     objectName: "cyber-glitch-loader"
@@ -35,15 +35,30 @@ Item {
     active: root.sweepEnabled
     sourceComponent: Item {
       id: sweep
-      property int step: 0
+      clip: true
+      readonly property bool sweeping: travel.running
       function startSweep() {
-        step = 1; travel.restart()
+        travel.restart()
         if (root.smokeAmbientNow) console.log("AMBIENT sweep t=" + Date.now())
       }
-      Rectangle { width: parent.width; height: 1; y: parent.height * parent.step / root.sweepSteps; color: root.accent; opacity: parent.step > 0 ? 0.35 : 0 }
+      Item {
+        id: band
+        objectName: "cyber-sweep-band"
+        width: parent.width; height: 33
+        visible: sweep.sweeping
+        Rectangle {
+          width: parent.width; height: 32
+          gradient: Gradient {
+            GradientStop { position: 0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0) }
+            GradientStop { position: 1; color: root.accent }
+          }
+          opacity: 0.16
+        }
+        Rectangle { y: 32; width: parent.width; height: 1; color: root.accent; opacity: 0.45 }
+      }
       Timer { objectName: "cyber-sweep-timer"; interval: root.sweepInterval; repeat: true; running: true; onTriggered: sweep.startSweep() }
       Timer { interval: 10000; running: root.smokeAmbientNow; onTriggered: sweep.startSweep() }
-      Timer { id: travel; objectName: "cyber-sweep-travel"; interval: root.sweepStepInterval; repeat: true; onTriggered: { sweep.step++; if (sweep.step > root.sweepSteps) { stop(); sweep.step = 0 } } }
+      NumberAnimation { id: travel; objectName: "cyber-sweep-travel"; target: band; property: "y"; from: -band.height - 1; to: sweep.height + 1; duration: root.sweepDuration; easing.type: Easing.InOutSine }
     }
   }
 }

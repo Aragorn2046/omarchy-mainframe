@@ -357,6 +357,12 @@ def cpu_gate_verdict(pct, limit, mode=''):
     return power_gate_verdict("FAIL", mode) if pct >= limit else "PASS"
 
 
+def frame_gate_limit(mode, sweep_observed):
+    if mode == 'cyber-all':
+        return 12 if sweep_observed else 8
+    return 3
+
+
 def frame_gate_verdict(frame_count, elapsed, connected, saw_frame, limit=3, mode=''):
     if not connected or not saw_frame or elapsed <= 0 or frame_count < 0:
         return "FAIL"
@@ -434,8 +440,13 @@ def gate_selftest():
     check(cpu_gate_verdict(None, 2.0) == "FAIL", "missing cpu fails")
     check(frame_gate_verdict(60, 20, True, True) == 'PASS', '3 fps passes')
     check(frame_gate_verdict(61, 20, True, True) == 'FAIL', 'over 3 fps fails')
-    check(frame_gate_verdict(160, 20, True, True, 8) == 'PASS', '8 fps passes')
-    check(frame_gate_verdict(161, 20, True, True, 8) == 'FAIL', 'over 8 fps fails')
+    check(frame_gate_limit('cyber-all', True) == 12, 'observed sweep allows 12 fps')
+    check(frame_gate_limit('cyber-all', False) == 8, 'missing sweep allows 8 fps')
+    check(frame_gate_limit('cyber-static', True) == 3, 'other modes retain 3 fps')
+    check(frame_gate_verdict(160, 20, True, True, frame_gate_limit('cyber-all', False)) == 'PASS', '8 fps passes without sweep')
+    check(frame_gate_verdict(161, 20, True, True, frame_gate_limit('cyber-all', False)) == 'FAIL', 'over 8 fps fails without sweep')
+    check(frame_gate_verdict(240, 20, True, True, frame_gate_limit('cyber-all', True)) == 'PASS', '12 fps passes with sweep')
+    check(frame_gate_verdict(241, 20, True, True, 12) == 'FAIL', 'over 12 fps fails')
     check(frame_gate_verdict(0, 20, True, True) == 'PASS', 'idle window may render no frames')
     check(frame_gate_verdict(0, 20, False, False) == 'FAIL', 'missing frame probe fails')
     check(cpu_gate_verdict(4.0, 3.0, 'report') == 'REPORT', 'report mode reports over-limit cpu')
@@ -972,10 +983,14 @@ if mode in ("cyber-static", "cyber-all"):
     else:
         print("style measurement: verified " + expected)
 
+sweep_observed = False
 if mode == "cyber-all":
     for effect in ("glitch", "sweep"):
         stamps = [int(match.group(1)) for match in re.finditer(r"AMBIENT " + effect + r" t=(\d+)", log)]
-        if t0 is None or t1 is None or not any(t0 <= stamp <= t1 for stamp in stamps):
+        observed = t0 is not None and t1 is not None and any(t0 <= stamp <= t1 for stamp in stamps)
+        if effect == "sweep":
+            sweep_observed = observed
+        if not observed:
             print("ambient %s: FAIL (not observed during measurement)" % effect)
             fail = True
         else:
@@ -1034,7 +1049,8 @@ if measure:
                 connected = 'FRAME_DIAGNOSTIC connected' in log
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
-                frame_limit = 8 if mode == 'cyber-all' else 3
+                # The smooth scanline sweep lasts about 1.6 s; smoke forces it into 20 s, while real use runs it once per 35 s.
+                frame_limit = frame_gate_limit(mode, sweep_observed)
                 frame_verdict = frame_gate_verdict(
                     len(frames), elapsed, connected, saw_frame, frame_limit,
                     os.environ.get('MAINFRAME_SMOKE_GATES', ''))
