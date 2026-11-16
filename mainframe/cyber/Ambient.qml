@@ -8,8 +8,10 @@ Item {
   property bool smokeAmbientNow: false
   readonly property int glitchInterval: 25000
   readonly property int glitchDuration: 180
-  readonly property int sweepInterval: 35000
-  readonly property int sweepDuration: 1600
+  readonly property int sweepInterval: 30000
+  readonly property int sweepDuration: 8000
+  readonly property int sweepStepInterval: 80
+  readonly property real sweepPeak: 0.05
   readonly property int glitchOffset: glitch.item ? glitch.item.offset : 0
   readonly property bool sweeping: sweepLoader.item ? sweepLoader.item.sweeping : false
   Loader {
@@ -38,27 +40,34 @@ Item {
       clip: true
       readonly property bool sweeping: travel.running
       function startSweep() {
+        band.y = -band.height
         travel.restart()
         if (root.smokeAmbientNow) console.log("AMBIENT sweep t=" + Date.now())
       }
-      Item {
+      Rectangle {
         id: band
         objectName: "cyber-sweep-band"
-        width: parent.width; height: 33
+        width: parent.width; height: Math.max(80, Math.min(220, sweep.height * 0.14))
+        y: -height
         visible: sweep.sweeping
-        Rectangle {
-          width: parent.width; height: 32
-          gradient: Gradient {
-            GradientStop { position: 0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0) }
-            GradientStop { position: 1; color: root.accent }
-          }
-          opacity: 0.16
+        gradient: Gradient {
+          GradientStop { position: 0; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0) }
+          GradientStop { position: 0.5; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, root.sweepPeak) }
+          GradientStop { position: 1; color: Qt.rgba(root.accent.r, root.accent.g, root.accent.b, 0) }
         }
-        Rectangle { y: 32; width: parent.width; height: 1; color: root.accent; opacity: 0.45 }
       }
       Timer { objectName: "cyber-sweep-timer"; interval: root.sweepInterval; repeat: true; running: true; onTriggered: sweep.startSweep() }
       Timer { interval: 10000; running: root.smokeAmbientNow; onTriggered: sweep.startSweep() }
-      NumberAnimation { id: travel; objectName: "cyber-sweep-travel"; target: band; property: "y"; from: -band.height - 1; to: sweep.height + 1; duration: root.sweepDuration; easing.type: Easing.InOutSine }
+      Timer {
+        id: travel
+        objectName: "cyber-sweep-travel"
+        interval: root.sweepStepInterval
+        repeat: true
+        onTriggered: {
+          band.y = Math.min(sweep.height, band.y + (sweep.height + band.height) * root.sweepStepInterval / root.sweepDuration)
+          if (band.y >= sweep.height) stop()
+        }
+      }
     }
   }
 }

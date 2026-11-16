@@ -269,9 +269,12 @@ TestCase {
     style.settings = {style:"cyberpunk", cyber:{}}
     var effects = ambient.item
     verify(effects.glitchInterval >= 20000 && effects.glitchDuration <= 250)
-    verify(effects.sweepDuration >= 1200 && effects.sweepDuration <= 2000)
+    verify(effects.sweepInterval >= 30000)
+    verify(effects.sweepDuration >= 6000 && effects.sweepDuration <= 10000)
+    verify(effects.sweepStepInterval >= 75 && effects.sweepStepInterval <= 100)
+    verify(effects.sweepPeak >= 0.03 && effects.sweepPeak <= 0.08)
     compare(effects.glitchInterval, 25000); compare(effects.glitchDuration, 180)
-    compare(effects.sweepInterval, 35000)
+    compare(effects.sweepInterval, 30000)
     var glitch = loader(effects, "cyber-glitch-loader")
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     var start = Date.now()
@@ -283,36 +286,49 @@ TestCase {
     var travel = loader(sweep, "cyber-sweep-travel")
     verify(!effects.sweeping && !sweep.sweeping && !travel.running && !band.visible)
     verify(sweep.clip)
+    compare(band.height, 80)
+    ambient.height = 2000
+    compare(band.height, 220)
+    ambient.height = 400
+    verify(band.height >= 80 && band.height <= 220)
+    compare(band.children.length, 0)
+    compare(band.gradient.stops.length, 3)
+    compare(band.gradient.stops[0].position, 0)
+    compare(band.gradient.stops[1].position, 0.5)
+    compare(band.gradient.stops[2].position, 1)
+    verify(band.gradient.stops[0].color.a < 0.01 && band.gradient.stops[2].color.a < 0.01)
+    verify(Math.abs(band.gradient.stops[1].color.a * band.opacity - effects.sweepPeak) < 0.005)
+    for (var i = 0; i < band.gradient.stops.length; i++) verify(band.gradient.stops[i].color.a * band.opacity <= 0.1)
     sweep.startSweep()
     start = Date.now()
     verify(effects.sweeping && sweep.sweeping && travel.running && band.visible)
-    compare(band.y, travel.from)
-    verify(travel.from + band.height <= 0)
-    verify(travel.to >= sweep.height)
-    var distance = travel.to - travel.from
+    compare(travel.interval, effects.sweepStepInterval)
+    compare(band.y, -band.height)
+    var from = band.y
+    var distance = sweep.height - from
     var previousY = band.y
     var distinct = 1
-    var firstThird = null
-    var secondThird = null
-    while (travel.running && Date.now() - start < effects.sweepDuration + 2000) {
-      wait(32)
-      var elapsed = Date.now() - start
-      var y = band.y
-      verify(y >= previousY, "sweep must not move backwards")
-      verify(y - previousY <= distance * 0.15, "sweep step exceeds 15% of travel")
-      if (y > previousY) distinct++
-      if (firstThird === null && elapsed >= effects.sweepDuration / 3) firstThird = y
-      if (secondThird === null && elapsed >= effects.sweepDuration * 2 / 3) secondThird = y
-      previousY = y
+    var invalidStep = false
+    var onYChanged = function() {
+      if (band.y < previousY || band.y - previousY > distance * 0.03) invalidStep = true
+      if (band.y > previousY) distinct++
+      previousY = band.y
     }
+    band.yChanged.connect(onYChanged)
+    wait(effects.sweepDuration / 2)
+    var halfway = band.y
+    tryCompare(travel, "running", false, effects.sweepDuration / 2 + 2000)
+    band.yChanged.disconnect(onYChanged)
     var duration = Date.now() - start
     verify(!travel.running, "sweep must complete")
-    verify(duration >= effects.sweepDuration - 400 && duration <= effects.sweepDuration + 400)
-    verify(distinct >= 20, "sweep must have at least 20 distinct positions")
-    verify(firstThird !== null && secondThird !== null)
-    verify(secondThird - firstThird > firstThird - travel.from, "middle third must cover more distance")
+    verify(duration >= effects.sweepDuration - 400 && duration <= effects.sweepDuration + 2000)
+    verify(!invalidStep, "sweep steps must be monotonic and at most 3% of travel")
+    verify(distinct >= 90 && distinct <= 105, "sweep should use about 100 positions")
+    var firstHalf = halfway - from
+    var secondHalf = band.y - halfway
+    verify(Math.abs(firstHalf - secondHalf) / Math.max(firstHalf, secondHalf) < 0.25, "sweep must move roughly linearly")
     verify(!sweep.sweeping && !effects.sweeping && !band.visible)
-    compare(band.y, travel.to)
+    compare(band.y, sweep.height)
     verify(band.y >= sweep.height)
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:false}}
@@ -329,17 +345,12 @@ TestCase {
     var travel = loader(sweep, "cyber-sweep-travel")
     sweep.startSweep()
     wait(250)
-    verify(travel.running && band.y > travel.from)
+    verify(travel.running && band.y > -band.height)
     sweep.startSweep()
-    compare(band.y, travel.from)
+    compare(band.y, -band.height)
     verify(travel.running && band.visible && sweep.sweeping)
-    var runningAnimations = 0
-    for (var i = 0; i < sweep.data.length; ++i) {
-      if (sweep.data[i].target === band && sweep.data[i].property === "y" && sweep.data[i].running) runningAnimations++
-    }
-    compare(runningAnimations, 1)
-    wait(80)
-    verify(band.y > travel.from && travel.running && band.visible)
+    wait(160)
+    verify(band.y > -band.height && travel.running && band.visible)
 
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:false}}
     verify(ambient.active && !sweepLoader.active)
