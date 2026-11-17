@@ -6,6 +6,7 @@ Item {
   property bool glitchEnabled: false
   property bool sweepEnabled: false
   property bool smokeAmbientNow: false
+  property var sweepNow: function() { return Date.now() }
   readonly property int glitchInterval: 25000
   readonly property int glitchDuration: 180
   readonly property int sweepInterval: 30000
@@ -39,7 +40,9 @@ Item {
       id: sweep
       clip: true
       readonly property bool sweeping: travel.running
+      property double startTime: 0
       function startSweep() {
+        startTime = root.sweepNow()
         band.y = -band.height
         travel.restart()
         if (root.smokeAmbientNow) console.log("AMBIENT sweep t=" + Date.now())
@@ -64,8 +67,12 @@ Item {
         interval: root.sweepStepInterval
         repeat: true
         onTriggered: {
-          band.y = Math.min(sweep.height, band.y + (sweep.height + band.height) * root.sweepStepInterval / root.sweepDuration)
-          if (band.y >= sweep.height) stop()
+          var progress = Math.max(0, Math.min(1, (root.sweepNow() - sweep.startTime) / root.sweepDuration))
+          band.y = -band.height + progress * (sweep.height + band.height)
+          if (progress >= 1) {
+            stop()
+            band.y = -band.height
+          }
         }
       }
     }
