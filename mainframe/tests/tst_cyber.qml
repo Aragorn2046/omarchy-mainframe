@@ -43,7 +43,7 @@ TestCase {
     active: pending && style.windowActive && style.bootSequence
     sourceComponent: Cyber.Boot { width: 100; height: 100; onFinished: boot.pending = false }
   }
-  function init() { style.windowActive = true; boot.pending = false; figure.sourceText = "20.0%"; meter.fraction = 0.5; chart.samples = [10, 40, 20]; style.fontSource = Qt.resolvedUrl("../fonts/Orbitron-VariableFont_wght.ttf"); style.settings = ({}) }
+  function init() { ambient.height = 400; style.windowActive = true; boot.pending = false; figure.sourceText = "20.0%"; meter.fraction = 0.5; chart.samples = [10, 40, 20]; style.fontSource = Qt.resolvedUrl("../fonts/Orbitron-VariableFont_wght.ttf"); style.settings = ({}) }
   function objectDestroyed(item) { try { return item.objectName === undefined } catch (e) { return true } }
   function loader(item, name) { var result = findChild(item, name); verify(result !== null); return result }
   function test_classic_has_no_cyber_items() {
@@ -269,58 +269,145 @@ TestCase {
     style.settings = {style:"cyberpunk", cyber:{}}
     var effects = ambient.item
     verify(effects.glitchInterval >= 20000 && effects.glitchDuration <= 250)
-    verify(effects.sweepDuration >= 1200 && effects.sweepDuration <= 2000)
+    verify(effects.sweepInterval >= 30000)
+    verify(effects.sweepDuration >= 6000 && effects.sweepDuration <= 10000)
+    verify(effects.sweepStepInterval >= 75 && effects.sweepStepInterval <= 100)
+    verify(effects.sweepPeak >= 0.03 && effects.sweepPeak <= 0.08)
     compare(effects.glitchInterval, 25000); compare(effects.glitchDuration, 180)
-    compare(effects.sweepInterval, 35000)
+    compare(effects.sweepInterval, 30000)
     var glitch = loader(effects, "cyber-glitch-loader")
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     var start = Date.now()
     // Allow 100 ms for QtTest polling and scheduling beyond each budget.
     tryCompare(effects, "glitchOffset", 0, 350)
     verify(Date.now() - start <= 350)
-    var sweep = loader(effects, "cyber-sweep-loader").item
-    var band = loader(sweep, "cyber-sweep-band")
-    var travel = loader(sweep, "cyber-sweep-travel")
-    verify(!effects.sweeping && !sweep.sweeping && !travel.running && !band.visible)
-    verify(sweep.clip)
-    sweep.startSweep()
-    start = Date.now()
-    verify(effects.sweeping && sweep.sweeping && travel.running && band.visible)
-    compare(band.y, travel.from)
-    verify(travel.from + band.height <= 0)
-    verify(travel.to >= sweep.height)
-    var distance = travel.to - travel.from
-    var previousY = band.y
-    var distinct = 1
-    var firstThird = null
-    var secondThird = null
-    while (travel.running && Date.now() - start < effects.sweepDuration + 2000) {
-      wait(32)
-      var elapsed = Date.now() - start
-      var y = band.y
-      verify(y >= previousY, "sweep must not move backwards")
-      verify(y - previousY <= distance * 0.15, "sweep step exceeds 15% of travel")
-      if (y > previousY) distinct++
-      if (firstThird === null && elapsed >= effects.sweepDuration / 3) firstThird = y
-      if (secondThird === null && elapsed >= effects.sweepDuration * 2 / 3) secondThird = y
-      previousY = y
-    }
-    var duration = Date.now() - start
-    verify(!travel.running, "sweep must complete")
-    verify(duration >= effects.sweepDuration - 400 && duration <= effects.sweepDuration + 400)
-    verify(distinct >= 20, "sweep must have at least 20 distinct positions")
-    verify(firstThird !== null && secondThird !== null)
-    verify(secondThird - firstThird > firstThird - travel.from, "middle third must cover more distance")
-    verify(!sweep.sweeping && !effects.sweeping && !band.visible)
-    compare(band.y, travel.to)
-    verify(band.y >= sweep.height)
     glitch.item.startGlitch(); compare(effects.glitchOffset, 2)
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:false}}
     compare(effects.glitchOffset, 0); verify(!glitch.active)
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true}}
     compare(effects.glitchOffset, 0)
   }
-  function test_sweep_restart_and_unload() {
+  function test_sweep_structure_and_size() {
+    style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
+    var effects = ambient.item
+    effects.accent = "#369acb"
+    var sweep = loader(effects, "cyber-sweep-loader").item
+    var band = loader(sweep, "cyber-sweep-band")
+    var travel = loader(sweep, "cyber-sweep-travel")
+    verify(!effects.sweeping && !sweep.sweeping && !travel.running && !band.visible)
+    verify(sweep.clip)
+    compare(effects.sweepDuration, 8000); compare(effects.sweepStepInterval, 80)
+    compare(effects.sweepPeak, 0.05); compare(travel.interval, effects.sweepStepInterval)
+    ambient.height = 1000; compare(band.height, 140)
+    ambient.height = 400; compare(band.height, 80)
+    ambient.height = 2000; compare(band.height, 220)
+    ambient.height = 1000; compare(band.height, 140)
+    compare(band.width, sweep.width)
+    compare(band.children.length, 0)
+    verify(!band.layer.enabled)
+    compare(band.gradient.stops.length, 3)
+    compare(band.gradient.stops[0].position, 0)
+    compare(band.gradient.stops[1].position, 0.5)
+    compare(band.gradient.stops[2].position, 1)
+    for (var i = 0; i < band.gradient.stops.length; i++) {
+      var color = band.gradient.stops[i].color
+      verify(Math.abs(color.r - effects.accent.r) < 0.005)
+      verify(Math.abs(color.g - effects.accent.g) < 0.005)
+      verify(Math.abs(color.b - effects.accent.b) < 0.005)
+      verify(color.a * band.opacity <= 0.08)
+    }
+    verify(band.gradient.stops[0].color.a < 0.01 && band.gradient.stops[2].color.a < 0.01)
+    verify(Math.abs(band.gradient.stops[1].color.a * band.opacity - effects.sweepPeak) < 0.005)
+    // The sweep has no pointer handlers or mouse areas among its visual children.
+    compare(sweep.children.length, 1)
+    compare(sweep.data.length, 4) // One band and three timers, with no pointer handlers.
+    compare(sweep.children[0], band)
+    compare(band.acceptedButtons, undefined)
+  }
+  function test_sweep_linear_restart_and_resize() {
+    style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
+    var effects = ambient.item
+    var now = 100000
+    effects.sweepNow = function() { return now }
+    var sweep = loader(effects, "cyber-sweep-loader").item
+    var band = loader(sweep, "cyber-sweep-band")
+    var travel = loader(sweep, "cyber-sweep-travel")
+    var start = now
+    sweep.startSweep()
+    verify(effects.sweeping && sweep.sweeping && travel.running && band.visible)
+    compare(band.y, -band.height)
+    now = start - 100
+    travel.triggered()
+    compare(band.y, -band.height)
+    for (var i = 1; i <= 3; i++) {
+      now = start + effects.sweepDuration * i / 4
+      travel.triggered()
+      var expected = -band.height + i / 4 * (sweep.height + band.height)
+      verify(Math.abs(band.y - expected) <= (sweep.height + band.height) * 0.01)
+    }
+    sweep.startSweep()
+    start = now
+    compare(band.y, -band.height)
+    verify(travel.running && band.visible)
+    now = start + effects.sweepDuration / 2
+    travel.triggered()
+    compare(band.y, -band.height + 0.5 * (sweep.height + band.height))
+    ambient.height = 1000
+    travel.triggered()
+    compare(band.y, -band.height + 0.5 * (sweep.height + band.height))
+    var reachedBottom = false
+    var onYChanged = function() { if (band.y >= sweep.height) reachedBottom = true }
+    band.yChanged.connect(onYChanged)
+    now = start + effects.sweepDuration
+    travel.triggered()
+    band.yChanged.disconnect(onYChanged)
+    verify(reachedBottom, "band must reach the new bottom before it resets")
+    verify(!travel.running && !sweep.sweeping && !effects.sweeping && !band.visible)
+    compare(band.y, -band.height)
+  }
+  function test_sweep_single_driver() {
+    style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
+    var effects = ambient.item
+    var now = 100000
+    effects.sweepNow = function() { return now }
+    var sweep = loader(effects, "cyber-sweep-loader").item
+    var band = loader(sweep, "cyber-sweep-band")
+    var travel = loader(sweep, "cyber-sweep-travel")
+    var timers = []
+    for (var i = 0; i < sweep.data.length; i++) {
+      var child = sweep.data[i]
+      if (child.interval !== undefined && child.triggered !== undefined) timers.push(child)
+    }
+    compare(timers.length, 3)
+    sweep.startSweep()
+    now += effects.sweepDuration / 2
+    var drivers = 0
+    for (i = 0; i < timers.length; i++) {
+      sweep.startSweep()
+      now += effects.sweepDuration / 2
+      var before = band.y
+      timers[i].triggered()
+      if (band.y !== before) {
+        drivers++
+        compare(timers[i], travel)
+      }
+    }
+    compare(drivers, 1)
+    sweep.startSweep()
+    verify(travel.running)
+    for (i = 0; i < timers.length; i++) {
+      if (timers[i] !== travel && timers[i].interval !== effects.sweepInterval) verify(!timers[i].running)
+    }
+  }
+  function test_sweep_real_timer_advances() {
+    style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
+    var sweep = loader(ambient.item, "cyber-sweep-loader").item
+    var band = loader(sweep, "cyber-sweep-band")
+    sweep.startSweep()
+    var initialY = band.y
+    tryVerify(function() { return band.y > initialY }, 2000)
+  }
+  function test_sweep_unload() {
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:true}}
     var effects = ambient.item
     var sweepLoader = loader(effects, "cyber-sweep-loader")
@@ -328,35 +415,22 @@ TestCase {
     var band = loader(sweep, "cyber-sweep-band")
     var travel = loader(sweep, "cyber-sweep-travel")
     sweep.startSweep()
-    wait(250)
-    verify(travel.running && band.y > travel.from)
-    sweep.startSweep()
-    compare(band.y, travel.from)
-    verify(travel.running && band.visible && sweep.sweeping)
-    var runningAnimations = 0
-    for (var i = 0; i < sweep.data.length; ++i) {
-      if (sweep.data[i].target === band && sweep.data[i].property === "y" && sweep.data[i].running) runningAnimations++
-    }
-    compare(runningAnimations, 1)
-    wait(80)
-    verify(band.y > travel.from && travel.running && band.visible)
-
+    verify(travel.running)
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:false}}
     verify(ambient.active && !sweepLoader.active)
     compare(sweepLoader.item, null)
-    wait(80)
+    wait(0)
     verify(objectDestroyed(sweep) && objectDestroyed(travel) && objectDestroyed(band))
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:true}}
     sweep = sweepLoader.item
     travel = loader(sweep, "cyber-sweep-travel")
     verify(!travel.running && !sweep.sweeping)
     sweep.startSweep()
-    wait(80)
     verify(travel.running)
     style.windowActive = false
     verify(!ambient.active)
     compare(ambient.item, null)
-    wait(80)
+    wait(0)
     verify(objectDestroyed(effects) && objectDestroyed(sweep) && objectDestroyed(travel))
     style.windowActive = true
     var newSweep = loader(ambient.item, "cyber-sweep-loader").item

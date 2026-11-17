@@ -1049,7 +1049,7 @@ if measure:
                 connected = 'FRAME_DIAGNOSTIC connected' in log
                 saw_frame = bool(re.search(r'(?:^|\s)FRAME t=\d+(?:\s|$)', log, re.MULTILINE))
                 print('frames: %d over %.1fs = %.2f fps' % (len(frames), elapsed, fps))
-                # The smooth scanline sweep lasts about 1.6 s; smoke forces it into 20 s, while real use runs it once per 35 s.
+                # Smoke forces the eight-second sweep into 20 s; real use runs it once per 30 s.
                 frame_limit = frame_gate_limit(mode, sweep_observed)
                 frame_verdict = frame_gate_verdict(
                     len(frames), elapsed, connected, saw_frame, frame_limit,
