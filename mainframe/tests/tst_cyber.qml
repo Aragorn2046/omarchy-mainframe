@@ -407,6 +407,51 @@ TestCase {
     var initialY = band.y
     tryVerify(function() { return band.y > initialY }, 2000)
   }
+  function test_sweep_real_timer_repeats() {
+    var sweepLoader = null
+    var sweep = null
+    var band = null
+    var travel = null
+    var observer = null
+    try {
+      style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
+      tryVerify(function() {
+        if (!ambient.item) return false
+        sweepLoader = findChild(ambient.item, "cyber-sweep-loader")
+        if (!sweepLoader || !sweepLoader.active || !sweepLoader.item) return false
+        sweep = sweepLoader.item
+        band = findChild(sweep, "cyber-sweep-band")
+        travel = findChild(sweep, "cyber-sweep-travel")
+        return band !== null && travel !== null
+      }, 1000)
+      observer = Qt.createQmlObject('import QtQuick; Connections { target: null; property var positions: []; property var times: []; property var band; function onTriggered() { positions.push(band.y); times.push(Date.now()) } }', test)
+      observer.band = band
+      observer.target = travel
+      sweep.startSweep()
+      tryVerify(function() { return observer.positions.length >= 3 }, 3000)
+      verify(observer.positions[1] > observer.positions[0])
+      verify(observer.positions[2] > observer.positions[1])
+      verify(observer.times[1] - observer.times[0] >= 40)
+      verify(observer.times[2] - observer.times[1] >= 40)
+      compare(travel.repeat, true)
+    } finally {
+      try {
+        if (observer !== null) observer.destroy()
+      } finally {
+        try {
+          style.settings = ({})
+        } finally {
+          tryVerify(function() {
+            if (!ambient.item) return true
+            var currentLoader = findChild(ambient.item, "cyber-sweep-loader")
+            if (!currentLoader || !currentLoader.active || !currentLoader.item) return true
+            var currentTravel = findChild(currentLoader.item, "cyber-sweep-travel")
+            return !currentTravel || !currentTravel.running
+          }, 1000)
+        }
+      }
+    }
+  }
   function test_sweep_unload() {
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:true}}
     var effects = ambient.item
