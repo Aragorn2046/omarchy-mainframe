@@ -407,6 +407,29 @@ TestCase {
     var initialY = band.y
     tryVerify(function() { return band.y > initialY }, 2000)
   }
+  function test_sweep_real_timer_repeats() {
+    style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
+    var effects = ambient.item
+    var now = 100000
+    effects.sweepNow = function() { now += 500; return now }
+    var sweep = loader(effects, "cyber-sweep-loader").item
+    var band = loader(sweep, "cyber-sweep-band")
+    var travel = loader(sweep, "cyber-sweep-travel")
+    var observer = Qt.createQmlObject('import QtQuick; Connections { target: null; property var positions: []; property var band; function onTriggered() { positions.push(band.y) } }', test)
+    observer.band = band
+    observer.target = travel
+    try {
+      sweep.startSweep()
+      var initialY = band.y
+      tryVerify(function() { return observer.positions.length >= 3 }, 3000)
+      verify(observer.positions[1] > observer.positions[0])
+      verify(observer.positions[2] > observer.positions[1])
+      verify(band.y > initialY)
+      compare(travel.repeat, true)
+    } finally {
+      observer.destroy()
+    }
+  }
   function test_sweep_unload() {
     style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:true}}
     var effects = ambient.item
