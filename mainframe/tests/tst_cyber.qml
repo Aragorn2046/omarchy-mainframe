@@ -408,17 +408,33 @@ TestCase {
     tryVerify(function() { return band.y > initialY }, 2000)
   }
   function test_sweep_real_timer_repeats() {
-    style.settings = {style:"cyberpunk", cyber:{scanlineSweep:true}}
-    var effects = ambient.item
+    var effects = null
+    var originalSweepNow = null
+    var sweepLoader = null
+    var sweep = null
+    var band = null
+    var travel = null
+    var observer = null
     var now = 100000
-    effects.sweepNow = function() { now += 500; return now }
-    var sweep = loader(effects, "cyber-sweep-loader").item
-    var band = loader(sweep, "cyber-sweep-band")
-    var travel = loader(sweep, "cyber-sweep-travel")
-    var observer = Qt.createQmlObject('import QtQuick; Connections { target: null; property var positions: []; property var band; function onTriggered() { positions.push(band.y) } }', test)
-    observer.band = band
-    observer.target = travel
     try {
+      style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:true}}
+      tryVerify(function() { return ambient.item !== null }, 1000)
+      effects = ambient.item
+      originalSweepNow = effects.sweepNow
+      effects.sweepNow = function() { now += 100; return now }
+      tryVerify(function() {
+        sweepLoader = findChild(effects, "cyber-sweep-loader")
+        return sweepLoader !== null && sweepLoader.item !== null
+      }, 1000)
+      sweep = sweepLoader.item
+      tryVerify(function() {
+        band = findChild(sweep, "cyber-sweep-band")
+        travel = findChild(sweep, "cyber-sweep-travel")
+        return band !== null && travel !== null
+      }, 1000)
+      observer = Qt.createQmlObject('import QtQuick; Connections { target: null; property var positions: []; property var band; function onTriggered() { positions.push(band.y) } }', test)
+      observer.band = band
+      observer.target = travel
       sweep.startSweep()
       var initialY = band.y
       tryVerify(function() { return observer.positions.length >= 3 }, 3000)
@@ -427,7 +443,13 @@ TestCase {
       verify(band.y > initialY)
       compare(travel.repeat, true)
     } finally {
-      observer.destroy()
+      style.settings = {style:"cyberpunk", cyber:{titleGlitch:true, scanlineSweep:false}}
+      try {
+        tryVerify(function() { return sweepLoader === null || !sweepLoader.active }, 1000)
+      } finally {
+        if (effects !== null && originalSweepNow !== null) effects.sweepNow = originalSweepNow
+        if (observer !== null) observer.destroy()
+      }
     }
   }
   function test_sweep_unload() {
