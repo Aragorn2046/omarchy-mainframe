@@ -43,7 +43,7 @@ Choose Classic (the default) or Cyberpunk in settings. Cyberpunk follows the act
 - **Segmented meters:** LED-style bars.
 - **Data animations:** step changing figures, meters and new chart points.
 - **Title glitch:** briefly shifts card headings at intervals.
-- **Scanline sweep:** a faint CRT-style band rolls slowly down the window about every 30 seconds.
+- **Scanline sweep:** a faint CRT-style band rolls slowly down the window over about 8 seconds, once every 30 seconds. It does not run while the window is hidden.
 - **Pulsing status dots:** changes indicator opacity with each sample.
 - **Boot sequence:** shows a short opening screen. Press any key or click to skip it.
 
